@@ -1,0 +1,8 @@
+[Unit]
+Description=Warcraft realm database backup
+After=warcraft.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/warcraft/scripts/backup.sh
+User=nlucansk

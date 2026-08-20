@@ -1,0 +1,27 @@
+# Real secrets. Only .env.example is tracked.
+.env
+overlay/.env
+**/.env
+
+# Blizzard's copyrighted map art, extracted from a client you own.
+# Never commit these - see frontend/maps/README.md for how to generate them.
+frontend/maps/*.jpg
+frontend/maps/*.png
+frontend/maps/*.blp
+
+# The pinned upstream clone. Disposable; scripts/bootstrap.sh recreates it.
+azerothcore/
+
+# Build output and dependencies
+node_modules/
+.output/
+.nuxt/
+.nitro/
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime state that lives on the server
+logs/
+backups/
+config/

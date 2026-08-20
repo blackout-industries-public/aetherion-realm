@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily warcraft realm backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+# A backup skipped because the host was off is worse than a late one.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,657 @@
+#include "LlmBridge.h"
+
+#include "Channel.h"
+#include "ChannelMgr.h"
+#include "Config.h"
+#include "GameTime.h"
+#include "Log.h"
+#include "ObjectAccessor.h"
+#include "Group.h"
+#include "Guild.h"
+#include "GuildMgr.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
+#include "Playerbots.h"   // GET_PLAYERBOT_AI
+#include "RandomPlayerbotMgr.h"
+#include "Random.h"
+#include "SharedDefines.h"
+#include "World.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
+
+#include <boost/asio/ip/tcp.hpp>
+
+#include <chrono>
+#include <functional>
+#include <vector>
+#include <sstream>
+#include <thread>
+
+namespace
+{
+    // The core bundles no JSON parser, so the bridge answers in plain text and the
+    // only JSON here is what we emit. Escaping is therefore the whole problem.
+    std::string JsonEscape(std::string const& in)
+    {
+        std::ostringstream out;
+        for (char const c : in)
+        {
+            switch (c)
+            {
+                case '"':  out << "\\\""; break;
+                case '\\': out << "\\\\"; break;
+                case '\n': out << "\\n";  break;
+                case '\r': out << "\\r";  break;
+                case '\t': out << "\\t";  break;
+                default:
+                    // Control bytes are illegal raw inside a JSON string and a player
+                    // can put them in a message, so they are dropped rather than sent.
+                    if (static_cast<unsigned char>(c) >= 0x20)
+                        out << c;
+                    break;
+            }
+        }
+        return out.str();
+    }
+
+    uint64 NowMs()
+    {
+        return static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+}
+
+LlmBridge* LlmBridge::instance()
+{
+    static LlmBridge instance;
+    return &instance;
+}
+
+void LlmBridge::LoadConfig()
+{
+    // Default off. Enabling inference is an explicit decision, never a side effect
+    // of installing this build.
+    _enabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.Enabled", false);
+    _host = sConfigMgr->GetOption<std::string>("AiPlayerbot.Llm.Host", "ai-bridge");
+    _port = std::to_string(sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.Port", 8090));
+    _timeoutMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.TimeoutMs", 15000);
+    _maxInFlight = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.MaxInFlight", 8);
+    _claimWindowMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.ClaimWindowMs", 10000);
+    _requireWitness = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.RequireHumanWitness", true);
+    _sayRange = sConfigMgr->GetOption<float>("AiPlayerbot.Llm.SayRange", 45.0f);
+    _sameFactionOnly = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.SameFactionOnly", true);
+
+    _reactWhisper = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.ReactWhisper", true);
+    _reactParty = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.ReactParty", true);
+    _reactGuild = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.ReactGuild", true);
+    _reactSay = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.ReactSay", false);
+    _channelReplyChance = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.ChannelReplyChance", 5);
+    _sayReplyChance = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.SayReplyChance", 25);
+
+    _ambientEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.AmbientEnabled", false);
+    _ambientIntervalMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.AmbientIntervalMs", 300000);
+    _ambientMaxDepth = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.AmbientMaxDepth", 1);
+    _ambientUseSay = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.AmbientUseSay", true);
+
+    _greetOnLogin = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.GreetOnLogin", true);
+    _greetDelayMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.GreetDelayMs", 15000);
+    _eventsEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.EventsEnabled", true);
+    _eventChanceLevelUp = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.EventChanceLevelUp", 100);
+    _eventChanceDeath = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.EventChanceDeath", 40);
+    _eventChanceLoot = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.EventChanceLoot", 35);
+    _ambientTimer = 0;
+
+    if (_enabled)
+        LOG_INFO("playerbots",
+                 "LLM bridge enabled -> {}:{} (timeout {} ms, max in flight {}, ambient {})",
+                 _host, _port, _timeoutMs, _maxInFlight, _ambientEnabled ? "on" : "off");
+}
+
+bool LlmBridge::WantsChatType(uint32 chatType) const
+{
+    switch (chatType)
+    {
+        case CHAT_MSG_WHISPER:
+            return _reactWhisper;
+        case CHAT_MSG_PARTY:
+        case CHAT_MSG_PARTY_LEADER:
+        case CHAT_MSG_RAID:
+        case CHAT_MSG_RAID_LEADER:
+            return _reactParty;
+        case CHAT_MSG_GUILD:
+        case CHAT_MSG_OFFICER:
+            return _reactGuild;
+        case CHAT_MSG_SAY:
+        case CHAT_MSG_YELL:
+            return _reactSay;
+        default:
+            return false;
+    }
+}
+
+bool LlmBridge::RollChannelReply() const
+{
+    return _channelReplyChance > 0 && urand(1, 100) <= _channelReplyChance;
+}
+
+bool LlmBridge::RollSayReply() const
+{
+    return _sayReplyChance > 0 && urand(1, 100) <= _sayReplyChance;
+}
+
+Player* LlmBridge::PickResponder(Player* near) const
+{
+    // RandomPlayerbotMgr::GetRandomPlayer() returns a REAL player, not a bot - using
+    // it here silently disabled ambient chatter entirely.
+    if (!near)
+        near = sRandomPlayerbotMgr.GetRandomPlayer();
+
+    uint32 const zone = near ? near->GetZoneId() : 0;
+
+    // Preference order matters: chatter the player cannot see does nothing for how
+    // populated the world feels. Nearby beats same-zone beats anywhere.
+    std::vector<Player*> nearby, sameZone, anywhere;
+
+    for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+         it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+    {
+        Player* bot = it->second;
+        if (!bot || !bot->IsInWorld() || bot->isDead() || bot == near)
+            continue;
+        if (!GET_PLAYERBOT_AI(bot))
+            continue;
+
+        if (_sameFactionOnly && near && bot->GetTeamId() != near->GetTeamId())
+            continue;
+
+        if (zone && bot->GetZoneId() == zone)
+        {
+            // /say carries about 25 yards; 40 keeps the pool from being empty while
+            // still landing in or near earshot.
+            if (near && bot->GetMapId() == near->GetMapId() && bot->GetDistance(near) <= 40.0f)
+                nearby.push_back(bot);
+            else
+                sameZone.push_back(bot);
+        }
+        else if (anywhere.size() < 64)   // enough for a fallback pick; no need to list 1500
+            anywhere.push_back(bot);
+    }
+
+    std::vector<Player*> const& pool =
+        !nearby.empty() ? nearby : (!sameZone.empty() ? sameZone : anywhere);
+    if (pool.empty())
+        return nullptr;
+
+    return pool[urand(0, pool.size() - 1)];
+}
+
+bool LlmBridge::HasHumanWitness(Player* bot, uint32 chatType) const
+{
+    if (!_requireWitness || !bot)
+        return true;
+
+    // GetPlayers() is the real-player list. It is tiny on a private realm, so this
+    // check costs nothing compared to the inference it avoids.
+    std::vector<Player*> humans = sRandomPlayerbotMgr.GetPlayers();
+    if (humans.empty())
+        return false;
+
+    for (Player* human : humans)
+    {
+        if (!human || !human->IsInWorld() || GET_PLAYERBOT_AI(human))
+            continue;
+
+        switch (chatType)
+        {
+            case CHAT_MSG_SAY:
+            case CHAT_MSG_YELL:
+                // Same faction required. A Horde bot's line reaches an Alliance player
+                // as gibberish at best, so generating it spends inference on something
+                // nobody can read. Playerbots' own built-in chatter still fills the
+                // world with cross-faction noise for free.
+                if (_sameFactionOnly && human->GetTeamId() != bot->GetTeamId())
+                    break;
+                if (human->GetMapId() == bot->GetMapId() && human->GetDistance(bot) <= _sayRange)
+                    return true;
+                break;
+            case CHAT_MSG_GUILD:
+            case CHAT_MSG_OFFICER:
+                if (bot->GetGuildId() && human->GetGuildId() == bot->GetGuildId())
+                    return true;
+                break;
+            case CHAT_MSG_CHANNEL:
+                // City channels are both zone scoped and faction scoped.
+                if (_sameFactionOnly && human->GetTeamId() != bot->GetTeamId())
+                    break;
+                if (human->GetZoneId() == bot->GetZoneId())
+                    return true;
+                break;
+            case CHAT_MSG_PARTY:
+            case CHAT_MSG_PARTY_LEADER:
+            case CHAT_MSG_RAID:
+            case CHAT_MSG_RAID_LEADER:
+                if (bot->GetGroup() && bot->GetGroup()->IsMember(human->GetGUID()))
+                    return true;
+                break;
+            default:
+                return true;   // whispers always have a human on one end
+        }
+    }
+
+    return false;
+}
+
+bool LlmBridge::TryClaim(ObjectGuid speaker, uint32 chatType, std::string const& message)
+{
+    std::size_t key = std::hash<std::string>{}(message);
+    key ^= std::hash<uint64>{}(speaker.GetRawValue()) + 0x9e3779b9 + (key << 6) + (key >> 2);
+    key ^= std::hash<uint32>{}(chatType) + 0x9e3779b9 + (key << 6) + (key >> 2);
+
+    uint64 const now = NowMs();
+
+    std::lock_guard<std::mutex> guard(_claimMutex);
+
+    // Opportunistic sweep. The map only ever holds recent messages, so this stays
+    // small without needing a separate timer.
+    if (_claims.size() > 512)
+        for (auto it = _claims.begin(); it != _claims.end();)
+            it = (now - it->second > _claimWindowMs) ? _claims.erase(it) : std::next(it);
+
+    auto const existing = _claims.find(key);
+    if (existing != _claims.end() && now - existing->second <= _claimWindowMs)
+        return false;
+
+    _claims[key] = now;
+    return true;
+}
+
+void LlmBridge::Submit(Player* bot, Player* speaker, std::string const& message, uint32 chatType,
+                       uint32 channelId, uint32 depth)
+{
+    if (!_enabled || !bot || !speaker || message.empty())
+        return;
+
+    if (!HasHumanWitness(bot, chatType))
+        return;
+
+    // Bound concurrency here as well as in the bridge: this cap protects the
+    // worldserver's thread count, which the bridge knows nothing about.
+    if (_inFlight.load() >= _maxInFlight)
+        return;
+
+    _inFlight.fetch_add(1);
+
+    std::thread(&LlmBridge::Worker, this, bot->GetGUID(), speaker->GetGUID(),
+                std::string(bot->GetName()), std::string(speaker->GetName()), message,
+                chatType, channelId, depth)
+        .detach();
+}
+
+char const* LlmBridge::ChannelLabel(uint32 chatType, uint32 depth) const
+{
+    // A reply to another bot is banter, not an unprompted opener. It gets its own
+    // budget so an exchange reads as a conversation instead of arriving a minute late.
+    if (depth > 0)
+        return "banter";
+
+    switch (chatType)
+    {
+        case CHAT_MSG_WHISPER:
+            return "whisper";
+        case CHAT_MSG_PARTY:
+        case CHAT_MSG_PARTY_LEADER:
+        case CHAT_MSG_RAID:
+        case CHAT_MSG_RAID_LEADER:
+            return "party";
+        case CHAT_MSG_GUILD:
+        case CHAT_MSG_OFFICER:
+            return "guild";
+        case CHAT_MSG_CHANNEL:
+            return "guild";  // shares the guild budget: public, but not human-directed
+        default:
+            return "ambient";
+    }
+}
+
+bool LlmBridge::HttpPost(std::string const& path, std::string const& json, std::string& body)
+{
+    try
+    {
+        boost::asio::ip::tcp::iostream stream;
+        stream.expires_after(std::chrono::milliseconds(_timeoutMs));
+        stream.connect(_host, _port);
+        if (!stream)
+            return false;
+
+        // Connection: close lets the body be read to EOF, which avoids implementing
+        // Content-Length or chunked decoding inside the game server.
+        stream << "POST " << path << " HTTP/1.1\r\n"
+               << "Host: " << _host << ":" << _port << "\r\n"
+               << "Content-Type: application/json\r\n"
+               << "Content-Length: " << json.size() << "\r\n"
+               << "Connection: close\r\n\r\n"
+               << json << std::flush;
+
+        std::ostringstream received;
+        received << stream.rdbuf();
+        std::string const response = received.str();
+
+        std::size_t const split = response.find("\r\n\r\n");
+        if (split == std::string::npos)
+            return false;
+
+        // 204 is the bridge saying "stay quiet" - a normal outcome, not a failure.
+        if (response.compare(0, 12, "HTTP/1.1 200") != 0)
+            return false;
+
+        body = response.substr(split + 4);
+        while (!body.empty() && (body.back() == '\n' || body.back() == '\r'))
+            body.pop_back();
+
+        return !body.empty();
+    }
+    catch (std::exception const& e)
+    {
+        // Expected and unremarkable: the bridge may simply be switched off.
+        LOG_DEBUG("playerbots", "LLM bridge {} failed: {}", path, e.what());
+        return false;
+    }
+}
+
+void LlmBridge::QueueReply(Reply const& reply)
+{
+    std::lock_guard<std::mutex> guard(_mutex);
+    // Never let a stalled world thread grow this without bound.
+    if (_replies.size() < 256)
+        _replies.push_back(reply);
+}
+
+void LlmBridge::Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string botName,
+                       std::string speakerName, std::string message, uint32 chatType,
+                       uint32 channelId, uint32 depth)
+{
+    std::ostringstream payload;
+    payload << "{\"bot_guid\":" << botGuid.GetCounter()
+            << ",\"speaker\":\"" << JsonEscape(speakerName)
+            << "\",\"message\":\"" << JsonEscape(message)
+            << "\",\"channel\":\"" << ChannelLabel(chatType, depth) << "\"}";
+
+    std::string body;
+    if (!HttpPost("/game/whisper", payload.str(), body))
+    {
+        _inFlight.fetch_sub(1);
+        return;
+    }
+
+    // An optional leading "#ACT:<intent>" line announces an action the bot agreed to.
+    // Parsed here rather than in Deliver so the world thread only ever sees fields.
+    std::string intent;
+    if (body.rfind("#ACT:", 0) == 0)
+    {
+        std::size_t const nl = body.find('\n');
+        if (nl != std::string::npos)
+        {
+            intent = body.substr(5, nl - 5);
+            body = body.substr(nl + 1);
+        }
+    }
+
+    if (!body.empty())
+        QueueReply({botGuid, speakerGuid, body, chatType, channelId, depth, intent});
+
+    _inFlight.fetch_sub(1);
+}
+
+void LlmBridge::GreetWorker(ObjectGuid humanGuid, std::string humanName)
+{
+    // The bridge owns relationship history, so it chooses the greeter and answers
+    // "<bot_guid>\n<line>" - keeping JSON parsing out of the game server entirely.
+    std::string body;
+    if (HttpPost("/game/greet?speaker=" + humanName, "{}", body))
+    {
+        std::size_t const nl = body.find('\n');
+        if (nl != std::string::npos)
+        {
+            uint32 const guidLow = atoi(body.substr(0, nl).c_str());
+            std::string const line = body.substr(nl + 1);
+            if (guidLow && !line.empty())
+                QueueReply({ObjectGuid::Create<HighGuid::Player>(guidLow), humanGuid,
+                            line, CHAT_MSG_WHISPER, 0, 0});
+        }
+    }
+
+    _inFlight.fetch_sub(1);
+}
+
+void LlmBridge::EventWorker(ObjectGuid botGuid, ObjectGuid humanGuid, std::string humanName,
+                            std::string eventType, std::string detail)
+{
+    std::ostringstream payload;
+    payload << "{\"bot_guid\":" << botGuid.GetCounter()
+            << ",\"speaker\":\"" << JsonEscape(humanName)
+            << "\",\"event_type\":\"" << JsonEscape(eventType)
+            << "\",\"detail\":\"" << JsonEscape(detail) << "\"}";
+
+    std::string body;
+    if (HttpPost("/game/event", payload.str(), body))
+        QueueReply({botGuid, humanGuid, body, CHAT_MSG_SAY, 0, 0});
+
+    _inFlight.fetch_sub(1);
+}
+
+void LlmBridge::OnHumanLogin(Player* human)
+{
+    if (!_enabled || !_greetOnLogin || !human || GET_PLAYERBOT_AI(human))
+        return;
+
+    _greets.push_back({human->GetGUID(), human->GetName(), _greetDelayMs});
+}
+
+void LlmBridge::OnGameEvent(Player* human, std::string const& eventType,
+                            std::string const& detail)
+{
+    if (!_enabled || !_eventsEnabled || !human || GET_PLAYERBOT_AI(human))
+        return;
+
+    uint32 chance = 100;
+    if (eventType == "died")
+        chance = _eventChanceDeath;
+    else if (eventType == "loot")
+        chance = _eventChanceLoot;
+    else if (eventType == "levelup")
+        chance = _eventChanceLevelUp;
+
+    if (chance < 100 && urand(1, 100) > chance)
+        return;
+
+    Player* bot = PickResponder(human);
+    if (!bot || _inFlight.load() >= _maxInFlight)
+        return;
+
+    _inFlight.fetch_add(1);
+    std::thread(&LlmBridge::EventWorker, this, bot->GetGUID(), human->GetGUID(),
+                std::string(human->GetName()), eventType, detail)
+        .detach();
+}
+
+void LlmBridge::Deliver(Reply const& reply)
+{
+    // Re-resolved rather than carried across the thread boundary: either player may
+    // have logged out while inference was running.
+    Player* bot = ObjectAccessor::FindConnectedPlayer(reply.botGuid);
+    if (!bot)
+        return;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return;
+
+    switch (reply.chatType)
+    {
+        case CHAT_MSG_WHISPER:
+        {
+            Player* speaker = ObjectAccessor::FindConnectedPlayer(reply.speakerGuid);
+            if (speaker)
+                bot->Whisper(reply.text, LANG_UNIVERSAL, speaker);
+            break;
+        }
+        case CHAT_MSG_PARTY:
+        case CHAT_MSG_PARTY_LEADER:
+            botAI->SayToParty(reply.text);
+            break;
+        case CHAT_MSG_RAID:
+        case CHAT_MSG_RAID_LEADER:
+            botAI->SayToRaid(reply.text);
+            break;
+        case CHAT_MSG_GUILD:
+        case CHAT_MSG_OFFICER:
+            botAI->SayToGuild(reply.text);
+            break;
+        case CHAT_MSG_CHANNEL:
+        {
+            // SayToChannel fails silently when the bot has not joined that zone's
+            // instance of the channel - which is the normal state for a bot that was
+            // teleported in. Falling back to /say keeps the line visible instead of
+            // dropping it into nothing.
+            ChatChannelId const id = static_cast<ChatChannelId>(
+                reply.channelId ? reply.channelId : ChatChannelId::GENERAL);
+            if (!botAI->SayToChannel(reply.text, id))
+                botAI->Say(reply.text);
+            break;
+        }
+        default:
+            botAI->Say(reply.text);
+            break;
+    }
+
+    if (!reply.intent.empty())
+        if (Player* speaker = ObjectAccessor::FindConnectedPlayer(reply.speakerGuid))
+            ExecuteIntent(bot, speaker, reply.intent);
+
+    // One bot answering another is what turns chatter into conversation. Depth is
+    // capped so this terminates rather than feeding itself. Applies to /say too,
+    // otherwise local ambient lines would never get a reply.
+    if ((reply.chatType == CHAT_MSG_CHANNEL || reply.chatType == CHAT_MSG_SAY) &&
+        reply.depth < _ambientMaxDepth)
+    {
+        if (Player* other = PickResponder(bot))
+            Submit(other, bot, reply.text, reply.chatType, reply.channelId, reply.depth + 1);
+    }
+}
+
+void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& intent)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !speaker)
+        return;
+
+    // Every precondition is re-checked here. The model's tag is a request; whether it
+    // is legal is decided entirely by the server, so a hallucinated tag can at worst
+    // be ignored - it can never grant the model authority it does not have.
+    if (intent == "guild_invite")
+    {
+        if (!bot->GetGuildId() || speaker->GetGuildId())
+            return;
+
+        Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+        if (!guild || !guild->HasRankRight(bot, GR_RIGHT_INVITE))
+            return;
+
+        if (bot->GetTeamId() != speaker->GetTeamId() &&
+            !sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD))
+            return;
+
+        guild->HandleInviteMember(bot->GetSession(), speaker->GetName());
+        LOG_DEBUG("playerbots", "LLM intent: {} invited {} to guild", bot->GetName(),
+                  speaker->GetName());
+        return;
+    }
+
+    if (intent == "party_invite")
+    {
+        if (speaker->GetGroup() && bot->GetGroup() == speaker->GetGroup())
+            return;
+        if (speaker->GetGroup())
+            return;   // already grouped elsewhere; inviting would fail anyway
+
+        WorldPacket p;
+        uint32 rolesMask = 0;
+        p << speaker->GetName();
+        p << rolesMask;
+        bot->GetSession()->HandleGroupInviteOpcode(p);
+        LOG_DEBUG("playerbots", "LLM intent: {} invited {} to group", bot->GetName(),
+                  speaker->GetName());
+        return;
+    }
+
+    // The movement intents deliberately go through the bot's own command parser - the
+    // same path a player whispering "come" would take, with the same security checks.
+    // The model therefore gains no capability a player does not already have.
+    if (intent == "come" || intent == "follow" || intent == "stay")
+        // Pointer overload on purpose: the reference-taking overload is private.
+        botAI->HandleCommand(CHAT_MSG_WHISPER, intent, speaker);
+}
+
+void LlmBridge::TickAmbient(uint32 diff)
+{
+    if (!_ambientEnabled)
+        return;
+
+    _ambientTimer += diff;
+    if (_ambientTimer < _ambientIntervalMs)
+        return;
+
+    _ambientTimer = 0;
+
+    Player* bot = PickResponder();
+    if (!bot)
+        return;
+
+    // The bot is both speaker and subject here: nobody prompted this, it is the bot
+    // deciding to say something unprompted.
+    if (_ambientUseSay)
+        Submit(bot, bot, "Say one short unprompted line out loud to whoever is nearby, "
+                         "in character, about what you are doing right now.",
+               CHAT_MSG_SAY, 0, 0);
+    else
+        Submit(bot, bot, "Say one short unprompted line in the public trade channel, "
+                         "in character, about what you are doing right now.",
+               CHAT_MSG_CHANNEL, ChatChannelId::TRADE, 0);
+}
+
+void LlmBridge::Drain(uint32 diff)
+{
+    if (!_enabled)
+        return;
+
+    std::vector<Reply> pending;
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+        pending.swap(_replies);
+    }
+
+    for (Reply const& reply : pending)
+        Deliver(reply);
+
+    // Fire greetings that have come due. Iterated backwards so erasing is safe.
+    for (std::size_t i = _greets.size(); i-- > 0;)
+    {
+        if (_greets[i].remainingMs > diff)
+        {
+            _greets[i].remainingMs -= diff;
+            continue;
+        }
+
+        PendingGreet const greet = _greets[i];
+        _greets.erase(_greets.begin() + i);
+
+        if (_inFlight.load() < _maxInFlight)
+        {
+            _inFlight.fetch_add(1);
+            std::thread(&LlmBridge::GreetWorker, this, greet.humanGuid, greet.name).detach();
+        }
+    }
+
+    TickAmbient(diff);
+}

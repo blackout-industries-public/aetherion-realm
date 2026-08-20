@@ -1,0 +1,38 @@
+# Deliberately a separate stack from the realm. The bridge must be able to crash,
+# restart or be shut down entirely without the game noticing (BRD s3.1), so it shares
+# no lifecycle with ac-worldserver - only the database network, read-only in practice.
+services:
+  ai-bridge:
+    container_name: ai-bridge
+    build: .
+    restart: unless-stopped
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://10.10.42.46:1234/v1}
+      # Only set when overridden. A default here would silently shadow the verified
+      # defaults in config.py - which is exactly the bug that made ambient chatter
+      # fall back to a reasoning model that returns empty replies.
+      MODEL_INTERACTIVE: ${MODEL_INTERACTIVE:-}
+      MODEL_BACKGROUND: ${MODEL_BACKGROUND:-}
+      REASONING_EFFORT: ${REASONING_EFFORT:-}
+      DB_HOST: ac-database
+      DB_USER: root
+      DB_PASSWORD: ${DOCKER_DB_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ai-bridge-data:/data
+    networks:
+      - ac-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  ai-bridge-data:
+
+networks:
+  ac-network:
+    external: true
+    name: azerothcore_ac-network

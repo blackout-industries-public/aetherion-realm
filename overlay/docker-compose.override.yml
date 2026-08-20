@@ -1,0 +1,93 @@
+# Overlay on the upstream AzerothCore compose file. Upstream ships sane service
+# wiring; everything here is either a Playerbots requirement, a hardening choice,
+# or a concession to this host's 7 GB of RAM.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-build-args: &build-args
+  USER_ID: ${DOCKER_USER_ID:-1000}
+  GROUP_ID: ${DOCKER_GROUP_ID:-1000}
+  DOCKER_USER: ${DOCKER_USER:-acore}
+  BUILD_JOBS: ${BUILD_JOBS:-3}
+
+services:
+  ac-database:
+    command:
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-1G}
+      - --max-connections=${MYSQL_MAX_CONNECTIONS:-300}
+      # Bots generate constant low-value writes; losing <1s of them on a hard crash
+      # is acceptable and halves fsync pressure on this virtual disk.
+      - --innodb-flush-log-at-trx-commit=2
+      # No replicas and no PITR requirement (BRD s16 asks for daily dumps only).
+      - --skip-log-bin
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    ports: !override
+      - "127.0.0.1:${DOCKER_DB_EXTERNAL_PORT:-3306}:3306"
+    volumes: !override
+      - ${DOCKER_VOL_DB:-ac-database}:/var/lib/mysql
+      - /opt/warcraft/backups:/backups
+    logging: *logging
+
+  ac-db-import:
+    build:
+      args: *build-args
+    # dbimport's Main.cpp only registers Login/Character/World, so it cannot import
+    # the playerbots schema no matter what mask it is given. The worldserver owns
+    # that database instead (see the modules mount below).
+    environment:
+      AC_PLAYERBOTS_DATABASE_INFO: "ac-database;3306;root;${DOCKER_DB_ROOT_PASSWORD};acore_playerbots"
+    logging: *logging
+
+  ac-client-data-init:
+    build:
+      args: *build-args
+    logging: *logging
+
+  ac-authserver:
+    build:
+      args: *build-args
+    ports: !override
+      - "${DOCKER_AUTH_EXTERNAL_PORT:-3724}:3724"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/3724'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging: *logging
+
+  ac-worldserver:
+    build:
+      args: *build-args
+    ports: !override
+      - "${DOCKER_WORLD_EXTERNAL_PORT:-8085}:8085"
+      - "127.0.0.1:${DOCKER_SOAP_EXTERNAL_PORT:-7878}:7878"
+      # Remote Access console. The worldserver's own console needs an interactive
+      # TTY, so this is the only way to drive it from a script. Loopback only.
+      - "127.0.0.1:${DOCKER_RA_EXTERNAL_PORT:-3443}:3443"
+    # Loading every map plus a bot population is slow; a short start_period would
+    # flap the container before the world is even up.
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8085'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 900s
+    stop_grace_period: 120s
+    # Only the db-import image ships modules/. The worldserver is what actually
+    # auto-populates acore_playerbots, and without the module SQL on disk it aborts
+    # at startup and restart-loops. Read-only: the server must never edit its sources.
+    volumes:
+      - ./modules:/azerothcore/modules:ro
+    logging: *logging
+
+volumes:
+  ac-database:
+    name: ac-database
+  ac-client-data:
+    name: ac-client-data
