@@ -23,7 +23,7 @@ if MARKER in src:
 
 INC = '#include "NewRpgInfo.h"\n'
 assert src.count(INC) == 1, "include anchor"
-src = src.replace(INC, INC + '#include "AiObjectContext.h"\n#include "Creature.h"\n#include "GameObject.h"\n#include "NeedsLedger.h"\n', 1)
+src = src.replace(INC, INC + '#include "AiObjectContext.h"\n#include "Creature.h"\n#include "GameObject.h"\n#include "Map.h"\n#include "NeedsLedger.h"\n', 1)
 
 # E2.0/E2.1: the preemption block, second in line after the quest drain - an
 # urgent economic errand beats a random pastime, a pending quest beats both.
@@ -54,12 +54,21 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                 if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
                                                fEntry, fSpawn, fx, fy, fz))
                 {
-                    if (bot->GetDistance(fx, fy, fz) < 130.0f)
+                    // DB spawns carry a map-generated lowguid, so a guid built
+                    // from spawnId resolves nothing; find the live object.
+                    GameObject* fGo = nullptr;
+                    {
+                        auto bounds =
+                            bot->GetMap()->GetGameObjectBySpawnIdStore().equal_range(fSpawn);
+                        if (bounds.first != bounds.second)
+                            fGo = bounds.first->second;
+                    }
+                    if (fGo && bot->GetDistance(fx, fy, fz) < 130.0f)
                     {
                         info.ChangeToWanderNpc();
                         if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
                         {
-                            d->npcOrGo = ObjectGuid(HighGuid::GameObject, fEntry, fSpawn);
+                            d->npcOrGo = fGo->GetGUID();
                             d->lastReach = 0;
                         }
                     }
@@ -195,12 +204,21 @@ PRE_DRAIN_NEW = """            // Mail first: proceeds and gifts fund every othe
                 if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
                                                mbEntry, mbSpawn, mx, my, mz))
                 {
-                    if (bot->GetDistance(mx, my, mz) < 130.0f)
+                    // DB spawns carry a map-generated lowguid, so a guid built
+                    // from spawnId resolves nothing; find the live object.
+                    GameObject* mbGo = nullptr;
+                    {
+                        auto bounds =
+                            bot->GetMap()->GetGameObjectBySpawnIdStore().equal_range(mbSpawn);
+                        if (bounds.first != bounds.second)
+                            mbGo = bounds.first->second;
+                    }
+                    if (mbGo && bot->GetDistance(mx, my, mz) < 130.0f)
                     {
                         info.ChangeToWanderNpc();
                         if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
                         {
-                            d->npcOrGo = ObjectGuid(HighGuid::GameObject, mbEntry, mbSpawn);
+                            d->npcOrGo = mbGo->GetGUID();
                             d->lastReach = 0;
                         }
                     }
