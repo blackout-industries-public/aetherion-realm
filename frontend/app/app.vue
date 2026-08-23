@@ -34,6 +34,7 @@ const TABS = [
   { key: 'pvp', label: 'PVP' },
   { key: 'race', label: 'RACE' },
   { key: 'econ', label: 'ECON' },
+  { key: 'market', label: 'MARKET' },
   { key: 'society', label: 'SOCIETY' },
   { key: 'guilds', label: 'GUILDS' },
   { key: 'ops', label: 'OPS' },
@@ -262,7 +263,15 @@ onUnmounted(() => { clearInterval(fast); clearInterval(slow); clearInterval(tick
       <SocietyView v-else-if="tab === 'society'" :guilds="guilds" :combat="combat" :llm="llm" :society="society" @select="select" />
       <PvpView v-else-if="tab === 'pvp'" :pvp="pvp" @select="select" />
       <RaceView v-else-if="tab === 'race'" :race="race" @select="select" />
-      <EconView v-else-if="tab === 'econ'" :econ="econ" @select="select" />
+      <div v-else-if="tab === 'econ'" :style="{ display: 'flex', flexDirection: 'column', gap: '14px' }">
+        <EconView :econ="econ" @select="select" />
+        <PulseView @select="select" />
+        <IndustryView @select="select" />
+      </div>
+      <div v-else-if="tab === 'market'" :style="{ display: 'flex', flexDirection: 'column', gap: '14px' }">
+        <MarketView @select="select" />
+        <WealthView @select="select" />
+      </div>
       <GuildsView v-else-if="tab === 'guilds'" :guild="guild" @select="select" />
       <OpsView v-else :ops="ops" :assembler="assembler" :llm="llm" />
 
