@@ -13,7 +13,10 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 echo "[deploy] syncing repo -> $HOST:/opt/warcraft"
 rsync -a "$REPO/patches/" "$HOST:/opt/warcraft/patches/"
 rsync -a "$REPO/scripts/" "$HOST:/opt/warcraft/scripts/"
-rsync -a --exclude node_modules --exclude .nuxt --exclude .output \
+# .env is server-local (DOCKER_DB_ROOT_PASSWORD for compose interpolation) and
+# exists in no working copy - a sync that deletes it silently blanks the
+# dashboard's DB password. Excluded so even an added --delete cannot take it.
+rsync -a --exclude node_modules --exclude .nuxt --exclude .output --exclude .env \
     "$REPO/frontend/" "$HOST:/opt/warcraft/frontend/"
 rsync -a --exclude __pycache__ --exclude .venv \
     "$REPO/ai-bridge/" "$HOST:/opt/warcraft/ai-bridge/"
