@@ -1,0 +1,45 @@
+name: mirror
+
+# Keeps the public mirror at blackout-industries-public/aetherion-realm in
+# lockstep with this private repo: every push to main and every release tag is
+# force-pushed over SSH using a write deploy key scoped to the mirror alone
+# (secret MIRROR_SSH_KEY). Only refs travel - secrets and client art are
+# already excluded by .gitignore, so the mirror publishes exactly what this
+# repo tracks.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+concurrency:
+  # Serialize mirror pushes; a stale run force-pushing over a newer one would
+  # briefly rewind the mirror.
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to public mirror
+        env:
+          MIRROR_SSH_KEY: ${{ secrets.MIRROR_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$MIRROR_SSH_KEY" > ~/.ssh/mirror_key
+          chmod 600 ~/.ssh/mirror_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes"
+
+          git remote add mirror git@github.com:blackout-industries-public/aetherion-realm.git
+          # force-with-lease is meaningless against a remote we never fetch;
+          # the concurrency group above is what prevents rewinds.
+          git push --force mirror "refs/remotes/origin/main:refs/heads/main"
+          git push --force mirror --tags
