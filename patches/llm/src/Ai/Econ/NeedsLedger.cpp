@@ -87,6 +87,11 @@ namespace
     };
     std::unordered_map<uint16, std::vector<TrainerSpawn>> sTrainerSpawns;
 
+    // E4.2: auctioneer spawns per map, and the trip trigger threshold.
+    std::unordered_map<uint16, std::vector<std::array<float, 3>>> sAuctioneerSpawns;
+    bool sAhEnabled = false;
+    uint32 sAhMinItemsForTrip = 3;
+
     // E8.1 listings mirror, rebuilt each pass on the world thread.
     std::mutex sListingsMx;
     std::vector<NeedsLedger::AhListing> sListings;
@@ -254,6 +259,43 @@ namespace
         }
     }
 
+    // E4.2 trip trigger: how much of the bags is worth an auction-house
+    // journey. Trade goods a bot's own recipes consume stay home; greens and
+    // better travel regardless.
+    uint32 CountListable(Player* bot)
+    {
+        std::unordered_set<uint32> keep;
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 0);
+        for (CraftOption const& opt : options)
+        {
+            for (auto const& r : opt.reagents)
+                keep.insert(r.first);
+            for (uint32 t : opt.tools)
+                keep.insert(t);
+        }
+
+        uint32 n = 0;
+        auto consider = [&](Item* item)
+        {
+            if (!item || item->IsSoulBound())
+                return;
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto->SellPrice || proto->Quality < ITEM_QUALITY_NORMAL)
+                return;
+            if (proto->Class == ITEM_CLASS_TRADE_GOODS ? !keep.count(proto->ItemId)
+                                                       : proto->Quality >= ITEM_QUALITY_UNCOMMON)
+                ++n;
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    consider(bag->GetItemByPos(slot));
+        return n;
+    }
+
     bool HasCollectibleMail(Player* bot)
     {
         time_t const now = time(nullptr);
@@ -329,6 +371,8 @@ void NeedsLedger::LoadConfig()
     sMailboxVisits = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Mailbox.Enabled", false);
     sPaidTraining = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.PaidTraining", false);
     sCraftEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Craft.Enabled", false);
+    sAhEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Ah.Enabled", false);
+    sAhMinItemsForTrip = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Ah.MinItemsForTrip", 3);
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
@@ -472,7 +516,8 @@ void NeedsLedger::BuildTrainerCache()
         sMailboxSpawns[data.mapid].push_back({data.id, uint32(data.spawnId), data.posX, data.posY, data.posZ});
     }
 
-    // E3.2: class-trainer geography from the entries collected above.
+    // E3.2: class-trainer geography from the entries collected above. E4.2
+    // rides the same spawn walk for auctioneers.
     {
         std::unordered_set<uint32> trainerSet(sTrainerEntries.begin(), sTrainerEntries.end());
         for (auto const& pair : sObjectMgr->GetAllCreatureData())
@@ -480,6 +525,9 @@ void NeedsLedger::BuildTrainerCache()
             CreatureData const& data = pair.second;
             if (trainerSet.count(data.id))
                 sTrainerSpawns[data.mapid].push_back({data.id, data.posX, data.posY, data.posZ});
+            CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(data.id);
+            if (proto && (proto->npcflag & UNIT_NPC_FLAG_AUCTIONEER))
+                sAuctioneerSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
         }
     }
 
@@ -701,6 +749,33 @@ void NeedsLedger::ComputeNeeds(Player* bot)
                 v.x = ts.x;
                 v.y = ts.y;
                 v.z = ts.z;
+            }
+            if (v.hasFar)
+                sVerdictBuild[guid] = v;
+        }
+    }
+    // E4.2: a bag worth listing sends the bot to the auction house on purpose
+    // instead of waiting for wander luck.
+    else if (sPreemptEnabled && sAhEnabled && CountListable(bot) >= sAhMinItemsForTrip)
+    {
+        auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
+        if (it != sAuctioneerSpawns.end())
+        {
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+            Verdict v{VERDICT_AH, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+            for (auto const& p : it->second)
+            {
+                float const dx = p[0] - bx, dy = p[1] - by;
+                float const d2 = dx * dx + dy * dy;
+                if (d2 < best)
+                {
+                    best = d2;
+                    v.hasFar = true;
+                    v.x = p[0];
+                    v.y = p[1];
+                    v.z = p[2];
+                }
             }
             if (v.hasFar)
                 sVerdictBuild[guid] = v;

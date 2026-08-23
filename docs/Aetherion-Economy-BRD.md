@@ -348,6 +348,8 @@ BOT-TO-BOT TRADE (ah_sold + ah_bought pair) - the program's flagship KPI.
 
 | 2026-08-22 | PRODUCTION ROLLOUT (no wipe): E0-E8 + E3.2 + E5.2 + E7 (craft/reagent-buy/keep-own-reagents) + E6.3a (bank deposits) deployed to the live 2500-bot realm via deploy-econ.sh; all Econ keys armed persistently | First needs pass at full scale: all 2500 bots carry a materials need (crafting had never run), 112 repair needs. FIRST CRAFTS IN REALM HISTORY within seconds of the E7 deploy (bandages, armor kits from hoarded cloth/leather). Windfall tracking live: five veterans mailed 100g each, mailbox walks pending their next idle. Realm survived four worldserver restarts today with zero errors |
 
+| 2026-08-22 | Production firsts, same evening: first bank deposit in realm history (Corrioa - who banked her own enchanting rod, exposing the tools-vs-reagents gap, fixed same hour: CraftPlanner now surfaces Totem tools and both keep-filters honor them); first bot-authored auction listings (Ameterena, level 55: four stacks - sharpening stones, nectar, bacon, grainbread - 4/4 attempts landed, deposits paid) | The market has genuine supply from a genuine seller. Remaining watched firsts: windfall mailbox walks, first completed bot-to-bot trade |
+
 ## 10. Relationship to the race
 
 The economy makes the race legible: wealth, gear provenance, guild treasuries,

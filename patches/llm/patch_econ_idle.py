@@ -101,6 +101,41 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                     return true;
                 }
             }
+            // E4.2: deliberate auction-house trip; arrival handles sell+buy.
+            if (econVerdict == NeedsLedger::VERDICT_AH)
+            {
+                GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();
+                ObjectGuid auctioneer;
+                float bestA = FLT_MAX;
+                for (ObjectGuid const& guid : possible)
+                {
+                    Creature* c = ObjectAccessor::GetCreature(*bot, guid);
+                    if (!c || !c->HasNpcFlag(UNIT_NPC_FLAG_AUCTIONEER))
+                        continue;
+                    float d = bot->GetDistance(c);
+                    if (d < bestA)
+                    {
+                        bestA = d;
+                        auctioneer = guid;
+                    }
+                }
+                if (auctioneer)
+                {
+                    info.ChangeToWanderNpc();
+                    if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                    {
+                        d->npcOrGo = auctioneer;
+                        d->lastReach = 0;
+                    }
+                    return true;
+                }
+                float ax, ay, az;
+                if (NeedsLedger::FarVendor(bot->GetGUID().GetCounter(), bot->GetMapId(), ax, ay, az))
+                {
+                    info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), ax, ay, az));
+                    return true;
+                }
+            }
             if (econVerdict == NeedsLedger::VERDICT_VENDOR)
             {
                 GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();

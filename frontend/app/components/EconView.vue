@@ -227,6 +227,8 @@ function flow(kind: string) {
             <span :style="{ color: flow('ah_sold').n ? T.green : T.faint }">sold {{ flow('ah_sold').n }}</span>
             <span :style="{ color: T.faint }">expired {{ flow('ah_expired').n }}</span>
             <span>collected {{ gold(flow('mail_money').copper) }}</span>
+            <span :style="{ color: flow('craft').n ? T.green : T.faint }">crafts {{ flow('craft').n }}</span>
+            <span :style="{ color: T.faint }">banked {{ flow('bank_deposit').n }}</span>
           </div>
           <div
             v-for="(l, i) in econ?.ahListings ?? []"

@@ -318,6 +318,7 @@ AiPlayerbot.Econ.PaidTraining = 0
 AiPlayerbot.Econ.Craft.Enabled = 0
 AiPlayerbot.Econ.Bank.Enabled = 0
 AiPlayerbot.Econ.Bank.MaxPerVisit = 6
+AiPlayerbot.Econ.Ah.MinItemsForTrip = 3
 AiPlayerbot.Econ.Ah.Enabled = 0
 AiPlayerbot.Econ.Ah.MaxPerVisit = 4
 AiPlayerbot.Econ.RemoteMail = 0

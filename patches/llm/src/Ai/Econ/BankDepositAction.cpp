@@ -136,9 +136,39 @@ bool BankDepositAction::Execute(Event /*event*/)
     if (!bankerGuid)
         return false;
 
+    // E6.3b: reagents a recipe is short of come OUT of the vault first - this
+    // is also how a mis-banked tool (the Corrioa incident) finds its way home.
+    std::vector<Item*> withdrawals;
+    {
+        std::unordered_set<uint32> wanted;
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 0);
+        for (CraftOption const& opt : options)
+        {
+            for (auto const& missing : opt.missing)
+                wanted.insert(missing.first);
+            for (uint32 tool : opt.tools)
+                if (!bot->GetItemCount(tool, false))
+                    wanted.insert(tool);
+        }
+        if (!wanted.empty())
+        {
+            for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+                if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    if (wanted.count(item->GetEntry()))
+                        withdrawals.push_back(item);
+            for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+                if (Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                        if (Item* item = bag->GetItemByPos(slot))
+                            if (wanted.count(item->GetEntry()))
+                                withdrawals.push_back(item);
+        }
+    }
+
     std::vector<Item*> items;
     CollectDepositItems(items, BankMaxPerVisit());
-    if (items.empty())
+    if (items.empty() && withdrawals.empty())
         return false;
 
     // BANKER_ACTIVATE must land first: HandleAutoBankItemOpcode's CanUseBank()
@@ -148,6 +178,18 @@ bool BankDepositAction::Execute(Event /*event*/)
     WorldPacket* activate = new WorldPacket(CMSG_BANKER_ACTIVATE, 8);
     *activate << bankerGuid;
     bot->GetSession()->QueuePacket(activate);
+
+    // Withdrawals ride the bidirectional AUTOSTORE opcode: a bank-side source
+    // slot moves the item back to the bags.
+    for (Item* item : withdrawals)
+    {
+        WorldPacket* packet = new WorldPacket(CMSG_AUTOSTORE_BANK_ITEM, 2);
+        *packet << uint8(item->GetBagSlot());
+        *packet << uint8(item->GetSlot());
+        bot->GetSession()->QueuePacket(packet);
+        NeedsLedger::LogEvent("bank_withdraw", bot->GetGUID().GetCounter(), item->GetEntry(),
+                              item->GetCount(), "");
+    }
 
     uint32 queued = 0;
     for (Item* item : items)

@@ -40,6 +40,7 @@ public:
     static uint8 constexpr VERDICT_VENDOR = 1;
     static uint8 constexpr VERDICT_MAILBOX = 2;
     static uint8 constexpr VERDICT_TRAINER = 3;
+    static uint8 constexpr VERDICT_AH = 4;
     static uint8 UrgentVerdict(uint32 guid);
     static bool PaidTraining();
     static bool CraftEnabled();
