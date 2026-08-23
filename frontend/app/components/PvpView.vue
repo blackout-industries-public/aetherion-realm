@@ -101,7 +101,7 @@ const arenaTeams = computed(() => props.pvp?.arenaTeams ?? [])
       </div>
 
       <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px' }">
-        <UiPanel cap="Conflict" note="realm totals">
+        <UiPanel cap="Conflict" note="realm totals - a kill credits every nearby group member, as on a character sheet">
           <div :style="{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }">
             <div v-for="s in [
               { v: fmt.int(head.killsToday ?? 0), l: 'honourable kills today' },
