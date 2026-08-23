@@ -179,6 +179,10 @@ REACH_NEW = """        if (!data.lastReach)
                     bot->SetSelection(c->GetGUID());
                     botAI->DoSpecificAction("trainer", Event("trainer", "learn"), true);
                 }
+                // E6.3a: bankers take the surplus mats a crafter's recipes
+                // do not consume.
+                if (c->HasNpcFlag(UNIT_NPC_FLAG_BANKER))
+                    botAI->DoSpecificAction("bank deposit", Event(), true);
             }
             // E5.2: arriving at a mailbox is the collection moment.
             if (GameObject* go = object->ToGameObject())

@@ -226,6 +226,9 @@ set_conf "$PB" "AiPlayerbot.Econ.PaidRepairs" "${ECON_PAID_REPAIRS:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.PaidTraining" "${ECON_PAID_TRAINING:-0}"
 # E7.1: idle-time crafting of focus-free recipes from carried reagents.
 set_conf "$PB" "AiPlayerbot.Econ.Craft.Enabled" "${ECON_CRAFT:-0}"
+# E6.3a: surplus trade goods bank at banker visits; own reagents stay in bags.
+set_conf "$PB" "AiPlayerbot.Econ.Bank.Enabled" "${ECON_BANK:-0}"
+set_conf "$PB" "AiPlayerbot.Econ.Bank.MaxPerVisit" "${ECON_BANK_MAX_PER_VISIT:-6}"
 # E4.1a: bots list auction-worthy goods when they reach an auctioneer.
 set_conf "$PB" "AiPlayerbot.Econ.Ah.Enabled" "${ECON_AH:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.Ah.MaxPerVisit" "${ECON_AH_MAX_PER_VISIT:-4}"
