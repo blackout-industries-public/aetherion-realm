@@ -29,12 +29,20 @@ src = src.replace(ANCHOR, ANCHOR + """
     if (PartyAssembler::DriveGroupedBots() &&
         PartyAssembler::IsDriven(bot->GetGUID().GetCounter()))
         return true;
+
+    // bot holds an economy errand (mailbox, trainer, auction house, crafting
+    // focus). Measured without this: 994 mailbox verdicts and zero completed
+    // walks - throttled legs stall, the trip times out, the verdict re-fires,
+    // forever. Errands clear in one trip, so the exemption is self-draining;
+    // SmartScale still governs the global tick budget.
+    if (NeedsLedger::UrgentVerdict(bot->GetGUID().GetCounter()) != NeedsLedger::VERDICT_NONE)
+        return true;
 """, 1)
 
 INC = '#include "PlayerbotAI.h"\n'
 if '#include "PartyAssembler.h"' not in src:
     assert src.count(INC) == 1, "include anchor"
-    src = src.replace(INC, INC + '#include "PartyAssembler.h"\n', 1)
+    src = src.replace(INC, INC + '#include "PartyAssembler.h"\n#include "NeedsLedger.h"\n', 1)
 
 open(path, "w").write(src)
 print("patched PlayerbotAI.cpp (trip participants exempt from throttle)")
