@@ -13,12 +13,19 @@ services:
       NUXT_DB_PORT: "3306"
       NUXT_DB_USER: root
       NUXT_DB_PASSWORD: ${DOCKER_DB_ROOT_PASSWORD}
+      # Personality comes from the bridge, over the shared compose network.
+      NUXT_BRIDGE_URL: http://ai-bridge:8090
+      NUXT_REALM_CONFIG: /app/realm-config
     ports:
       # LAN-visible on purpose - this is the one thing meant to be opened in a browser.
       - "3000:3000"
     volumes:
       # Bind-mounted so continent art can be added without rebuilding the image.
       - ./maps:/app/maps:ro
+      # The realm's live config, read-only. Reading what the worldserver actually
+      # loaded keeps the assembler and ops panels from drifting out of date. Read-only
+      # and a safe subset by construction: credentials live in overlay/.env, never here.
+      - ../config:/app/realm-config:ro
     networks:
       - ac-network
     logging:

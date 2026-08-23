@@ -77,5 +77,14 @@ class Settings:
 
     history_turns: int = _int("HISTORY_TURNS", 8)
 
+    # Activity recorder. The game schema keeps no history, so state is sampled and
+    # only changes are written - a row per bot per tick would be almost all noise.
+    history_enabled: bool = _str("HISTORY_ENABLED", "1") not in ("0", "false", "no")
+    history_interval: float = _float("HISTORY_INTERVAL", 60.0)
+    history_retention_days: int = _int("HISTORY_RETENTION_DAYS", 7)
+    # Uncommon and above. Below this the feed is buried in soul shards and grey
+    # vendor trash from 2500 characters looting continuously.
+    loot_min_quality: int = _int("LOOT_MIN_QUALITY", 2)
+
 
 settings = Settings()

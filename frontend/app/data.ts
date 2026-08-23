@@ -15,9 +15,21 @@ export const CLASSES: Record<number, string> = {
   6: 'Death Knight', 7: 'Shaman', 8: 'Mage', 9: 'Warlock', 11: 'Druid',
 }
 
+// Blizzard's class colours, with three exceptions. Death Knight (#C41F3B), Shaman
+// (#0070DE) and Warlock (#9482C9) were picked for a black chat window; on this warm
+// dark plate they sit too close to the ground to read at 12px. Those three keep their
+// hue and are lifted in lightness only, so a death knight is still unmistakably red.
 export const CLASS_COLOR: Record<number, string> = {
-  1: '#c69b6d', 2: '#f48cba', 3: '#aad372', 4: '#fff468', 5: '#ffffff',
-  6: '#c41e3a', 7: '#0070dd', 8: '#3fc7eb', 9: '#8788ee', 11: '#ff7c0a',
+  1: '#c79c6e',   // warrior
+  2: '#f58cba',   // paladin
+  3: '#abd473',   // hunter
+  4: '#fff569',   // rogue
+  5: '#ffffff',   // priest
+  6: '#e04a62',   // death knight - lifted from #c41f3b
+  7: '#3f96f0',   // shaman - lifted from #0070de
+  8: '#69ccf0',   // mage
+  9: '#b3a2e8',   // warlock - lifted from #9482c9
+  11: '#ff7d0a',  // druid
 }
 
 // The DBC tables in this realm are empty, so zone names are curated. Anything not
@@ -44,6 +56,13 @@ export const ZONES: Record<number, string> = {
   3537: 'Borean Tundra', 3557: 'The Exodar', 3703: 'Shattrath City',
   3711: 'Sholazar Basin', 4197: 'Wintergrasp', 4395: 'Dalaran',
   4742: "Hrothgar's Landing",
+  // Instance and sub-zone ids that show up constantly once bots start running dungeons.
+  25: 'Blackrock Mountain', 209: 'Shadowfang Keep', 491: 'Razorfen Kraul',
+  717: 'The Stockade', 718: 'Wailing Caverns', 719: 'The Deadmines',
+  721: 'Gnomeregan', 722: 'Razorfen Downs', 796: 'Scarlet Monastery',
+  1337: 'Uldaman', 1477: "Temple of Atal'Hakkar", 1581: 'The Deadmines',
+  1583: 'Blackrock Spire', 1584: 'Blackrock Depths', 2017: 'Stratholme',
+  2057: 'Scholomance', 2100: 'Maraudon', 2557: 'Dire Maul',
 }
 
 export const zoneName = (id: number) => ZONES[id] ?? `Zone ${id}`

@@ -1,296 +1,298 @@
 <script setup lang="ts">
-import { MAPS, CLASSES, CLASS_COLOR, zoneName } from './data'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { T, FONT, fmt } from './theme'
+import WorldView from './components/WorldView.vue'
+import GroupsView from './components/GroupsView.vue'
+import SocietyView from './components/SocietyView.vue'
+import OpsView from './components/OpsView.vue'
+import GuildsView from './components/GuildsView.vue'
+import PvpView from './components/PvpView.vue'
+import RaceView from './components/RaceView.vue'
+import EventRail from './components/EventRail.vue'
 
 type Entity = {
   guid: number; name: string; level: number; map: number; zone: number
   x: number; y: number; cls: number; race: number; faction: string; bot: boolean
+  dead: boolean; ghost: boolean; instance: number; grouped: boolean
 }
 
-const { data, refresh, status } = await useFetch<{
+useHead({
+  title: 'Aetherion Observatory',
+  link: [
+    { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+    { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
+    {
+      rel: 'stylesheet',
+      href: 'https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cutive+Mono&family=Spectral:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap',
+    },
+  ],
+})
+
+const TABS = [
+  { key: 'world', label: 'WORLD' },
+  { key: 'groups', label: 'PVE' },
+  { key: 'pvp', label: 'PVP' },
+  { key: 'race', label: 'RACE' },
+  { key: 'econ', label: 'ECON' },
+  { key: 'society', label: 'SOCIETY' },
+  { key: 'guilds', label: 'GUILDS' },
+  { key: 'ops', label: 'OPS' },
+] as const
+type TabKey = (typeof TABS)[number]['key']
+const tab = ref<TabKey>('world')
+
+const POLL_MS = 5000
+
+const { data: world, refresh: refreshWorld } = await useFetch<{
   at: number; realmUp: boolean; stale: boolean; entities: Entity[]
 }>('/api/world')
 
-type Member = { guid: number; name: string; level: number; cls: number; map: number
-  zone: number; x: number; y: number; online: boolean; instance: number
-  bot: boolean; leader: boolean }
-type Group = { id: number; raid: boolean; viaLfg: boolean; size: number; online: number
-  members: Member[]; inInstance: boolean; allBots: boolean; maps: number[]
-  minLevel: number; maxLevel: number }
+const { data: assembler, refresh: refreshAssembler } = await useFetch<any>('/api/assembler')
+const { data: events, refresh: refreshEvents } = await useFetch<any>('/api/events')
+const { data: guilds, refresh: refreshGuilds } = await useFetch<any>('/api/guilds')
+const { data: combat, refresh: refreshCombat } = await useFetch<any>('/api/combat')
+const { data: llm, refresh: refreshLlm } = await useFetch<any>('/api/llm')
+const { data: ops, refresh: refreshOps } = await useFetch<any>('/api/ops')
+const { data: society, refresh: refreshSociety } = await useFetch<any>('/api/society')
+const { data: guild, refresh: refreshGuild } = await useFetch<any>('/api/guild')
+const { data: pvp, refresh: refreshPvp } = await useFetch<any>('/api/pvp')
+const { data: quests, refresh: refreshQuests } = await useFetch<any>('/api/quests')
+const { data: race, refresh: refreshRace } = await useFetch<any>('/api/race')
+const { data: econ, refresh: refreshEcon } = await useFetch<any>('/api/econ')
 
-const { data: groupData, refresh: refreshGroups } = await useFetch<{
-  total: number; inInstances: number; raids: number; groups: Group[]
-}>('/api/groups')
+const entities = computed<Entity[]>(() => world.value?.entities ?? [])
+const humans = computed(() => entities.value.filter(e => !e.bot).length)
 
-const selectedGroup = ref<number | null>(null)
+// Movement is inferred by comparing consecutive polls: the schema has no "is moving"
+// flag, and positions only save periodically, so this is indicative rather than exact.
+const lastSeen = new Map<number, string>()
+const moving = ref<Set<number>>(new Set())
 
-const selectedMap = ref(571)
-const faction = ref<'all' | 'alliance' | 'horde'>('all')
-const minLevel = ref(1)
-const showBots = ref(true)
-const showHumans = ref(true)
-const hovered = ref<Entity | null>(null)
-const artOpacity = ref(0.75)
-const hasArt = ref(false)
-// Reset when switching continents so the hint reflects the map actually shown.
-watch(selectedMap, () => { hasArt.value = false })
+// Nothing server-side records where a character has been, so trails are accumulated
+// from polls while the page is open. A freshly loaded page has no history yet.
+type Point = { map: number; x: number; y: number }
+const TRAIL_MAX = 120
+const trails = new Map<number, Point[]>()
+const trailTick = ref(0)
 
-let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  timer = setInterval(() => { now.value = Date.now(); refresh(); refreshGroups() }, 5000)
-})
-onUnmounted(() => clearInterval(timer))
+function refreshMovement(list: Entity[]) {
+  const next = new Set<number>()
+  for (const e of list) {
+    const key = `${e.map}:${e.x}:${e.y}`
+    const changed = lastSeen.has(e.guid) && lastSeen.get(e.guid) !== key
+    if (changed) next.add(e.guid)
+    lastSeen.set(e.guid, key)
 
-const all = computed(() => data.value?.entities ?? [])
+    if (changed || !trails.has(e.guid)) {
+      const path = trails.get(e.guid) ?? []
+      path.push({ map: e.map, x: e.x, y: e.y })
+      if (path.length > TRAIL_MAX) path.shift()
+      trails.set(e.guid, path)
+    }
+  }
+  moving.value = next
+  trailTick.value++
+}
+watch(entities, list => refreshMovement(list), { immediate: true })
 
-const visible = computed(() => all.value.filter(e =>
-  e.map === selectedMap.value &&
-  e.level >= minLevel.value &&
-  (faction.value === 'all' || e.faction === faction.value) &&
-  (e.bot ? showBots.value : showHumans.value)))
+// Selection is by name because every panel has a name to hand; the rail resolves it to
+// history and personality.
+const selected = ref<string | null>(null)
+const detail = ref<any | null>(null)
+const loadingDetail = ref(false)
 
-// The client's own projection: normalised X from world Y against LocLeft/LocRight,
-// normalised Y from world X against LocTop/LocBottom. Using the real DBC bounds is
-// what makes dots line up with the actual map art.
-function project(e: Entity) {
-  const m = MAPS[e.map]
-  if (!m) return { cx: 0, cy: 0 }
-  return {
-    cx: ((m.left - e.y) / (m.left - m.right)) * 1000,
-    cy: ((m.top - e.x) / (m.top - m.bottom)) * 667,
+async function select(name: string) {
+  if (!name) return
+  selected.value = name
+  detail.value = null
+  loadingDetail.value = true
+  try {
+    // One call: the bridge's history response already carries personality and level.
+    const history = await $fetch<any>(`/api/bot/${name}/history`).catch(() => null)
+    const ent = entities.value.find(e => e.name === name)
+    detail.value = { ...(history ?? {}), cls: ent?.cls ?? 0, level: history?.level ?? ent?.level ?? 0 }
+  } finally {
+    loadingDetail.value = false
   }
 }
 
-const mapCounts = computed(() => {
-  const counts: Record<number, number> = {}
-  for (const e of all.value) counts[e.map] = (counts[e.map] ?? 0) + 1
-  return counts
-})
+const selectedGuid = computed(() =>
+  entities.value.find(e => e.name === selected.value)?.guid ?? null)
 
-function tally<T extends string | number>(key: (e: Entity) => T, limit = 8) {
-  const counts = new Map<T, number>()
-  for (const e of visible.value) counts.set(key(e), (counts.get(key(e)) ?? 0) + 1)
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit)
-}
+// What this character is doing right now, in one sentence. The event feed says what
+// happened; this says what is happening, which is the question people actually ask of
+// a bot they just clicked on.
+const activity = computed(() => {
+  const name = selected.value
+  if (!name) return null
 
-const topZones = computed(() => tally(e => e.zone, 10))
-const byClass = computed(() => tally(e => e.cls, 12))
-const brackets = computed(() => {
-  const counts = new Map<number, number>()
-  for (const e of visible.value) {
-    const b = Math.floor((e.level - 1) / 10) * 10 + 1
-    counts.set(b, (counts.get(b) ?? 0) + 1)
+  const row = (assembler.value?.board ?? []).find((b: any) =>
+    b.leader === name || b.members?.some((m: any) => m.name === name))
+
+  if (row) {
+    const mine = row.members?.find((m: any) => m.name === name)
+    const role = mine ? `${mine.role} in ` : ''
+    const party = `${role}${row.label}`
+    if (row.tone === 'inside') return `Inside ${row.dest}, ${party}.`
+    if (row.tone === 'door') return `At the door of ${row.dest}, waiting on the summon, ${party}.`
+    const how = row.viaPlace
+      ? ` They ${row.via.toLowerCase()} to ${row.viaPlace}${row.viaActor ? ` on ${row.viaActor}'s portal` : ''}.`
+      : ''
+    return `Travelling to ${row.dest}, ${row.remaining} out, ${party}.${how}`
   }
-  return [...counts.entries()].sort((a, b) => a[0] - b[0])
-})
 
-const humans = computed(() => all.value.filter(e => !e.bot))
+  const e = entities.value.find(x => x.name === name)
+  if (!e) return null
+  if (e.dead) return 'Dead.'
+  if (e.ghost) return 'Running back to their corpse.'
+  if (e.instance > 0) {
+    const where = e.place ? ` in ${e.place}` : ' in an instance'
+    // No trip means the assembler is not steering them - worth saying, because that is
+    // usually how a character ends up sitting somewhere for hours.
+    return `Inside${where}, not on an assembler run${e.grouped ? '' : ' and not in a group'}.`
+  }
+  if (e.grouped) return 'In a group, with nowhere booked.'
+  return 'Out in the world on their own.'
+})
 
 const now = ref(Date.now())
-const ageLabel = computed(() => {
-  const secs = Math.max(0, Math.round((now.value - (data.value?.at ?? now.value)) / 1000))
-  return secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`
-})
-const maxBracket = computed(() => Math.max(1, ...brackets.value.map(b => b[1])))
+const refreshAgo = computed(() => Math.max(0, (now.value - (world.value?.at ?? now.value)) / 1000))
 
-// Members of the highlighted group that are on the map currently shown, so the
-// connector lines never jump between continents.
-const activeGroup = computed(() =>
-  groupData.value?.groups.find(g => g.id === selectedGroup.value) ?? null)
+// Position writes are what actually gate the map, not the poll interval.
+const saveInterval = computed(() => 60)
 
-const groupLines = computed(() => {
-  const g = activeGroup.value
-  if (!g) return []
-  const here = g.members.filter(m => m.online && m.map === selectedMap.value)
-  const pts = here.map(m => ({ m, ...project(m as unknown as Entity) }))
-  // Star from the leader (or the first member) rather than a chain, so the shape
-  // reads as one group instead of a route.
-  const hub = pts.find(p => p.m.leader) ?? pts[0]
-  return hub ? pts.filter(p => p !== hub).map(p => ({ x1: hub.cx, y1: hub.cy, x2: p.cx, y2: p.cy })) : []
+let fast: ReturnType<typeof setInterval> | undefined
+let slow: ReturnType<typeof setInterval> | undefined
+let tick: ReturnType<typeof setInterval> | undefined
+
+onMounted(() => {
+  tick = setInterval(() => { now.value = Date.now() }, 1000)
+  fast = setInterval(() => {
+    refreshWorld(); refreshAssembler(); refreshEvents(); refreshPvp()
+  }, POLL_MS)
+  // Guild standings, LLM metrics and host stats move on a scale of minutes.
+  slow = setInterval(() => {
+    refreshGuilds(); refreshCombat(); refreshLlm(); refreshOps()
+    refreshSociety(); refreshGuild(); refreshQuests(); refreshRace(); refreshEcon()
+  }, 30000)
 })
+onUnmounted(() => { clearInterval(fast); clearInterval(slow); clearInterval(tick) })
 </script>
 
 <template>
-  <div class="app">
-    <header>
-      <h1>Aetherion <span class="dim">realm map</span></h1>
-      <div class="totals">
-        <span><b>{{ all.length }}</b> in world</span>
-        <span><b>{{ humans.length }}</b> human</span>
-        <span><b>{{ visible.length }}</b> shown</span>
-        <span v-if="data?.stale" class="warn">
-          realm restarting — last known positions, {{ ageLabel }}
+  <div
+    :style="{
+      height: '100vh', display: 'grid', gridTemplateRows: '54px 1fr',
+      background: T.bg, color: T.textHi, fontFamily: FONT.body, overflow: 'hidden',
+    }"
+  >
+    <header
+      :style="{
+        display: 'flex', alignItems: 'stretch',
+        borderBottom: '1px solid oklch(0.45 0.06 82 / .45)',
+        background: `linear-gradient(${T.raised}, oklch(0.16 0.017 50))`,
+        overflow: 'hidden', whiteSpace: 'nowrap',
+      }"
+    >
+      <div :style="{ display: 'flex', alignItems: 'center', gap: '10px', padding: '0 18px', borderRight: `1px solid ${T.line}`, minWidth: 0 }">
+        <span
+          :style="{
+            width: '7px', height: '7px', background: world?.realmUp ? T.gold : T.red,
+            borderRadius: '50%', animation: 'blip 2.4s ease-in-out infinite', flex: 'none',
+          }"
+        />
+        <span
+          :style="{
+            fontFamily: FONT.display, fontSize: '18px', fontWeight: 700,
+            letterSpacing: '.15em', textTransform: 'uppercase', color: T.goldBright,
+          }"
+        >Aetherion</span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', letterSpacing: '.10em', color: T.dim, paddingTop: '2px' }">
+          {{ ops?.address ?? '' }}
         </span>
-        <span v-else-if="data && !data.realmUp" class="warn">worldserver unreachable</span>
-        <span v-else class="dim">{{ status === 'pending' ? 'refreshing' : 'live · 5s' }}</span>
+      </div>
+
+      <nav :style="{ display: 'flex', alignItems: 'stretch', flex: 'none' }">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          :style="{
+            appearance: 'none', background: 'none', border: 'none',
+            borderBottom: `2px solid ${tab === t.key ? T.gold : 'transparent'}`,
+            color: tab === t.key ? T.goldBright : T.dim,
+            fontFamily: FONT.display, fontSize: '12px', fontWeight: 600,
+            letterSpacing: '.16em', padding: '0 17px', cursor: 'pointer',
+          }"
+          @click="tab = t.key"
+        >{{ t.label }}</button>
+      </nav>
+
+      <div :style="{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '22px', padding: '0 18px', minWidth: 0 }">
+        <span v-for="s in [
+          { v: fmt.int(entities.length), l: 'characters' },
+          { v: fmt.int(humans), l: 'humans' },
+        ]" :key="s.l" :style="{ textAlign: 'right' }">
+          <span :style="{ fontFamily: FONT.mono, fontSize: '17px', color: T.textHi, display: 'block', lineHeight: 1.1 }">{{ s.v }}</span>
+          <span :style="{ fontFamily: FONT.display, fontSize: '9px', letterSpacing: '.14em', color: T.dim, textTransform: 'uppercase' }">{{ s.l }}</span>
+        </span>
+
+        <span :style="{ display: 'flex', alignItems: 'center', gap: '7px' }">
+          <span :style="{ width: '5px', height: '5px', borderRadius: '50%', background: world?.stale ? T.red : T.green }" />
+          <span :style="{ fontFamily: FONT.display, fontSize: '9.5px', letterSpacing: '.14em', color: world?.stale ? T.red : T.dim }">
+            {{ world?.stale ? 'STALE' : 'LIVE' }}
+          </span>
+        </span>
       </div>
     </header>
 
-    <main>
-      <section class="mapwrap">
-        <div class="tabs">
-          <button v-for="(m, id) in MAPS" :key="id" :class="{ on: selectedMap === Number(id) }"
-                  @click="selectedMap = Number(id)">
-            {{ m.name }} <span class="dim">{{ mapCounts[Number(id)] ?? 0 }}</span>
-          </button>
-        </div>
+    <div :style="{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) clamp(280px, 24vw, 380px)', minHeight: 0, minWidth: 0, overflow: 'hidden' }">
+      <WorldView
+        v-if="tab === 'world'"
+        :entities="entities"
+        :moving="moving"
+        :trails="trails"
+        :trail-tick="trailTick"
+        :selected-guid="selectedGuid"
+        :refresh-ago="refreshAgo"
+        :refresh-every="saveInterval"
+        :professions="world?.professions ?? []"
+        @select="select"
+      />
+      <GroupsView v-else-if="tab === 'groups'" :assembler="assembler" :quests="quests" @select="select" />
+      <SocietyView v-else-if="tab === 'society'" :guilds="guilds" :combat="combat" :llm="llm" :society="society" @select="select" />
+      <PvpView v-else-if="tab === 'pvp'" :pvp="pvp" @select="select" />
+      <RaceView v-else-if="tab === 'race'" :race="race" @select="select" />
+      <EconView v-else-if="tab === 'econ'" :econ="econ" @select="select" />
+      <GuildsView v-else-if="tab === 'guilds'" :guild="guild" @select="select" />
+      <OpsView v-else :ops="ops" :assembler="assembler" :llm="llm" />
 
-        <svg viewBox="0 0 1000 667" class="map" :class="{ stale: data?.stale }">
-          <defs>
-            <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
-              <path d="M100 0 L0 0 0 100" fill="none" stroke="#1b2430" stroke-width="1" />
-            </pattern>
-          </defs>
-          <rect width="1000" height="667" fill="#0d1218" />
-          <!-- Grid sits under the art on purpose: with no image present the panel
-               would otherwise be an empty black square. -->
-          <rect width="1000" height="667" fill="url(#grid)" />
-          <!-- Drop <mapId>.jpg into the mounted maps/ folder for real continent art.
-               A missing file simply does not render. -->
-          <!-- Both the art and the viewBox are 3:2, so no stretching is needed. -->
-          <image :href="`/maps/${selectedMap}.jpg`" x="0" y="0" width="1000" height="667"
-                 :opacity="artOpacity" @load="hasArt = true" />
-
-          <g v-if="groupLines.length" stroke="#5aa9ff" stroke-width="1.5" opacity="0.8">
-            <line v-for="(l, i) in groupLines" :key="i" :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2" />
-          </g>
-
-          <g>
-            <circle v-for="e in visible" :key="e.guid"
-                    :cx="project(e).cx" :cy="project(e).cy"
-                    :r="e.bot ? 3.5 : 9"
-                    :fill="CLASS_COLOR[e.cls] ?? '#8899aa'"
-                    :stroke="e.bot ? 'none' : '#fff'" :stroke-width="e.bot ? 0 : 2"
-                    :opacity="e.bot ? 0.8 : 1"
-                    @mouseenter="hovered = e" @mouseleave="hovered = null" />
-          </g>
-        </svg>
-
-        <div v-if="hovered" class="tip">
-          <b>{{ hovered.name }}</b> · level {{ hovered.level }}
-          {{ CLASSES[hovered.cls] ?? '?' }}
-          <span class="dim">· {{ zoneName(hovered.zone) }}</span>
-          <span v-if="!hovered.bot" class="human">HUMAN</span>
-        </div>
-        <p v-else class="tip dim">
-          Hover a dot. Large ringed dots are human players.
-          <template v-if="!hasArt"> · no art for this continent yet — see <code>frontend/maps/README.md</code></template>
-        </p>
-      </section>
-
-      <aside>
-        <div class="panel">
-          <h2>Groups
-            <span class="dim">{{ groupData?.total ?? 0 }} · {{ groupData?.raids ?? 0 }} raid ·
-              {{ groupData?.inInstances ?? 0 }} in instance</span>
-          </h2>
-          <p v-if="!groupData?.groups.length" class="dim small">
-            No groups yet. Bots form parties when they meet a compatible bot nearby.
-          </p>
-          <div v-for="g in groupData?.groups.slice(0, 12)" :key="g.id"
-               class="grp" :class="{ on: selectedGroup === g.id }"
-               @click="selectedGroup = selectedGroup === g.id ? null : g.id"
-               @mouseenter="selectedGroup = g.id">
-            <div class="grp-head">
-              <b>{{ g.raid ? 'Raid' : 'Party' }} #{{ g.id }}</b>
-              <span class="dim">{{ g.online }}/{{ g.size }} · lvl {{ g.minLevel }}–{{ g.maxLevel }}</span>
-              <span v-if="g.inInstance" class="inst">INSTANCE</span>
-              <span v-if="g.viaLfg" class="lfg">LFG</span>
-              <span v-if="!g.allBots" class="human">YOU</span>
-            </div>
-            <div class="grp-members">
-              <span v-for="m in g.members" :key="m.guid"
-                    :style="{ color: CLASS_COLOR[m.cls] ?? '#8899aa', opacity: m.online ? 1 : 0.35 }">
-                {{ m.leader ? '★' : '' }}{{ m.name }}<span class="dim">{{ m.level }}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h2>Filters</h2>
-          <label>Faction
-            <select v-model="faction">
-              <option value="all">All</option><option value="alliance">Alliance</option>
-              <option value="horde">Horde</option>
-            </select>
-          </label>
-          <label>Min level <b>{{ minLevel }}</b>
-            <input v-model.number="minLevel" type="range" min="1" max="80" />
-          </label>
-          <label class="check"><input v-model="showBots" type="checkbox" /> Bots</label>
-          <label class="check"><input v-model="showHumans" type="checkbox" /> Humans</label>
-          <label>Map art <b>{{ Math.round(artOpacity * 100) }}%</b>
-            <input v-model.number="artOpacity" type="range" min="0" max="1" step="0.05" />
-          </label>
-        </div>
-
-        <div class="panel">
-          <h2>Level spread</h2>
-          <div v-for="[b, n] in brackets" :key="b" class="bar">
-            <span class="lbl">{{ b }}–{{ b + 9 }}</span>
-            <span class="track"><span class="fill" :style="{ width: (n / maxBracket * 100) + '%' }" /></span>
-            <span class="num">{{ n }}</span>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h2>Busiest zones</h2>
-          <div v-for="[z, n] in topZones" :key="z" class="row">
-            <span>{{ zoneName(z) }}</span><b>{{ n }}</b>
-          </div>
-        </div>
-
-        <div class="panel">
-          <h2>Classes</h2>
-          <div v-for="[c, n] in byClass" :key="c" class="row">
-            <span><i class="swatch" :style="{ background: CLASS_COLOR[c] }" />{{ CLASSES[c] ?? c }}</span>
-            <b>{{ n }}</b>
-          </div>
-        </div>
-      </aside>
-    </main>
+      <EventRail
+        :events="events?.events ?? []"
+        :ready="!!events?.ready"
+        :selected="selected"
+        :detail="detail"
+        :activity="activity"
+        :loading="loadingDetail"
+        @select="select"
+        @clear="selected = null"
+      />
+    </div>
   </div>
 </template>
 
 <style>
-* { box-sizing: border-box; }
-body { margin: 0; background: #070a0e; color: #dbe4ee;
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-.app { max-width: 1500px; margin: 0 auto; padding: 18px; }
-header { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
-h1 { font-size: 19px; margin: 0; font-weight: 650; letter-spacing: .2px; }
-h2 { font-size: 12px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .09em; color: #8ea3ba; }
-.dim { color: #7d8b9c; font-weight: 400; }
-.totals { display: flex; gap: 16px; font-size: 13px; }
-main { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; align-items: start; }
-@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
-.tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
-.tabs button { background: #121a24; color: #b9c8d8; border: 1px solid #1e2a38;
-  border-radius: 7px; padding: 6px 11px; cursor: pointer; font-size: 13px; }
-.tabs button.on { background: #1d3350; border-color: #2f5788; color: #fff; }
-.map { width: 100%; aspect-ratio: 1000 / 667; border: 1px solid #1b2430; border-radius: 10px; display: block; }
-.map circle { transition: r .1s ease; cursor: crosshair; }
-.tip { margin: 9px 2px 0; font-size: 13px; min-height: 20px; }
-.small { font-size: 12px; }
-.grp { border: 1px solid #1b2430; border-radius: 7px; padding: 7px 9px; margin-bottom: 7px; cursor: pointer; }
-.grp.on { border-color: #2f5788; background: #101c2c; }
-.grp-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
-.grp-members { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; font-size: 11px; }
-.grp-members .dim { margin-left: 2px; }
-.lfg { background: #2a2340; color: #b9a8ee; border-radius: 4px; padding: 0 5px; font-size: 10px; }
-.inst { background: #14432a; color: #7ee2a8; border-radius: 4px; padding: 0 5px; font-size: 10px; }
-.warn { background: #4a2c12; color: #ffcf8b; border-radius: 5px; padding: 2px 9px; font-size: 12px; }
-.map.stale { opacity: .55; filter: saturate(.5); }
-.human { background: #2f5788; color: #fff; border-radius: 4px; padding: 1px 6px; margin-left: 8px; font-size: 11px; }
-.panel { background: #0d141c; border: 1px solid #1b2430; border-radius: 10px; padding: 13px; margin-bottom: 13px; }
-label { display: block; font-size: 13px; margin-bottom: 11px; color: #b9c8d8; }
-label.check { display: flex; align-items: center; gap: 7px; }
-select, input[type=range] { width: 100%; margin-top: 5px; }
-select { background: #121a24; color: #dbe4ee; border: 1px solid #1e2a38; border-radius: 6px; padding: 5px; }
-.row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; font-size: 13px; }
-.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 7px; }
-.bar { display: grid; grid-template-columns: 54px 1fr 32px; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 4px; }
-.track { background: #121a24; border-radius: 3px; height: 9px; overflow: hidden; }
-.fill { display: block; height: 100%; background: #2f5788; }
-.num { text-align: right; color: #8ea3ba; }
+* { box-sizing: border-box }
+/* The shell is a fixed-viewport app, never a scrolling document. Pinning this at the
+   root means no descendant can push the page sideways and clip the header. */
+html, body, #__nuxt {
+  margin: 0; padding: 0; height: 100%; max-width: 100%;
+  overflow-x: hidden; background: oklch(0.145 0.016 52);
+}
+body { -webkit-font-smoothing: antialiased }
+::-webkit-scrollbar { width: 9px; height: 9px }
+::-webkit-scrollbar-thumb { background: oklch(0.34 0.03 62) }
+::-webkit-scrollbar-track { background: transparent }
+button:focus-visible { outline: 2px solid oklch(0.80 0.10 88); outline-offset: -2px }
+@keyframes blip { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important } }
 </style>

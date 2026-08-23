@@ -30,7 +30,7 @@ services:
       - "127.0.0.1:${DOCKER_DB_EXTERNAL_PORT:-3306}:3306"
     volumes: !override
       - ${DOCKER_VOL_DB:-ac-database}:/var/lib/mysql
-      - /opt/warcraft/backups:/backups
+      - ${DOCKER_VOL_BACKUPS:-/opt/warcraft/backups}:/backups
     logging: *logging
 
   ac-db-import:

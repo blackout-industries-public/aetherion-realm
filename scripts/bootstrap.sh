@@ -37,8 +37,12 @@ pin "$AC/modules/mod-ah-bot"     "$AHBOT_REPO"      "$AHBOT_COMMIT"
 DF=$AC/apps/docker/Dockerfile
 if ! grep -q 'ARG BUILD_JOBS' "$DF"; then
     log "patching Dockerfile to honour BUILD_JOBS"
-    sed -i 's|^ARG CMAKE_EXTRA_OPTIONS=""|ARG CMAKE_EXTRA_OPTIONS=""\nARG BUILD_JOBS=""|' "$DF"
-    sed -i 's|cmake --build \. --config "\$CTYPE" -j \$((\$(nproc) + 1))|cmake --build . --config "$CTYPE" -j ${BUILD_JOBS:-$(($(nproc) + 1))}|' "$DF"
+    # tmp-and-move instead of sed -i, which differs between GNU and BSD sed and
+    # this script now also runs on macOS for the staging stack.
+    sed -e 's|^ARG CMAKE_EXTRA_OPTIONS=""|ARG CMAKE_EXTRA_OPTIONS=""\
+ARG BUILD_JOBS=""|' \
+        -e 's|cmake --build \. --config "\$CTYPE" -j \$((\$(nproc) + 1))|cmake --build . --config "$CTYPE" -j ${BUILD_JOBS:-$(($(nproc) + 1))}|' \
+        "$DF" > "$DF.tmp" && mv "$DF.tmp" "$DF"
     grep -q 'ARG BUILD_JOBS' "$DF" && grep -q 'BUILD_JOBS:-' "$DF" \
         || die "Dockerfile patch did not apply; upstream layout changed"
 fi

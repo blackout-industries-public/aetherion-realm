@@ -1,7 +1,9 @@
 # Shared helpers. Sourced, never executed.
 set -euo pipefail
 
-ROOT=/opt/warcraft
+# Overridable so the same scripts can drive a second instance (e.g. a laptop
+# staging stack); production keeps the default.
+ROOT=${WARCRAFT_ROOT:-/opt/warcraft}
 AC=$ROOT/azerothcore
 CONF=$ROOT/config
 

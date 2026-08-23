@@ -14,13 +14,15 @@ import statistics
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .history import HistoryRecorder
 from .identity import IdentityStore
 from .llm import LLM, Dropped, Priority
 from .memory import Memory
+from .metrics import prometheus_text
 from .links import substitute as substitute_links
 from .reflex import canned_chat, canned_event
 from . import intents, topics
@@ -48,6 +50,7 @@ FALLBACKS = ["one sec", "busy right now", "hm?", "cant talk, mid pull", "yeah?"]
 identity = IdentityStore()
 memory = Memory()
 llm = LLM()
+history = HistoryRecorder()
 
 
 @contextlib.asynccontextmanager
@@ -55,10 +58,12 @@ async def lifespan(_: FastAPI):
     await identity.start()
     await memory.start()
     await llm.start()
+    await history.start()
     log.info("bridge up; llm=%s interactive=%s background=%s effort=%s",
              settings.llm_base_url, settings.model_interactive,
              settings.model_background, settings.reasoning_effort)
     yield
+    await history.close()
     await llm.close()
     await memory.close()
     await identity.close()
@@ -263,6 +268,50 @@ class EventRequest(BaseModel):
     detail: str = Field(default="", max_length=200)
 
 
+@app.get("/bot/{name}/history")
+async def bot_history(name: str) -> dict:
+    """Everything known about one bot: identity, personality, activity, conversation.
+
+    Two very different sources merged into one feed - sampled state changes, and the
+    conversations the bridge itself handled.
+    """
+    bot = await identity.by_name(name)
+    if not bot:
+        return {"found": False}
+
+    events = await history.events(bot.guid)
+
+    async with memory._pool.acquire() as conn, conn.cursor() as cur:  # noqa: SLF001
+        await cur.execute(
+            "SELECT speaker, role, content, ts FROM turns WHERE bot_guid=%s "
+            "ORDER BY id DESC LIMIT 20", (bot.guid,))
+        turns = [{"ts": ts, "kind": "chat",
+                  "detail": f"{'said' if role == 'assistant' else speaker + ' said'}: {content}"}
+                 for speaker, role, content, ts in await cur.fetchall()]
+
+        await cur.execute(
+            "SELECT speaker, exchanges, last_seen FROM relationship WHERE bot_guid=%s "
+            "ORDER BY exchanges DESC LIMIT 8", (bot.guid,))
+        knows = [{"speaker": sp, "exchanges": n, "last": ls}
+                 for sp, n, ls in await cur.fetchall()]
+
+    feed = sorted(events + turns, key=lambda e: e["ts"], reverse=True)[:40]
+
+    return {
+        "found": True,
+        "guid": bot.guid, "name": bot.name, "race": bot.race, "class": bot.klass,
+        "level": bot.level, "guild": bot.guild, "online": bot.online, "zone": bot.zone,
+        "personality": {
+            "archetype": bot.personality.archetype,
+            "temperament": bot.personality.temperament,
+            "verbosity": bot.personality.verbosity,
+            "interest": bot.personality.interest,
+        },
+        "knows": knows,
+        "feed": feed,
+    }
+
+
 @app.post("/game/event")
 async def game_event(req: EventRequest) -> Response:
     """A bot reacts to something that actually happened in the world (BRD s25).
@@ -321,8 +370,19 @@ async def game_greet(speaker: str, zone: int = 0) -> Response:
                     media_type="text/plain; charset=utf-8")
 
 
-@app.get("/metrics")
-async def metrics() -> dict:
+# response_model=None: FastAPI cannot build a Pydantic model from the
+# Response|dict union this route legitimately returns.
+@app.get("/metrics", response_model=None)
+async def metrics(request: Request) -> Response | dict:
+    # One path, two consumers. Prometheus announces itself in Accept
+    # (text/plain;version=0.0.4 or openmetrics); the dashboard fetches with a
+    # generic Accept and keeps its JSON contract, so neither side needs a
+    # config change.
+    accept = request.headers.get("accept", "")
+    if "text/plain" in accept or "openmetrics" in accept:
+        body = await prometheus_text(memory._pool)  # noqa: SLF001
+        return Response(content=body,
+                        media_type="text/plain; version=0.0.4; charset=utf-8")
     lat = sorted(llm.latencies)
     def pct(p: float) -> float | None:
         return round(lat[min(int(len(lat) * p), len(lat) - 1)], 3) if lat else None

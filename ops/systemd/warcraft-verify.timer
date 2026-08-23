@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Aetherion restore verification weekly
+
+[Timer]
+# Mondays 05:30 UTC, an hour after the daily backup, so it verifies a fresh dump.
+OnCalendar=Mon 05:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

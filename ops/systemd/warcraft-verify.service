@@ -1,0 +1,8 @@
+[Unit]
+Description=Aetherion weekly backup restore verification
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/warcraft/scripts/verify-restore.sh
+User=nlucansk

@@ -7,13 +7,14 @@ import { join } from 'node:path'
 // "drop a file in maps/ and refresh" behaviour working.
 const MAP_DIR = process.env.MAP_DIR || '/app/maps'
 
-// Only the four continent ids. Anything else is rejected outright rather than
-// sanitised, which removes any path-traversal question.
-const ALLOWED = new Set(['0.jpg', '1.jpg', '530.jpg', '571.jpg'])
+// Continent ids plus generated zone files. A strict pattern rather than sanitising,
+// which removes any path-traversal question - nothing outside these two shapes is
+// ever read from disk.
+const ALLOWED = /^(?:0|1|530|571|zone-\d{1,5})\.jpg$/
 
 export default defineEventHandler(event => {
   const file = getRouterParam(event, 'file') ?? ''
-  if (!ALLOWED.has(file)) throw createError({ statusCode: 404, statusMessage: 'Not found' })
+  if (!ALLOWED.test(file)) throw createError({ statusCode: 404, statusMessage: 'Not found' })
 
   const path = join(MAP_DIR, file)
   if (!existsSync(path)) throw createError({ statusCode: 404, statusMessage: 'No art for that map' })

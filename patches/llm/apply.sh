@@ -12,13 +12,39 @@ HERE=$(dirname "$(readlink -f "$0")")
 
 AI=src/Bot/PlayerbotAI.cpp
 SCRIPT=src/Script/Playerbots.cpp
+FACTORY=src/Bot/Factory/AiFactory.cpp
 CONF=conf/playerbots.conf.dist
 
-git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$CONF"
+# Every patched file is restored first so each patch always sees pristine anchors.
+# AiFactory was missing from this list, so its patch matched a already-modified file
+# and failed the second time it ran. The Economy BRD (E0.3) extended the list to
+# every file the chain touches, making the whole apply deterministic; ownership map:
+#   NewRpgAction.cpp        -> patch_questturnin (2c), future needs-preemption
+#   RandomPlayerbotMgr.cpp  -> patch_processbot (2d), patch_eventlock (2f), patch_racemode (2g)
+#   PlayerbotFactory.cpp    -> patch_racemode (2g), patch_econ (2h)
+#   DestroyItemAction.cpp   -> patch_econ (2h)
+NEWRPG=src/Ai/World/Rpg/Action/NewRpgAction.cpp
+RNDMGR=src/Bot/RandomPlayerbotMgr.cpp
+BOTFACTORY=src/Bot/Factory/PlayerbotFactory.cpp
+DESTROYACT=src/Ai/Base/Actions/DestroyItemAction.cpp
+SELLACT=src/Ai/Base/Actions/SellAction.cpp
+ACTIONCTX=src/Ai/Base/ActionContext.h
+RELEASEACT=src/Ai/Base/Actions/ReleaseSpiritAction.cpp
+TRAINERACT=src/Ai/Base/Actions/TrainerAction.cpp
+MEETSTONEACT=src/Ai/Base/Actions/UseMeetingStoneAction.cpp
+REPAIRACT=src/Ai/Base/Actions/RepairAllAction.cpp
+git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
+    "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
+    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX"
 
-mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party"
+mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
 cp "$HERE/src/Ai/Party/PartyAssembler.h" "$HERE/src/Ai/Party/PartyAssembler.cpp" "$MODULE/src/Ai/Party/"
+cp "$HERE/src/Ai/Econ/NeedsLedger.h" "$HERE/src/Ai/Econ/NeedsLedger.cpp" \
+   "$HERE/src/Ai/Econ/AhSellAction.h" "$HERE/src/Ai/Econ/AhSellAction.cpp" \
+   "$HERE/src/Ai/Econ/AhBuyAction.h" "$HERE/src/Ai/Econ/AhBuyAction.cpp" \
+   "$HERE/src/Ai/Econ/MailCollectAction.h" "$HERE/src/Ai/Econ/MailCollectAction.cpp" \
+   "$HERE/src/Ai/Econ/CraftPlanner.h" "$HERE/src/Ai/Econ/CraftPlanner.cpp" "$MODULE/src/Ai/Econ/"
 
 # 1. Route chat the command parser did not understand to the bridge. That branch is
 #    exactly the set of messages that are conversation rather than instructions.
@@ -146,10 +172,38 @@ print("patched Playerbots.cpp")
 PY
 
 # 2b. Bots forming their own parties (see patch_aifactory.py for why this is needed).
-python3 "$HERE/patch_aifactory.py" "$MODULE/src/Bot/Factory/AiFactory.cpp"
+python3 "$HERE/patch_aifactory.py" "$MODULE/$FACTORY"
 
 # 2c. Party-size ambition, so groups get big enough to run dungeons.
 python3 "$HERE/patch_grouper.py" "$MODULE/$AI"
+
+# 2c. Idle bots hand in finished quests (measured 247 accepts : 8 rewards before).
+python3 "$HERE/patch_questturnin.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
+
+# 2c2. Economy preemption at IDLE + vendor-visit selling (Economy BRD E2). Must
+#      directly follow questturnin: it anchors on that patch's replacement text.
+python3 "$HERE/patch_econ_idle.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
+
+# 2d. Owned-group protection + optional revive drive (see patch_processbot.py header).
+python3 "$HERE/patch_processbot.py" "$MODULE/src/Bot/RandomPlayerbotMgr.cpp"
+
+# 2e. Steered travellers bypass the activity throttle (see patch_tripactive.py header).
+python3 "$HERE/patch_tripactive.py" "$MODULE/src/Bot/PlayerbotAI.cpp"
+
+# 2f. Event cache must be lock-guarded before MapUpdate.Threads goes above 1.
+python3 "$HERE/patch_eventlock.py" "$MODULE/src/Bot/RandomPlayerbotMgr.cpp"
+
+# 2g. Race mode: one-time factory init, bots keep only what they earn. Inert
+#     unless AiPlayerbot.DisableRandomLevels = 1 (armed by RACE_MODE=1).
+python3 "$HERE/patch_racemode.py" "$MODULE"
+
+# 2h. Economy needs ledger + destruction emitters (Economy BRD E1). Observe-only
+#     and gated on AiPlayerbot.Econ.*, all default off.
+python3 "$HERE/patch_econ.py" "$MODULE"
+
+# 2i. Paid repairs (Economy BRD E3.1): the eight free-repair sites gated, spend
+#     emitted. Inert unless AiPlayerbot.Econ.PaidRepairs = 1.
+python3 "$HERE/patch_econ_repair.py" "$MODULE"
 
 # 3. Config defaults. Everything off or conservative unless deliberately raised.
 cat >> "$MODULE/$CONF" <<'CONFEOF'
@@ -192,11 +246,30 @@ AiPlayerbot.Party.Enabled = 0
 AiPlayerbot.Party.IntervalMs = 60000
 AiPlayerbot.Party.TargetSize = 5
 AiPlayerbot.Party.MaxParties = 20
+AiPlayerbot.Party.PerTick = 3
 AiPlayerbot.Party.MinLevel = 15
 AiPlayerbot.Party.LevelSpread = 4
 AiPlayerbot.Party.Teleport = 1
+AiPlayerbot.Party.SameMapOnly = 1
+AiPlayerbot.Party.GatherRange = 400
+AiPlayerbot.Party.ArriveRange = 60
+AiPlayerbot.Party.MaxTripTicks = 40
+AiPlayerbot.Party.StallTicks = 2
+AiPlayerbot.Party.DriveGroupedBots = 0
+AiPlayerbot.Party.InsideTicks = 20
+AiPlayerbot.Party.SweepPerTick = 25
+AiPlayerbot.Party.HuntRange = 8
+AiPlayerbot.Party.NearestChoices = 4
+AiPlayerbot.Party.FootRange = 1200
+AiPlayerbot.Party.PortalPct = 50
+AiPlayerbot.Party.RaidPct = 20
+AiPlayerbot.Party.RaidSize = 10
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
+
+# World PvP. The RPG OutdoorPvp status already sends bots looking for fights; this
+# strategy is what makes them engage enemy players properly once they arrive.
+AiPlayerbot.Pvp.Enabled = 0
 
 AiPlayerbot.Llm.ReactWhisper = 1
 AiPlayerbot.Llm.ReactParty = 1
@@ -220,6 +293,25 @@ AiPlayerbot.Llm.EventsEnabled = 1
 AiPlayerbot.Llm.EventChanceLevelUp = 100
 AiPlayerbot.Llm.EventChanceDeath = 40
 AiPlayerbot.Llm.EventChanceLoot = 35
+
+# Aetherion economy (Economy BRD). Observe-only needs ledger and event emitters;
+# nothing changes bot behavior while these are the only keys on.
+AiPlayerbot.Econ.Needs.Enabled = 0
+AiPlayerbot.Econ.Needs.TickMs = 6000
+AiPlayerbot.Econ.Needs.Shards = 10
+AiPlayerbot.Econ.Events.Enabled = 0
+AiPlayerbot.Econ.Preempt.Enabled = 0
+AiPlayerbot.Econ.Vendor.Enabled = 0
+AiPlayerbot.Econ.Vendor.FreeSlotsPct = 20
+AiPlayerbot.Econ.Vendor.BrokeMinValue = 500
+AiPlayerbot.Econ.Vendor.FarMaxYards = 3000
+AiPlayerbot.Econ.ProtectTradeGoods = 0
+AiPlayerbot.Econ.PaidRepairs = 0
+AiPlayerbot.Econ.Ah.Enabled = 0
+AiPlayerbot.Econ.Ah.MaxPerVisit = 4
+AiPlayerbot.Econ.RemoteMail = 0
+AiPlayerbot.Econ.Ah.Buy.Enabled = 0
+AiPlayerbot.Econ.Mailbox.Enabled = 0
 CONFEOF
 
 echo "LLM patch applied to $MODULE"
