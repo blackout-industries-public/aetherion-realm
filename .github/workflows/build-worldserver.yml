@@ -1,14 +1,9 @@
 name: build-worldserver
 
 # The full compile: pinned core + module + the entire patch chain, built the
-# same way deploys build it. Heavy (~30-60 min, needs Docker), so it targets
-# the self-hosted pool and runs on demand plus a weekly canary.
-#
-# RUNNER NOTE: runs-on below uses the bare self-hosted label. When the KEDA
-# scale-set label is known (org runner listing needs admin:org scope, or read
-# it from the ARC/KEDA values in the cluster), replace it with that label so
-# scale-from-zero triggers. The job needs Docker (dind sidecar or a docker
-# socket on the runner).
+# same way deploys build it. Runs on demand plus a weekly canary. Hosted
+# 2-core runners take a cold AzerothCore build slowly - the 6h ceiling below
+# covers it; move to a beefier pool if the canary starts flirting with it.
 
 on:
   workflow_dispatch:
@@ -18,8 +13,8 @@ on:
 
 jobs:
   compile:
-    runs-on: [self-hosted]
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
