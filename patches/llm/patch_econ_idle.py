@@ -23,7 +23,7 @@ if MARKER in src:
 
 INC = '#include "NewRpgInfo.h"\n'
 assert src.count(INC) == 1, "include anchor"
-src = src.replace(INC, INC + '#include "AiObjectContext.h"\n#include "Creature.h"\n#include "GameObject.h"\n#include "Map.h"\n#include "NeedsLedger.h"\n', 1)
+src = src.replace(INC, INC + '#include "AiObjectContext.h"\n#include "Creature.h"\n#include "GameObject.h"\n#include "LootObjectStack.h"\n#include "Map.h"\n#include "NeedsLedger.h"\n', 1)
 
 # E2.0/E2.1: the preemption block, second in line after the quest drain - an
 # urgent economic errand beats a random pastime, a pending quest beats both.
@@ -183,6 +183,38 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                     return true;
                 }
             }
+            // E7.5 gather trip: same GO-target legs as mailbox and focus. A
+            // despawned node still gets the far leg - the camp's lingering
+            // wander hands harvesting to the reactive loot chain, which also
+            // sweeps whatever else is up around the spawn point.
+            if (econVerdict == NeedsLedger::VERDICT_GATHER)
+            {
+                uint32 gEntry, gSpawn;
+                float gx, gy, gz;
+                if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
+                                               gEntry, gSpawn, gx, gy, gz))
+                {
+                    GameObject* gGo = nullptr;
+                    {
+                        auto bounds =
+                            bot->GetMap()->GetGameObjectBySpawnIdStore().equal_range(gSpawn);
+                        if (bounds.first != bounds.second)
+                            gGo = bounds.first->second;
+                    }
+                    if (gGo && gGo->isSpawned() && bot->GetDistance(gx, gy, gz) < 130.0f)
+                    {
+                        info.ChangeToWanderNpc();
+                        if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                        {
+                            d->npcOrGo = gGo->GetGUID();
+                            d->lastReach = 0;
+                        }
+                    }
+                    else
+                        info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), gx, gy, gz));
+                    return true;
+                }
+            }
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
                                        RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP});"""
 assert src.count(IDLE_ANCHOR) == 1, "idle anchor (run after patch_questturnin)"
@@ -282,6 +314,18 @@ REACH_NEW = """        if (!data.lastReach)
                     botAI->DoSpecificAction("mail collect", Event(), true);
                 if (go->GetGoType() == GAMEOBJECT_TYPE_SPELL_FOCUS)
                     botAI->DoSpecificAction("econ craft", Event("econ craft", "focus"), true);
+                // E7.5: a node arrival hands off to the reactive loot chain,
+                // which owns skill, tool and distance checks plus the cast.
+                // Chests only become trip targets under a gather verdict, so
+                // this cannot fire from ordinary wandering.
+                if (go->GetGoType() == GAMEOBJECT_TYPE_CHEST)
+                {
+                    if (LootObjectStack* stack =
+                            context->GetValue<LootObjectStack*>("available loot")->Get())
+                        stack->Add(go->GetGUID());
+                    NeedsLedger::LogEvent("gather_route", bot->GetGUID().GetCounter(),
+                                          go->GetEntry(), 1, "at node");
+                }
             }
             return true;
         }"""

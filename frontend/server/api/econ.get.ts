@@ -79,7 +79,7 @@ const AH_FLOW = `
   SELECT kind, COUNT(*) AS n, SUM(count) AS items,
          SUM(CAST(NULLIF(detail,'') AS SIGNED)) AS copper
   FROM acore_characters.aetherion_econ_events
-  WHERE kind IN ('ah_post','ah_listed','ah_sold','ah_bought','ah_expired','mail_money','mail_item','craft','bank_deposit','bank_withdraw')
+  WHERE kind IN ('ah_post','ah_listed','ah_sold','ah_bought','ah_expired','mail_money','mail_item','craft','bank_deposit','bank_withdraw','mail_collect','gather_route')
     AND ts > UNIX_TIMESTAMP() - 86400
   GROUP BY kind
 `

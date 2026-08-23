@@ -324,6 +324,8 @@ AiPlayerbot.Econ.Ah.MaxPerVisit = 4
 AiPlayerbot.Econ.RemoteMail = 0
 AiPlayerbot.Econ.Ah.Buy.Enabled = 0
 AiPlayerbot.Econ.Mailbox.Enabled = 0
+AiPlayerbot.Econ.Gather.Enabled = 0
+AiPlayerbot.Econ.Gather.MaxTierGap = 150
 CONFEOF
 
 echo "LLM patch applied to $MODULE"

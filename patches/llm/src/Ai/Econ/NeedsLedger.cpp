@@ -43,6 +43,10 @@ namespace
     uint64 sVendorBrokeMinValue = 500;
 
     uint32 sVendorFarMaxYards = 3000;
+    bool sGatherEnabled = false;
+    // A node this far below the bot's skill is not worth the walk - keeps
+    // veterans off copper veins (the operator's no-pointless-gathering rule).
+    uint32 sGatherMaxTierGap = 150;
 
     struct Verdict
     {
@@ -102,6 +106,18 @@ namespace
         float x, y, z;
     };
     std::unordered_map<uint16, std::vector<FocusSpawn>> sFocusSpawns;
+
+    // E7.5 gathering nodes: herb and vein chest spawns per map with the skill
+    // and rank their lock demands, so a trip can be tier-matched up front.
+    struct GatherSpawn
+    {
+        uint32 skill;
+        uint32 reqSkill;
+        uint32 entry;
+        uint32 spawnId;
+        float x, y, z;
+    };
+    std::unordered_map<uint16, std::vector<GatherSpawn>> sGatherSpawns;
 
     // E8.1 listings mirror, rebuilt each pass on the world thread.
     std::mutex sListingsMx;
@@ -387,6 +403,8 @@ void NeedsLedger::LoadConfig()
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
+    sGatherEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gather.Enabled", false);
+    sGatherMaxTierGap = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gather.MaxTierGap", 150);
 
     if (_enabled || sEventsEnabled)
         EnsureTables();
@@ -471,7 +489,8 @@ bool NeedsLedger::MailboxTarget(uint32 guid, uint32 botMap, uint32& entry, uint3
     std::lock_guard<std::mutex> lock(sVerdictMx);
     auto it = sVerdictMirror.find(guid);
     if (it == sVerdictMirror.end() ||
-        (it->second.kind != VERDICT_MAILBOX && it->second.kind != VERDICT_FOCUS) || !it->second.hasFar ||
+        (it->second.kind != VERDICT_MAILBOX && it->second.kind != VERDICT_FOCUS &&
+         it->second.kind != VERDICT_GATHER) || !it->second.hasFar ||
         it->second.farMap != uint16(botMap))
         return false;
     entry = it->second.goEntry;
@@ -532,6 +551,24 @@ void NeedsLedger::BuildTrainerCache()
             sFocusSpawns[data.mapid].push_back({proto->spellFocus.focusId, data.id,
                                                 uint32(data.spawnId), data.posX, data.posY,
                                                 data.posZ});
+        else if (proto->type == GAMEOBJECT_TYPE_CHEST && proto->chest.lockId)
+        {
+            // E7.5: herb and vein chests reveal their profession through the
+            // lock table, the same derivation the loot path uses at cast time.
+            if (LockEntry const* lock = sLockStore.LookupEntry(proto->chest.lockId))
+                for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+                {
+                    if (lock->Type[i] != LOCK_KEY_SKILL)
+                        continue;
+                    uint32 const skill = SkillByLockType(LockType(lock->Index[i]));
+                    if (skill != SKILL_HERBALISM && skill != SKILL_MINING)
+                        continue;
+                    sGatherSpawns[data.mapid].push_back(
+                        {skill, std::max<uint32>(1, lock->Skill[i]), data.id,
+                         uint32(data.spawnId), data.posX, data.posY, data.posZ});
+                    break;
+                }
+        }
     }
 
     // E3.2: class-trainer geography from the entries collected above. E4.2
@@ -844,46 +881,126 @@ void NeedsLedger::ComputeNeeds(Player* bot)
         }
     }
     // E2.1 bag pressure, E2.5 broke-with-sellables. The build map swaps into
-    // the map-thread mirror when the pass completes.
-    else if (sPreemptEnabled && sVendorEnabled)
+    // the map-thread mirror when the pass completes. The whole test lives in
+    // the condition: a config-only else-if would consume the chain for every
+    // bot and starve any branch below it (that killed E7.5's first cut).
+    else if (sPreemptEnabled && sVendorEnabled && [&]
+             {
+                 uint32 freeSlots, totalSlots;
+                 uint64 trashValue;
+                 BagPressure(bot, freeSlots, totalSlots, trashValue);
+                 bool const pressure =
+                     totalSlots && freeSlots * 100 / totalSlots < sVendorFreeSlotsPct;
+                 bool broke = false;
+                 for (Need const& n : needs)
+                     if (n.amount > 0 && n.freeMoney < n.amount)
+                     {
+                         broke = true;
+                         break;
+                     }
+                 if (!(pressure && trashValue > 0) &&
+                     !(broke && trashValue >= sVendorBrokeMinValue))
+                     return false;
+                 Verdict v{VERDICT_VENDOR, false, 0, 0, 0, 0};
+                 // Far leg: nearest same-map vendor spawn within range, so the
+                 // preemption has somewhere to walk when its nearby scan is empty.
+                 auto it = sVendorSpawns.find(uint16(bot->GetMapId()));
+                 if (it != sVendorSpawns.end())
+                 {
+                     float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+                     float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+                     for (auto const& p : it->second)
+                     {
+                         float const dx = p[0] - bx, dy = p[1] - by;
+                         float const d2 = dx * dx + dy * dy;
+                         if (d2 < best)
+                         {
+                             best = d2;
+                             v.hasFar = true;
+                             v.farMap = uint16(bot->GetMapId());
+                             v.x = p[0];
+                             v.y = p[1];
+                             v.z = p[2];
+                         }
+                     }
+                 }
+                 sVerdictBuild[guid] = v;
+                 return true;
+             }())
     {
-        uint32 freeSlots, totalSlots;
-        uint64 trashValue;
-        BagPressure(bot, freeSlots, totalSlots, trashValue);
-        bool const pressure = totalSlots && freeSlots * 100 / totalSlots < sVendorFreeSlotsPct;
-        bool broke = false;
-        for (Need const& n : needs)
-            if (n.amount > 0 && n.freeMoney < n.amount)
-            {
-                broke = true;
-                break;
-            }
-        if ((pressure && trashValue > 0) || (broke && trashValue >= sVendorBrokeMinValue))
+        // Verdict stored inside the lambda; nothing further here.
+    }
+    // E7.5 needs-driven gathering: a gatherer with a live reason - reagents
+    // its own recipes are short of, or an unfunded need to farm toward - walks
+    // to node geography matched to its skill tier. No reason, no trip; that is
+    // the operator's no-pointless-gathering rule, enforced structurally.
+    else if (sPreemptEnabled && sGatherEnabled)
+    {
+        auto it = sGatherSpawns.find(uint16(bot->GetMapId()));
+        uint32 freeSlots = 0, totalSlots = 0;
+        uint64 trashValue = 0;
+        if (it != sGatherSpawns.end())
+            BagPressure(bot, freeSlots, totalSlots, trashValue);
+        // Full bags cannot carry a harvest home.
+        if (it != sGatherSpawns.end() && freeSlots >= 4)
         {
-            Verdict v{VERDICT_VENDOR, false, 0, 0, 0, 0};
-            // Far leg: nearest same-map vendor spawn within range, so the
-            // preemption has somewhere to walk when its nearby scan is empty.
-            auto it = sVendorSpawns.find(uint16(bot->GetMapId()));
-            if (it != sVendorSpawns.end())
-            {
-                float const bx = bot->GetPositionX(), by = bot->GetPositionY();
-                float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
-                for (auto const& p : it->second)
+            bool unfunded = false;
+            for (Need const& n : needs)
+                if (n.amount > 0 && n.freeMoney < n.amount)
                 {
-                    float const dx = p[0] - bx, dy = p[1] - by;
+                    unfunded = true;
+                    break;
+                }
+            bool wantsHerbs = false, wantsOre = false;
+            {
+                std::vector<CraftOption> options;
+                CraftPlanner::Enumerate(bot, options, 12);
+                for (CraftOption const& opt : options)
+                    for (auto const& miss : opt.missing)
+                        if (ItemTemplate const* tmpl = sObjectMgr->GetItemTemplate(miss.first))
+                        {
+                            if (tmpl->Class != ITEM_CLASS_TRADE_GOODS)
+                                continue;
+                            if (tmpl->SubClass == ITEM_SUBCLASS_HERB)
+                                wantsHerbs = true;
+                            else if (tmpl->SubClass == ITEM_SUBCLASS_METAL_STONE)
+                                wantsOre = true;
+                        }
+            }
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+            Verdict v{VERDICT_GATHER, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+            for (uint32 skill : {uint32(SKILL_HERBALISM), uint32(SKILL_MINING)})
+            {
+                if (!bot->HasSkill(skill))
+                    continue;
+                uint32 const value = bot->GetSkillValue(skill);
+                if (!value)
+                    continue;
+                bool const wantsMats = skill == SKILL_HERBALISM ? wantsHerbs : wantsOre;
+                if (!wantsMats && !unfunded)
+                    continue;
+                for (GatherSpawn const& gs : it->second)
+                {
+                    if (gs.skill != skill || gs.reqSkill > value ||
+                        value - gs.reqSkill > sGatherMaxTierGap)
+                        continue;
+                    float const dx = gs.x - bx, dy = gs.y - by;
                     float const d2 = dx * dx + dy * dy;
                     if (d2 < best)
                     {
                         best = d2;
                         v.hasFar = true;
-                        v.farMap = uint16(bot->GetMapId());
-                        v.x = p[0];
-                        v.y = p[1];
-                        v.z = p[2];
+                        v.x = gs.x;
+                        v.y = gs.y;
+                        v.z = gs.z;
+                        v.goEntry = gs.entry;
+                        v.goSpawnId = gs.spawnId;
                     }
                 }
             }
-            sVerdictBuild[guid] = v;
+            if (v.hasFar)
+                sVerdictBuild[guid] = v;
         }
     }
 
@@ -995,7 +1112,7 @@ void NeedsLedger::WriteTelemetry()
         std::lock_guard<std::mutex> lock(sVerdictMx);
         sVerdictMirror.swap(sVerdictBuild);
 
-        static char const* KINDS[] = {"none", "vendor", "mailbox", "trainer", "ah", "focus"};
+        static char const* KINDS[] = {"none", "vendor", "mailbox", "trainer", "ah", "focus", "gather"};
         std::ostringstream errandSql;
         uint32 batched = 0;
         for (auto const& pair : sVerdictMirror)
@@ -1003,7 +1120,7 @@ void NeedsLedger::WriteTelemetry()
             if (batched++)
                 errandSql << ",";
             errandSql << "(" << pair.first << ",'errand','"
-                      << KINDS[pair.second.kind <= 5 ? pair.second.kind : 0] << "',0,0,"
+                      << KINDS[pair.second.kind <= 6 ? pair.second.kind : 0] << "',0,0,"
                       << "UNIX_TIMESTAMP())";
             if (batched >= 400)
             {

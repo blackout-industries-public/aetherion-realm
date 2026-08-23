@@ -229,6 +229,8 @@ function flow(kind: string) {
             <span>collected {{ gold(flow('mail_money').copper) }}</span>
             <span :style="{ color: flow('craft').n ? T.green : T.faint }">crafts {{ flow('craft').n }}</span>
             <span :style="{ color: T.faint }">banked {{ flow('bank_deposit').n }}</span>
+            <span :style="{ color: flow('gather_route').n ? T.green : T.faint }">gather trips {{ flow('gather_route').n }}</span>
+            <span :style="{ color: flow('mail_collect').n ? T.green : T.faint }">mail runs {{ flow('mail_collect').n }}</span>
           </div>
           <div
             v-for="(l, i) in econ?.ahListings ?? []"
