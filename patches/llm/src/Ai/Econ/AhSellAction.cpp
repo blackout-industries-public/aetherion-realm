@@ -4,7 +4,10 @@
  * Licensed under AGPL v3, like the rest of the Aetherion patches.
  */
 #include "AhSellAction.h"
+#include "CraftPlanner.h"
 #include "NeedsLedger.h"
+
+#include <unordered_set>
 
 #include "Bag.h"
 #include "Config.h"
@@ -79,13 +82,26 @@ uint32 PriceBuyout(ItemTemplate const* proto, uint32 count)
 
 void AhSellAction::CollectAhItems(std::vector<Item*>& out, uint32 limit)
 {
+    // E4.3: a crafter never lists reagents its own recipes consume - it sells
+    // products; pure gatherers (no consuming recipe) list the raw goods.
+    std::unordered_set<uint32> ownReagents;
+    {
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 0);
+        for (CraftOption const& opt : options)
+            for (auto const& [itemId, count] : opt.reagents)
+                ownReagents.insert(itemId);
+    }
+    auto keepForCrafting = [&](Item* item)
+    { return ownReagents.count(item->GetEntry()) != 0; };
+
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
     {
         if (out.size() >= limit)
             return;
 
         Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item || !AhSellable(item))
+        if (!item || !AhSellable(item) || keepForCrafting(item))
             continue;
 
         if (context->GetValue<ItemUsage>("item usage", item->GetEntry())->Get() == ITEM_USAGE_AH)

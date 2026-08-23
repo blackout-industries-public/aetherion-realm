@@ -45,7 +45,8 @@ cp "$HERE/src/Ai/Econ/NeedsLedger.h" "$HERE/src/Ai/Econ/NeedsLedger.cpp" \
    "$HERE/src/Ai/Econ/AhSellAction.h" "$HERE/src/Ai/Econ/AhSellAction.cpp" \
    "$HERE/src/Ai/Econ/AhBuyAction.h" "$HERE/src/Ai/Econ/AhBuyAction.cpp" \
    "$HERE/src/Ai/Econ/MailCollectAction.h" "$HERE/src/Ai/Econ/MailCollectAction.cpp" \
-   "$HERE/src/Ai/Econ/CraftPlanner.h" "$HERE/src/Ai/Econ/CraftPlanner.cpp" "$MODULE/src/Ai/Econ/"
+   "$HERE/src/Ai/Econ/CraftPlanner.h" "$HERE/src/Ai/Econ/CraftPlanner.cpp" \
+   "$HERE/src/Ai/Econ/EconCraftAction.h" "$HERE/src/Ai/Econ/EconCraftAction.cpp" "$MODULE/src/Ai/Econ/"
 
 # 1. Route chat the command parser did not understand to the bridge. That branch is
 #    exactly the set of messages that are conversation rather than instructions.
@@ -313,6 +314,7 @@ AiPlayerbot.Econ.Vendor.FarMaxYards = 3000
 AiPlayerbot.Econ.ProtectTradeGoods = 0
 AiPlayerbot.Econ.PaidRepairs = 0
 AiPlayerbot.Econ.PaidTraining = 0
+AiPlayerbot.Econ.Craft.Enabled = 0
 AiPlayerbot.Econ.Ah.Enabled = 0
 AiPlayerbot.Econ.Ah.MaxPerVisit = 4
 AiPlayerbot.Econ.RemoteMail = 0

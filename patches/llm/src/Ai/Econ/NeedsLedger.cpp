@@ -76,6 +76,7 @@ namespace
     std::unordered_map<uint16, std::vector<MailboxSpawn>> sMailboxSpawns;
     bool sMailboxVisits = false;
     bool sPaidTraining = false;
+    bool sCraftEnabled = false;
 
     // E3.2: class-trainer spawns per map, entry kept so validity for the
     // specific bot's class is checked at verdict time.
@@ -327,6 +328,7 @@ void NeedsLedger::LoadConfig()
     sRemoteMail = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.RemoteMail", false);
     sMailboxVisits = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Mailbox.Enabled", false);
     sPaidTraining = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.PaidTraining", false);
+    sCraftEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Craft.Enabled", false);
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
@@ -428,6 +430,7 @@ bool NeedsLedger::SellOnVendorVisit() { return sVendorEnabled; }
 bool NeedsLedger::ProtectTradeGoods() { return sProtectTradeGoods; }
 bool NeedsLedger::PaidRepairs() { return sPaidRepairs; }
 bool NeedsLedger::PaidTraining() { return sPaidTraining; }
+bool NeedsLedger::CraftEnabled() { return sCraftEnabled; }
 
 void NeedsLedger::RegisterAuctionScript()
 {

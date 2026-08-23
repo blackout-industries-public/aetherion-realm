@@ -4,6 +4,7 @@
  * Licensed under AGPL v3, like the rest of the Aetherion patches.
  */
 #include "AhBuyAction.h"
+#include "CraftPlanner.h"
 #include "NeedsLedger.h"
 
 #include "BudgetValues.h"
@@ -90,6 +91,35 @@ bool AhBuyAction::Execute(Event /*event*/)
         NeedsLedger::LogEvent("ah_bid", bot->GetGUID().GetCounter(), l.item, l.count,
                               std::to_string(l.buyout));
         return true;
+    }
+
+    // E7.4: no gear worth buying - shop for the reagents the bot's own recipes
+    // are short of instead. This is the demand half of the gatherer-to-crafter
+    // loop: a gatherer's herb listing meets an alchemist's shortfall here.
+    {
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 8);
+        uint32 const matsBudget =
+            context->GetValue<uint32>("free money for", uint32(NeedMoneyFor::tradeskill))->Get();
+        if (matsBudget)
+            for (CraftOption const& opt : options)
+                for (auto const& [itemId, shortBy] : opt.missing)
+                    for (NeedsLedger::AhListing const& l :
+                         NeedsLedger::ListingsForHouse(HouseForTeam(bot->GetTeamId())))
+                    {
+                        if (l.item != itemId || !l.buyout || l.buyout > matsBudget)
+                            continue;
+                        if (l.ownerAccount == myAccount)
+                            continue;
+                        WorldPacket* packet = new WorldPacket(CMSG_AUCTION_PLACE_BID, 8 + 4 + 4);
+                        *packet << auctioneerGuid;
+                        *packet << l.auctionId;
+                        *packet << l.buyout;
+                        bot->GetSession()->QueuePacket(packet);
+                        NeedsLedger::LogEvent("ah_bid_mats", bot->GetGUID().GetCounter(), l.item,
+                                              l.count, std::to_string(l.buyout));
+                        return true;
+                    }
     }
 
     return false;

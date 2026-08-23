@@ -35,6 +35,11 @@ IDLE_ANCHOR = """                info.ChangeToDoQuest(questId, quest);
 IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                 return true;
             }
+            // E7.1: crafting is free time well spent - it consumes the idle
+            // beat only when a recipe actually fires.
+            if (NeedsLedger::CraftEnabled() &&
+                botAI->DoSpecificAction("econ craft", Event(), true))
+                return true;
             // Economy: an urgent errand beats a random pastime. The verdict
             // comes from the world-thread NeedsLedger mirror; trips reuse
             // WanderNpc with a deliberately chosen target, or GoCamp for the

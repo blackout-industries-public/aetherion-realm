@@ -76,17 +76,19 @@ ACTIONCTX = f"{module}/src/Ai/Base/ActionContext.h"
 patch(ACTIONCTX, [
     ('#include "AddLootAction.h"\n',
      '#include "AddLootAction.h"\n#include "AhBuyAction.h"\n#include "AhSellAction.h"\n'
-     '#include "MailCollectAction.h"\n'),
+     '#include "EconCraftAction.h"\n#include "MailCollectAction.h"\n'),
     ('        creators["rpg sell"] = &ActionContext::rpg_sell;',
      '        creators["rpg sell"] = &ActionContext::rpg_sell;\n'
      '        creators["ah sell"] = &ActionContext::ah_sell;\n'
      '        creators["ah buy"] = &ActionContext::ah_buy;\n'
-     '        creators["mail collect"] = &ActionContext::mail_collect;'),
+     '        creators["mail collect"] = &ActionContext::mail_collect;\n'
+     '        creators["econ craft"] = &ActionContext::econ_craft;'),
     ('    static Action* rpg_sell(PlayerbotAI* botAI) { return new RpgSellAction(botAI); }',
      '    static Action* rpg_sell(PlayerbotAI* botAI) { return new RpgSellAction(botAI); }\n'
      '    static Action* ah_sell(PlayerbotAI* botAI) { return new AhSellAction(botAI); }\n'
      '    static Action* ah_buy(PlayerbotAI* botAI) { return new AhBuyAction(botAI); }\n'
-     '    static Action* mail_collect(PlayerbotAI* botAI) { return new MailCollectAction(botAI); }'),
+     '    static Action* mail_collect(PlayerbotAI* botAI) { return new MailCollectAction(botAI); }\n'
+     '    static Action* econ_craft(PlayerbotAI* botAI) { return new EconCraftAction(botAI); }'),
 ], "AhSellAction")
 
 SELLACT = f"{module}/src/Ai/Base/Actions/SellAction.cpp"

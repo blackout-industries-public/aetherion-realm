@@ -224,6 +224,8 @@ set_conf "$PB" "AiPlayerbot.Econ.ProtectTradeGoods" "${ECON_PROTECT_GOODS:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.PaidRepairs" "${ECON_PAID_REPAIRS:-0}"
 # E3.2 sink: class training costs money; the trainer errand pays the bill.
 set_conf "$PB" "AiPlayerbot.Econ.PaidTraining" "${ECON_PAID_TRAINING:-0}"
+# E7.1: idle-time crafting of focus-free recipes from carried reagents.
+set_conf "$PB" "AiPlayerbot.Econ.Craft.Enabled" "${ECON_CRAFT:-0}"
 # E4.1a: bots list auction-worthy goods when they reach an auctioneer.
 set_conf "$PB" "AiPlayerbot.Econ.Ah.Enabled" "${ECON_AH:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.Ah.MaxPerVisit" "${ECON_AH_MAX_PER_VISIT:-4}"

@@ -34,6 +34,7 @@ arm ECON_PAID_TRAINING 1
 arm ECON_AH 1
 arm ECON_AH_BUY 1
 arm ECON_MAILBOX 1
+arm ECON_CRAFT 1
 arm BOT_CHEATS taxi,raid
 cp /opt/warcraft/overlay/docker-compose.override.yml /opt/warcraft/azerothcore/docker-compose.override.yml
 '
