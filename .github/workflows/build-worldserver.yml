@@ -1,15 +1,13 @@
 name: build-worldserver
 
 # The full compile: pinned core + module + the entire patch chain, built the
-# same way deploys build it. Runs on demand plus a weekly canary. Hosted
-# 2-core runners take a cold AzerothCore build slowly - the 6h ceiling below
-# covers it; move to a beefier pool if the canary starts flirting with it.
+# same way deploys build it. Manual dispatch ONLY - a cold AzerothCore build
+# on a hosted 2-core runner burns hours of minutes, so the routine gate is
+# the unit + patch-chain suite in validate.yml; compile errors surface at
+# deploy time on the server's warm ccache instead.
 
 on:
   workflow_dispatch:
-  schedule:
-    # Weekly canary against upstream drift, Monday 03:00 UTC.
-    - cron: "0 3 * * 1"
 
 jobs:
   compile:

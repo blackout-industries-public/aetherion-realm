@@ -14,3 +14,10 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+# src is not an installable package (package = false; the Dockerfile runs it via
+# PYTHONPATH=/app/src instead) - pytest needs the same path added so `import bridge`
+# resolves under `uv run` without installing anything.
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
