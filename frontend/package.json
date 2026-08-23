@@ -11,10 +11,5 @@
     "nuxt": "4.5.2",
     "mysql2": "3.23.3"
   },
-  "packageManager": "pnpm@11.22.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  }
+  "packageManager": "pnpm@11.22.0"
 }
