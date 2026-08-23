@@ -988,10 +988,36 @@ void NeedsLedger::WriteTelemetry()
                 "DELETE FROM aetherion_gold_bands WHERE ts < UNIX_TIMESTAMP() - 14*86400");
     }
 
-    // Publish this pass's urgent-errand verdicts for map-thread preemption.
+    // Publish this pass's urgent-errand verdicts for map-thread preemption -
+    // and into the ledger, so "who holds which errand" is a query instead of
+    // a guess (the zero-mail-pickups investigation).
     {
         std::lock_guard<std::mutex> lock(sVerdictMx);
         sVerdictMirror.swap(sVerdictBuild);
+
+        static char const* KINDS[] = {"none", "vendor", "mailbox", "trainer", "ah", "focus"};
+        std::ostringstream errandSql;
+        uint32 batched = 0;
+        for (auto const& pair : sVerdictMirror)
+        {
+            if (batched++)
+                errandSql << ",";
+            errandSql << "(" << pair.first << ",'errand','"
+                      << KINDS[pair.second.kind <= 5 ? pair.second.kind : 0] << "',0,0,"
+                      << "UNIX_TIMESTAMP())";
+            if (batched >= 400)
+            {
+                CharacterDatabase.Execute(
+                    "INSERT INTO aetherion_needs (guid, need_type, target, amount, free_money,"
+                    " since_ts) VALUES " + errandSql.str());
+                errandSql.str("");
+                batched = 0;
+            }
+        }
+        if (batched)
+            CharacterDatabase.Execute(
+                "INSERT INTO aetherion_needs (guid, need_type, target, amount, free_money,"
+                " since_ts) VALUES " + errandSql.str());
     }
     sVerdictBuild.clear();
 
