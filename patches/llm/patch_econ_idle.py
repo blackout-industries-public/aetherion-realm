@@ -45,27 +45,6 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
             // WanderNpc with a deliberately chosen target, or GoCamp for the
             // far leg.
             uint8 const econVerdict = NeedsLedger::UrgentVerdict(bot->GetGUID().GetCounter());
-            if (econVerdict == NeedsLedger::VERDICT_MAILBOX)
-            {
-                uint32 mbEntry, mbSpawn;
-                float mx, my, mz;
-                if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
-                                               mbEntry, mbSpawn, mx, my, mz))
-                {
-                    if (bot->GetDistance(mx, my, mz) < 130.0f)
-                    {
-                        info.ChangeToWanderNpc();
-                        if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
-                        {
-                            d->npcOrGo = ObjectGuid(HighGuid::GameObject, mbEntry, mbSpawn);
-                            d->lastReach = 0;
-                        }
-                    }
-                    else
-                        info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), mx, my, mz));
-                    return true;
-                }
-            }
             // E7 focus trip: reagents ready, recipe needs an anvil/forge/fire.
             // The GO-target accessor serves both mailbox and focus verdicts.
             if (econVerdict == NeedsLedger::VERDICT_FOCUS)
@@ -199,6 +178,41 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                                        RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP});"""
 assert src.count(IDLE_ANCHOR) == 1, "idle anchor (run after patch_questturnin)"
 src = src.replace(IDLE_ANCHOR, IDLE_NEW, 1)
+
+# E5.2 priority fix: mail outranks the quest drain. Production measured 2840
+# letters and zero pickups - veterans' perpetual turn-in backlog consumed every
+# idle beat, starving the mailbox errand forever. Collection is quick, funds
+# everything else, and the drain runs on the very next idle anyway.
+PRE_DRAIN = "            // Finished quests are handed in before a new pastime is rolled. DoQuest\n"
+PRE_DRAIN_NEW = """            // Mail first: proceeds and gifts fund every other errand, and the
+            // quest drain below would otherwise starve collection forever on
+            // bots with perpetually full logs.
+            if (NeedsLedger::UrgentVerdict(bot->GetGUID().GetCounter()) ==
+                NeedsLedger::VERDICT_MAILBOX)
+            {
+                uint32 mbEntry, mbSpawn;
+                float mx, my, mz;
+                if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
+                                               mbEntry, mbSpawn, mx, my, mz))
+                {
+                    if (bot->GetDistance(mx, my, mz) < 130.0f)
+                    {
+                        info.ChangeToWanderNpc();
+                        if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                        {
+                            d->npcOrGo = ObjectGuid(HighGuid::GameObject, mbEntry, mbSpawn);
+                            d->lastReach = 0;
+                        }
+                    }
+                    else
+                        info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), mx, my, mz));
+                    return true;
+                }
+            }
+            // Finished quests are handed in before a new pastime is rolled. DoQuest
+"""
+assert src.count(PRE_DRAIN) == 1, "quest-drain comment anchor (questturnin text)"
+src = src.replace(PRE_DRAIN, PRE_DRAIN_NEW, 1)
 
 # E2.2: every arrival at a vendor is a selling moment - greys and vendor-usage
 # only, so auction-worthy goods keep waiting for the AH epics.

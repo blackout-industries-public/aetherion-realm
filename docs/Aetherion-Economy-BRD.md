@@ -350,6 +350,10 @@ BOT-TO-BOT TRADE (ah_sold + ah_bought pair) - the program's flagship KPI.
 
 | 2026-08-22 | Production firsts, same evening: first bank deposit in realm history (Corrioa - who banked her own enchanting rod, exposing the tools-vs-reagents gap, fixed same hour: CraftPlanner now surfaces Totem tools and both keep-filters honor them); first bot-authored auction listings (Ameterena, level 55: four stacks - sharpening stones, nectar, bacon, grainbread - 4/4 attempts landed, deposits paid) | The market has genuine supply from a genuine seller. Remaining watched firsts: windfall mailbox walks, first completed bot-to-bot trade |
 
+| 2026-08-22 | E4.2 deliberate AH trips, E6.3b bank withdrawals (incl. stranded-tool recall), E7 focus trips (anvil/forge/fire spawn index + focus-mode crafting), dashboard flow counters | Supply pump measured: bot listings 4 -> 8 -> 54 across the evening, sellers 1 -> 9; repeated buy cycles through the market; refining crafts appearing (leather-making). Every recipe in every spellbook now reachable. Core economy program COMPLETE minus E10 guilds; remaining watched firsts: mail walk, bank withdrawal, flagship bot-to-bot trade |
+
+| 2026-08-23 | FLAGSHIP KPI VALIDATED overnight: nine completed trades including the first bot-to-bot sale (Berion bought Spider's Silk 21:05), gear off the market (Gelren, Veteran Girdle), refined mats (Visrin, Light Leather), an 81g rare weapon (Uget, Ardent Custodian) - and Gelren closing the circle as both buyer AND seller (sold Tigerseye 22:45) in one evening. Market: 156 live listings from 27 sellers and compounding | The program's reason to exist, observed in the wild. One soak item remains unvalidated: the mailbox walk (proceeds accumulate; prod's idle-beat scarcity paces it) - watch, and consider a priority tune only if collection lags for days |
+
 ## 10. Relationship to the race
 
 The economy makes the race legible: wealth, gear provenance, guild treasuries,
