@@ -33,9 +33,10 @@ RELEASEACT=src/Ai/Base/Actions/ReleaseSpiritAction.cpp
 TRAINERACT=src/Ai/Base/Actions/TrainerAction.cpp
 MEETSTONEACT=src/Ai/Base/Actions/UseMeetingStoneAction.cpp
 REPAIRACT=src/Ai/Base/Actions/RepairAllAction.cpp
+AUTOMAINT=src/Ai/Base/Actions/AutoMaintenanceOnLevelupAction.cpp
 git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
     "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
-    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX"
+    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT"
 
 mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
@@ -205,6 +206,10 @@ python3 "$HERE/patch_econ.py" "$MODULE"
 #     emitted. Inert unless AiPlayerbot.Econ.PaidRepairs = 1.
 python3 "$HERE/patch_econ_repair.py" "$MODULE"
 
+# 2j. Paid training (Economy BRD E3.2): levelup/refresh free-teaching gated.
+#     Inert unless AiPlayerbot.Econ.PaidTraining = 1.
+python3 "$HERE/patch_econ_train.py" "$MODULE"
+
 # 3. Config defaults. Everything off or conservative unless deliberately raised.
 cat >> "$MODULE/$CONF" <<'CONFEOF'
 
@@ -307,6 +312,7 @@ AiPlayerbot.Econ.Vendor.BrokeMinValue = 500
 AiPlayerbot.Econ.Vendor.FarMaxYards = 3000
 AiPlayerbot.Econ.ProtectTradeGoods = 0
 AiPlayerbot.Econ.PaidRepairs = 0
+AiPlayerbot.Econ.PaidTraining = 0
 AiPlayerbot.Econ.Ah.Enabled = 0
 AiPlayerbot.Econ.Ah.MaxPerVisit = 4
 AiPlayerbot.Econ.RemoteMail = 0

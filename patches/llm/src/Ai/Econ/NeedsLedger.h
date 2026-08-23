@@ -39,7 +39,9 @@ public:
     static uint8 constexpr VERDICT_NONE = 0;
     static uint8 constexpr VERDICT_VENDOR = 1;
     static uint8 constexpr VERDICT_MAILBOX = 2;
+    static uint8 constexpr VERDICT_TRAINER = 3;
     static uint8 UrgentVerdict(uint32 guid);
+    static bool PaidTraining();
 
     // E5.2: the mailbox errand's target - a real mailbox GameObject chosen on
     // the world thread. Near case hands back the spawn identity so the trip can

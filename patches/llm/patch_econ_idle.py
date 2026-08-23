@@ -61,6 +61,41 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                     return true;
                 }
             }
+            // E3.2: a funded training bill walks to the class trainer.
+            if (econVerdict == NeedsLedger::VERDICT_TRAINER)
+            {
+                GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();
+                ObjectGuid trainerGuid;
+                float bestT = FLT_MAX;
+                for (ObjectGuid const& guid : possible)
+                {
+                    Creature* c = ObjectAccessor::GetCreature(*bot, guid);
+                    if (!c || !c->HasNpcFlag(UNIT_NPC_FLAG_TRAINER))
+                        continue;
+                    float d = bot->GetDistance(c);
+                    if (d < bestT)
+                    {
+                        bestT = d;
+                        trainerGuid = guid;
+                    }
+                }
+                if (trainerGuid)
+                {
+                    info.ChangeToWanderNpc();
+                    if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                    {
+                        d->npcOrGo = trainerGuid;
+                        d->lastReach = 0;
+                    }
+                    return true;
+                }
+                float tx, ty, tz;
+                if (NeedsLedger::FarVendor(bot->GetGUID().GetCounter(), bot->GetMapId(), tx, ty, tz))
+                {
+                    info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), tx, ty, tz));
+                    return true;
+                }
+            }
             if (econVerdict == NeedsLedger::VERDICT_VENDOR)
             {
                 GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();
@@ -132,6 +167,12 @@ REACH_NEW = """        if (!data.lastReach)
                     botAI->DoSpecificAction("ah sell", Event(), true);
                     // E8.2: the same visit shops for upgrades from the mirror.
                     botAI->DoSpecificAction("ah buy", Event(), true);
+                }
+                // E3.2: TrainerAction reads the bot's selection as its target.
+                if (NeedsLedger::PaidTraining() && c->HasNpcFlag(UNIT_NPC_FLAG_TRAINER))
+                {
+                    bot->SetSelection(c->GetGUID());
+                    botAI->DoSpecificAction("trainer", Event("trainer", "learn"), true);
                 }
             }
             // E5.2: arriving at a mailbox is the collection moment.

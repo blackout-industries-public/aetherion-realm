@@ -28,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -74,6 +75,16 @@ namespace
     };
     std::unordered_map<uint16, std::vector<MailboxSpawn>> sMailboxSpawns;
     bool sMailboxVisits = false;
+    bool sPaidTraining = false;
+
+    // E3.2: class-trainer spawns per map, entry kept so validity for the
+    // specific bot's class is checked at verdict time.
+    struct TrainerSpawn
+    {
+        uint32 entry;
+        float x, y, z;
+    };
+    std::unordered_map<uint16, std::vector<TrainerSpawn>> sTrainerSpawns;
 
     // E8.1 listings mirror, rebuilt each pass on the world thread.
     std::mutex sListingsMx;
@@ -315,6 +326,7 @@ void NeedsLedger::LoadConfig()
     sPaidRepairs = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.PaidRepairs", false);
     sRemoteMail = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.RemoteMail", false);
     sMailboxVisits = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Mailbox.Enabled", false);
+    sPaidTraining = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.PaidTraining", false);
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
@@ -415,6 +427,7 @@ bool NeedsLedger::MailboxTarget(uint32 guid, uint32 botMap, uint32& entry, uint3
 bool NeedsLedger::SellOnVendorVisit() { return sVendorEnabled; }
 bool NeedsLedger::ProtectTradeGoods() { return sProtectTradeGoods; }
 bool NeedsLedger::PaidRepairs() { return sPaidRepairs; }
+bool NeedsLedger::PaidTraining() { return sPaidTraining; }
 
 void NeedsLedger::RegisterAuctionScript()
 {
@@ -454,6 +467,17 @@ void NeedsLedger::BuildTrainerCache()
         if (!proto || proto->type != GAMEOBJECT_TYPE_MAILBOX)
             continue;
         sMailboxSpawns[data.mapid].push_back({data.id, uint32(data.spawnId), data.posX, data.posY, data.posZ});
+    }
+
+    // E3.2: class-trainer geography from the entries collected above.
+    {
+        std::unordered_set<uint32> trainerSet(sTrainerEntries.begin(), sTrainerEntries.end());
+        for (auto const& pair : sObjectMgr->GetAllCreatureData())
+        {
+            CreatureData const& data = pair.second;
+            if (trainerSet.count(data.id))
+                sTrainerSpawns[data.mapid].push_back({data.id, data.posX, data.posY, data.posZ});
+        }
     }
 
     sTrainerCacheBuilt = true;
@@ -639,6 +663,41 @@ void NeedsLedger::ComputeNeeds(Player* bot)
                     v.goEntry = mb.entry;
                     v.goSpawnId = mb.spawnId;
                 }
+            }
+            if (v.hasFar)
+                sVerdictBuild[guid] = v;
+        }
+    }
+    // E3.2: a funded training bill sends the bot to its class trainer - spend
+    // trips only run when the money is actually there.
+    else if (sPreemptEnabled && sPaidTraining && [&]
+             {
+                 for (Need const& n : needs)
+                     if (n.type == "training")
+                         return n.amount > 0 && n.freeMoney >= n.amount;
+                 return false;
+             }())
+    {
+        auto it = sTrainerSpawns.find(uint16(bot->GetMapId()));
+        if (it != sTrainerSpawns.end())
+        {
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+            Verdict v{VERDICT_TRAINER, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+            for (TrainerSpawn const& ts : it->second)
+            {
+                float const dx = ts.x - bx, dy = ts.y - by;
+                float const d2 = dx * dx + dy * dy;
+                if (d2 >= best)
+                    continue;
+                Trainer::Trainer* trainer = sObjectMgr->GetTrainer(ts.entry);
+                if (!trainer || !trainer->IsTrainerValidForPlayer(bot))
+                    continue;
+                best = d2;
+                v.hasFar = true;
+                v.x = ts.x;
+                v.y = ts.y;
+                v.z = ts.z;
             }
             if (v.hasFar)
                 sVerdictBuild[guid] = v;
