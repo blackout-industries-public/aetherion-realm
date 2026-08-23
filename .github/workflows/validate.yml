@@ -1,0 +1,72 @@
+name: validate
+
+# Fast validation on every push and PR: the regression classes this repo
+# actually produces. The patch chain is the crown jewel - every patcher asserts
+# its anchors against the pinned upstream, so anchor drift or a broken patcher
+# fails here in minutes instead of at deploy time. The full worldserver
+# compile lives in build-worldserver.yml (self-hosted; heavy).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  patch-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone pinned mod-playerbots
+        run: |
+          set -euo pipefail
+          source overlay/.env.example
+          git clone --quiet "$PLAYERBOTS_REPO" /tmp/mod-playerbots
+          git -C /tmp/mod-playerbots checkout --quiet --detach "$PLAYERBOTS_COMMIT"
+
+      - name: Apply chain twice (anchors + determinism)
+        run: |
+          set -euo pipefail
+          patches/llm/apply.sh /tmp/mod-playerbots
+          patches/llm/apply.sh /tmp/mod-playerbots
+          # Spot-check that the load-bearing markers landed.
+          grep -q "NeedsLedger" /tmp/mod-playerbots/src/Script/Playerbots.cpp
+          grep -q "Race mode:" /tmp/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+          grep -q "Mail first" /tmp/mod-playerbots/src/Ai/World/Rpg/Action/NewRpgAction.cpp
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh patches/llm/apply.sh; do
+            bash -n "$f"
+          done
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Build dashboard
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: python3 -m py_compile ai-bridge/src/bridge/*.py

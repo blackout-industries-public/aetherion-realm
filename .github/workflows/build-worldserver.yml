@@ -1,0 +1,46 @@
+name: build-worldserver
+
+# The full compile: pinned core + module + the entire patch chain, built the
+# same way deploys build it. Heavy (~30-60 min, needs Docker), so it targets
+# the self-hosted pool and runs on demand plus a weekly canary.
+#
+# RUNNER NOTE: runs-on below uses the bare self-hosted label. When the KEDA
+# scale-set label is known (org runner listing needs admin:org scope, or read
+# it from the ARC/KEDA values in the cluster), replace it with that label so
+# scale-from-zero triggers. The job needs Docker (dind sidecar or a docker
+# socket on the runner).
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly canary against upstream drift, Monday 03:00 UTC.
+    - cron: "0 3 * * 1"
+
+jobs:
+  compile:
+    runs-on: [self-hosted]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone pinned core and modules
+        run: |
+          set -euo pipefail
+          source overlay/.env.example
+          git clone --quiet --branch "$AC_BRANCH" "$AC_REPO" /tmp/ac
+          git -C /tmp/ac checkout --quiet --detach "$AC_COMMIT"
+          git clone --quiet "$PLAYERBOTS_REPO" /tmp/ac/modules/mod-playerbots
+          git -C /tmp/ac/modules/mod-playerbots checkout --quiet --detach "$PLAYERBOTS_COMMIT"
+          git clone --quiet "$AHBOT_REPO" /tmp/ac/modules/mod-ah-bot
+          git -C /tmp/ac/modules/mod-ah-bot checkout --quiet --detach "$AHBOT_COMMIT"
+
+      - name: Apply patch chain
+        run: patches/llm/apply.sh /tmp/ac/modules/mod-playerbots
+
+      - name: Compile worldserver image
+        working-directory: /tmp/ac
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/overlay/docker-compose.override.yml" docker-compose.override.yml
+          cp "$GITHUB_WORKSPACE/overlay/.env.example" .env
+          docker compose build ac-worldserver
