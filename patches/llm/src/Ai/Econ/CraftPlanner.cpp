@@ -100,6 +100,13 @@ void CraftPlanner::Enumerate(Player* bot, std::vector<CraftOption>& out, uint32 
                 option.missing.emplace_back(itemId, required - have);
         }
 
+        // Tools (Totem slots) are required but never consumed - a rod, a
+        // skinning knife. Consumers keep them out of deposits and listings, or
+        // the bot disarms its own profession (the Corrioa incident).
+        for (uint8 t = 0; t < 2; ++t)
+            if (spellInfo->Totem[t] > 0)
+                option.tools.push_back(uint32(spellInfo->Totem[t]));
+
         // A profession create-item spell without reagents is bad spell data;
         // the module's own craft picker refuses those, so mirror it.
         if (option.reagents.empty())

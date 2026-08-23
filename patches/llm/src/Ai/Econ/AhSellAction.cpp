@@ -89,8 +89,12 @@ void AhSellAction::CollectAhItems(std::vector<Item*>& out, uint32 limit)
         std::vector<CraftOption> options;
         CraftPlanner::Enumerate(bot, options, 0);
         for (CraftOption const& opt : options)
+        {
             for (auto const& [itemId, count] : opt.reagents)
                 ownReagents.insert(itemId);
+            for (uint32 tool : opt.tools)
+                ownReagents.insert(tool);
+        }
     }
     auto keepForCrafting = [&](Item* item)
     { return ownReagents.count(item->GetEntry()) != 0; };

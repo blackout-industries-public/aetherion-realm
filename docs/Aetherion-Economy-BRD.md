@@ -346,6 +346,8 @@ E6 banking, E7.1 crafting. Next validation items (simulation-speed): first
 listing landing, first paid repair, first collected sale gold, FIRST COMPLETED
 BOT-TO-BOT TRADE (ah_sold + ah_bought pair) - the program's flagship KPI.
 
+| 2026-08-22 | PRODUCTION ROLLOUT (no wipe): E0-E8 + E3.2 + E5.2 + E7 (craft/reagent-buy/keep-own-reagents) + E6.3a (bank deposits) deployed to the live 2500-bot realm via deploy-econ.sh; all Econ keys armed persistently | First needs pass at full scale: all 2500 bots carry a materials need (crafting had never run), 112 repair needs. FIRST CRAFTS IN REALM HISTORY within seconds of the E7 deploy (bandages, armor kits from hoarded cloth/leather). Windfall tracking live: five veterans mailed 100g each, mailbox walks pending their next idle. Realm survived four worldserver restarts today with zero errors |
+
 ## 10. Relationship to the race
 
 The economy makes the race legible: wealth, gear provenance, guild treasuries,

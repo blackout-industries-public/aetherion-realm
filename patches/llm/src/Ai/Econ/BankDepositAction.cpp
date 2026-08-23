@@ -50,8 +50,13 @@ void CollectOwnReagents(Player* bot, std::unordered_set<uint32>& out)
     std::vector<CraftOption> options;
     CraftPlanner::Enumerate(bot, options, 0);
     for (CraftOption const& option : options)
+    {
         for (std::pair<uint32, uint32> const& reagent : option.reagents)
             out.insert(reagent.first);
+        // Tools too, or the enchanter banks its own rod.
+        for (uint32 tool : option.tools)
+            out.insert(tool);
+    }
 }
 
 bool Depositable(Item* item, std::unordered_set<uint32> const& ownReagents)
