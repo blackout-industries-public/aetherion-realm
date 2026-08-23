@@ -103,6 +103,7 @@ void CraftPlanner::Enumerate(Player* bot, std::vector<CraftOption>& out, uint32 
         // Tools (Totem slots) are required but never consumed - a rod, a
         // skinning knife. Consumers keep them out of deposits and listings, or
         // the bot disarms its own profession (the Corrioa incident).
+        option.spellFocus = spellInfo->RequiresSpellFocus;
         for (uint8 t = 0; t < 2; ++t)
             if (spellInfo->Totem[t] > 0)
                 option.tools.push_back(uint32(spellInfo->Totem[t]));

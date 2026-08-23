@@ -25,9 +25,11 @@ bool CraftEnabled()
     return enabled;
 }
 
-// V1 scope: castable-anywhere recipes. Focus-required ones (anvil, forge,
-// alchemy lab) need the focus-object trip that comes with the next story.
-bool PickCastable(Player* bot, CraftOption& out)
+// Two modes: the default picks castable-anywhere recipes for idle beats; the
+// "focus" mode (dispatched on arrival at an anvil, forge or fire) picks only
+// focus-required ones - the bot is standing at the object, and the core's
+// CheckCast confirms the match.
+bool PickCastable(Player* bot, CraftOption& out, bool focusMode)
 {
     std::vector<CraftOption> options;
     CraftPlanner::Enumerate(bot, options, 12);
@@ -35,8 +37,7 @@ bool PickCastable(Player* bot, CraftOption& out)
     {
         if (!opt.craftableNow)
             continue;
-        SpellInfo const* info = sSpellMgr->GetSpellInfo(opt.spellId);
-        if (!info || info->RequiresSpellFocus)
+        if (focusMode != (opt.spellFocus != 0))
             continue;
         out = opt;
         return true;
@@ -50,16 +51,17 @@ bool EconCraftAction::isUseful()
     if (!CraftEnabled())
         return false;
     CraftOption opt;
-    return PickCastable(bot, opt);
+    return PickCastable(bot, opt, false) || PickCastable(bot, opt, true);
 }
 
-bool EconCraftAction::Execute(Event /*event*/)
+bool EconCraftAction::Execute(Event event)
 {
     if (!CraftEnabled())
         return false;
 
+    bool const focusMode = event.getParam() == "focus";
     CraftOption opt;
-    if (!PickCastable(bot, opt))
+    if (!PickCastable(bot, opt, focusMode))
         return false;
 
     if (!botAI->CastSpell(opt.spellId, bot))

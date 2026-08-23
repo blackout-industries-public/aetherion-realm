@@ -66,6 +66,29 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                     return true;
                 }
             }
+            // E7 focus trip: reagents ready, recipe needs an anvil/forge/fire.
+            // The GO-target accessor serves both mailbox and focus verdicts.
+            if (econVerdict == NeedsLedger::VERDICT_FOCUS)
+            {
+                uint32 fEntry, fSpawn;
+                float fx, fy, fz;
+                if (NeedsLedger::MailboxTarget(bot->GetGUID().GetCounter(), bot->GetMapId(),
+                                               fEntry, fSpawn, fx, fy, fz))
+                {
+                    if (bot->GetDistance(fx, fy, fz) < 130.0f)
+                    {
+                        info.ChangeToWanderNpc();
+                        if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                        {
+                            d->npcOrGo = ObjectGuid(HighGuid::GameObject, fEntry, fSpawn);
+                            d->lastReach = 0;
+                        }
+                    }
+                    else
+                        info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), fx, fy, fz));
+                    return true;
+                }
+            }
             // E3.2: a funded training bill walks to the class trainer.
             if (econVerdict == NeedsLedger::VERDICT_TRAINER)
             {
@@ -219,10 +242,15 @@ REACH_NEW = """        if (!data.lastReach)
                 if (c->HasNpcFlag(UNIT_NPC_FLAG_BANKER))
                     botAI->DoSpecificAction("bank deposit", Event(), true);
             }
-            // E5.2: arriving at a mailbox is the collection moment.
+            // E5.2: arriving at a mailbox is the collection moment; E7: an
+            // anvil/forge/fire arrival is the crafting moment.
             if (GameObject* go = object->ToGameObject())
+            {
                 if (go->GetGoType() == GAMEOBJECT_TYPE_MAILBOX)
                     botAI->DoSpecificAction("mail collect", Event(), true);
+                if (go->GetGoType() == GAMEOBJECT_TYPE_SPELL_FOCUS)
+                    botAI->DoSpecificAction("econ craft", Event("econ craft", "focus"), true);
+            }
             return true;
         }"""
 assert src.count(REACH_ANCHOR) == 1, "wander-npc first-reach anchor"

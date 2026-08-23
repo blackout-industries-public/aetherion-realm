@@ -92,6 +92,17 @@ namespace
     bool sAhEnabled = false;
     uint32 sAhMinItemsForTrip = 3;
 
+    // E7 focus trips: spell-focus GameObjects (anvil, forge, cooking fire) per
+    // map, keyed by their SpellFocusObject id.
+    struct FocusSpawn
+    {
+        uint32 focusId;
+        uint32 entry;
+        uint32 spawnId;
+        float x, y, z;
+    };
+    std::unordered_map<uint16, std::vector<FocusSpawn>> sFocusSpawns;
+
     // E8.1 listings mirror, rebuilt each pass on the world thread.
     std::mutex sListingsMx;
     std::vector<NeedsLedger::AhListing> sListings;
@@ -459,7 +470,8 @@ bool NeedsLedger::MailboxTarget(uint32 guid, uint32 botMap, uint32& entry, uint3
 {
     std::lock_guard<std::mutex> lock(sVerdictMx);
     auto it = sVerdictMirror.find(guid);
-    if (it == sVerdictMirror.end() || it->second.kind != VERDICT_MAILBOX || !it->second.hasFar ||
+    if (it == sVerdictMirror.end() ||
+        (it->second.kind != VERDICT_MAILBOX && it->second.kind != VERDICT_FOCUS) || !it->second.hasFar ||
         it->second.farMap != uint16(botMap))
         return false;
     entry = it->second.goEntry;
@@ -506,14 +518,20 @@ void NeedsLedger::BuildTrainerCache()
         sVendorSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
     }
 
-    // E5.2: mailbox geography the same way.
+    // E5.2 mailboxes and E7 spell-focus objects share one geography walk.
     for (auto const& pair : sObjectMgr->GetAllGOData())
     {
         GameObjectData const& data = pair.second;
         GameObjectTemplate const* proto = sObjectMgr->GetGameObjectTemplate(data.id);
-        if (!proto || proto->type != GAMEOBJECT_TYPE_MAILBOX)
+        if (!proto)
             continue;
-        sMailboxSpawns[data.mapid].push_back({data.id, uint32(data.spawnId), data.posX, data.posY, data.posZ});
+        if (proto->type == GAMEOBJECT_TYPE_MAILBOX)
+            sMailboxSpawns[data.mapid].push_back(
+                {data.id, uint32(data.spawnId), data.posX, data.posY, data.posZ});
+        else if (proto->type == GAMEOBJECT_TYPE_SPELL_FOCUS && proto->spellFocus.focusId)
+            sFocusSpawns[data.mapid].push_back({proto->spellFocus.focusId, data.id,
+                                                uint32(data.spawnId), data.posX, data.posY,
+                                                data.posZ});
     }
 
     // E3.2: class-trainer geography from the entries collected above. E4.2
@@ -753,6 +771,50 @@ void NeedsLedger::ComputeNeeds(Player* bot)
             if (v.hasFar)
                 sVerdictBuild[guid] = v;
         }
+    }
+    // E7 focus trip: reagents complete but the recipe needs an anvil, forge or
+    // fire - walk to the nearest matching focus object and craft there.
+    else if (sPreemptEnabled && sCraftEnabled && [&]
+             {
+                 std::vector<CraftOption> options;
+                 CraftPlanner::Enumerate(bot, options, 12);
+                 auto it = sFocusSpawns.find(uint16(bot->GetMapId()));
+                 if (it == sFocusSpawns.end())
+                     return false;
+                 for (CraftOption const& opt : options)
+                 {
+                     if (!opt.craftableNow || !opt.spellFocus)
+                         continue;
+                     float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+                     float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+                     Verdict v{VERDICT_FOCUS, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+                     for (FocusSpawn const& fs : it->second)
+                     {
+                         if (fs.focusId != opt.spellFocus)
+                             continue;
+                         float const dx = fs.x - bx, dy = fs.y - by;
+                         float const d2 = dx * dx + dy * dy;
+                         if (d2 < best)
+                         {
+                             best = d2;
+                             v.hasFar = true;
+                             v.x = fs.x;
+                             v.y = fs.y;
+                             v.z = fs.z;
+                             v.goEntry = fs.entry;
+                             v.goSpawnId = fs.spawnId;
+                         }
+                     }
+                     if (v.hasFar)
+                     {
+                         sVerdictBuild[guid] = v;
+                         return true;
+                     }
+                 }
+                 return false;
+             }())
+    {
+        // Verdict stored inside the lambda; nothing further here.
     }
     // E4.2: a bag worth listing sends the bot to the auction house on purpose
     // instead of waiting for wander luck.

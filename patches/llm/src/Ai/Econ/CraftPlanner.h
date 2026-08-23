@@ -32,6 +32,9 @@ struct CraftOption
     // (itemId, countShort) after subtracting bag stock - empty means the bot
     // holds everything the recipe needs right now.
     std::vector<std::pair<uint32, uint32>> missing;
+    // SpellFocusObject.dbc id this recipe must be cast beside (anvil, forge,
+    // fire); zero casts anywhere.
+    uint32 spellFocus = 0;
     // Required-but-not-consumed tool items from the spell Totem slots.
     std::vector<uint32> tools;
     bool craftableNow = false;
