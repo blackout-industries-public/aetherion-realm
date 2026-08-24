@@ -81,6 +81,38 @@ inc = '#include "PlayerbotAI.h"'
 assert inc in src, "include anchor not found"
 src = src.replace(inc, inc + '\n#include "LlmBridge.h"', 1)
 
+# "do it" parses as the 'do' command and every bot in the party answers
+# "it: unknown action" in red. A real player's chat that names no known
+# action is almost always conversation - one claimed bot answers like a
+# person, the rest stay quiet.
+unknown_anchor = '''    if (!silent)
+    {
+        out << name << ": unknown action";
+        TellError(out.str());
+    }
+
+    return false;
+}'''
+unknown_new = '''    if (!silent)
+    {
+        Player* master = GetMaster();
+        if (sLlmBridge->IsEnabled() && master && master->GetSession() &&
+            !GET_PLAYERBOT_AI(master) && sLlmBridge->WantsChatType(CHAT_MSG_PARTY))
+        {
+            std::string const said = std::string(name);
+            if (sLlmBridge->TryClaim(master->GetGUID(), CHAT_MSG_PARTY, said))
+                sLlmBridge->Submit(bot, master, said, CHAT_MSG_PARTY);
+            return false;
+        }
+        out << name << ": unknown action";
+        TellError(out.str());
+    }
+
+    return false;
+}'''
+assert unknown_anchor in src, "unknown-action tail not found; upstream changed"
+src = src.replace(unknown_anchor, unknown_new, 1)
+
 open(path, "w").write(src)
 print("patched PlayerbotAI.cpp")
 PY
