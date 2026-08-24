@@ -32,11 +32,12 @@ ACTIONCTX=src/Ai/Base/ActionContext.h
 RELEASEACT=src/Ai/Base/Actions/ReleaseSpiritAction.cpp
 TRAINERACT=src/Ai/Base/Actions/TrainerAction.cpp
 MEETSTONEACT=src/Ai/Base/Actions/UseMeetingStoneAction.cpp
+GREETACT=src/Ai/Base/Actions/GreetAction.cpp
 REPAIRACT=src/Ai/Base/Actions/RepairAllAction.cpp
 AUTOMAINT=src/Ai/Base/Actions/AutoMaintenanceOnLevelupAction.cpp
 git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
     "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
-    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT"
+    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT"
 
 mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
@@ -62,7 +63,18 @@ anchor = '''        if (!helper.ParseChatCommand(command, owner) && it->GetType(
             // TellPlayer(out);
             // helper.ParseChatCommand("help");
         }'''
-replacement = '''        if (!helper.ParseChatCommand(command, owner))
+replacement = '''        // Four or more words from a real player is conversation, not a
+        // command: "pass me party leader" once parsed into an inventory dump
+        // and an open trade window. Short forms stay commands; sentences go
+        // to the model, whose intents route back through the same command
+        // paths anyway.
+        uint32 spacesInCommand = 0;
+        for (char const ch : command)
+            if (ch == ' ')
+                ++spacesInCommand;
+        bool const sentence = sLlmBridge->IsEnabled() && owner &&
+                              !GET_PLAYERBOT_AI(owner) && spacesInCommand >= 3;
+        if (sentence || !helper.ParseChatCommand(command, owner))
         {
             // Not a command, so treat it as conversation. One message is offered to
             // every bot that can hear it, so TryClaim picks a single responder;
@@ -272,6 +284,33 @@ src = src.replace(say_anchor, say_new, 1)
 
 open(path, "w").write(src)
 print("patched Playerbots.cpp")
+PY
+
+# 1b. Bots greet only real players. Left alone, every bot hellos every bot -
+#     observed as an unbroken column of "greets everyone with a hearty hello!"
+#     including one bot greeting itself.
+python3 - "$MODULE/$GREETACT" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+
+anchor = '''    Player* player = dynamic_cast<Player*>(botAI->GetUnit(guid));
+    if (!player)
+        return false;
+'''
+assert anchor in src, "GreetAction player lookup not found; upstream changed"
+src = src.replace(anchor, anchor + '''
+    // A hello is for people. Two thousand bots greeting each other is wall
+    // spam, and the emote spends its charm where nobody reads it.
+    if (!player->GetSession() || GET_PLAYERBOT_AI(player))
+        return false;
+''', 1)
+
+inc = '#include "Playerbots.h"'
+assert inc in src, "Playerbots include not found in GreetAction"
+
+open(path, "w").write(src)
+print("patched GreetAction.cpp (greet real players only)")
 PY
 
 # 2b. Bots forming their own parties (see patch_aifactory.py for why this is needed).

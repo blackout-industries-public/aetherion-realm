@@ -22,6 +22,7 @@ _GATES: dict[str, re.Pattern] = {
     "stay":         re.compile(r"\b(stay|wait|hold|stop)\b", re.I),
     "queue_bg":     re.compile(r"\b(queue|que|bg|battleground|warsong|wsg|arathi|"
                                r"alterac|av|ab|eots|eye of the storm)\b", re.I),
+    "give_lead":    re.compile(r"\b(lead(er)?|leadership|promote)\b", re.I),
     "buff":         re.compile(r"\b(buff|bless|blessing|fort(itude)?|mark|kings|"
                                r"might|wisdom|intellect)\b", re.I),
 }
@@ -46,6 +47,7 @@ _ALIASES = {
     "come": "come", "follow": "follow", "stay": "stay",
     "queuebg": "queue_bg", "queue_bg": "queue_bg", "bgqueue": "queue_bg",
     "buff": "buff", "buffs": "buff",
+    "lead": "give_lead", "leader": "give_lead", "give_lead": "give_lead",
 }
 
 INSTRUCTION = (
@@ -57,6 +59,7 @@ INSTRUCTION = (
     "[STAY] you will wait here\n"
     "[BUFF] you will cast your buffs on them and the group right now\n"
     "[QUEUEBG] you are getting the battleground queue started for them\n"
+    "[LEAD] you are handing them the group lead\n"
     "If none apply, use no tag. Never use a tag you were not asked for."
 )
 

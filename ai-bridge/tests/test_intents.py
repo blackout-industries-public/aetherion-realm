@@ -16,6 +16,7 @@ def test_allowed_matches_the_documented_intent_vocabulary() -> None:
         "stay",
         "queue_bg",
         "buff",
+        "give_lead",
     }
 
 

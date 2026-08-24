@@ -574,6 +574,11 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
     if (!botAI || !speaker)
         return;
 
+    // INFO on purpose: every accepted tag should be visible in the log, so a
+    // reply that promised an act and did nothing is diagnosable in seconds.
+    LOG_INFO("playerbots", "LLM intent '{}': {} for {}", intent, bot->GetName(),
+             speaker->GetName());
+
     // Every precondition is re-checked here. The model's tag is a request; whether it
     // is legal is decided entirely by the server, so a hallucinated tag can at worst
     // be ignored - it can never grant the model authority it does not have.
@@ -623,6 +628,14 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
         return;
     }
 
+    // Leadership goes through the module's own transfer command - the same
+    // checks a whispered "give leader" would run.
+    if (intent == "give_lead")
+    {
+        botAI->HandleCommand(CHAT_MSG_WHISPER, "give leader", speaker);
+        return;
+    }
+
     // Queue for a battleground through the same packet the PvP panel sends.
     // A free bot queues itself. A bot in the SPEAKER'S group honours the ask
     // the WoW way: the queue belongs to the leader, so the group join fires
@@ -652,9 +665,16 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
             asGroup = 1;
         }
         if (joiner->InBattleground() || joiner->InBattlegroundQueue())
+        {
+            LOG_INFO("playerbots", "LLM intent: {} already queued or inside - queue ask ignored",
+                     joiner->GetName());
             return;
+        }
         uint8 const level = joiner->GetLevel();
-        uint32 const bgType = level >= 80   ? uint32(BATTLEGROUND_RB)
+        // Group joins avoid the random battleground: its group path is the
+        // core's flakiest and rejects silently. Alterac always seats a group.
+        uint32 const bgType = asGroup && level >= 51 ? uint32(BATTLEGROUND_AV)
+                              : level >= 80 ? uint32(BATTLEGROUND_RB)
                               : level >= 61 ? uint32(BATTLEGROUND_EY)
                               : level >= 51 ? uint32(BATTLEGROUND_AV)
                               : level >= 20 ? uint32(BATTLEGROUND_AB)
@@ -665,8 +685,9 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
         *packet << uint32(0);
         *packet << uint8(asGroup);
         joiner->GetSession()->QueuePacket(packet);
-        LOG_DEBUG("playerbots", "LLM intent: {} starts bg queue {} (asGroup {})",
-                  bot->GetName(), bgType, uint32(asGroup));
+        // INFO on purpose: this is the observable proof the ask became an act.
+        LOG_INFO("playerbots", "LLM intent: {} starts bg queue {} (asGroup {}, joiner {})",
+                 bot->GetName(), bgType, uint32(asGroup), joiner->GetName());
     }
 }
 
