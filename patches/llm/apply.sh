@@ -273,6 +273,8 @@ AiPlayerbot.Party.RaidPct = 20
 AiPlayerbot.Party.RaidSize = 10
 AiPlayerbot.Party.Raid25Pct = 25
 AiPlayerbot.Party.RaidHeroicPct = 15
+AiPlayerbot.Party.MusterEveryMin = 45
+AiPlayerbot.Party.MusterTimeoutMin = 12
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
 

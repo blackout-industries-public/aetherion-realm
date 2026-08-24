@@ -22,6 +22,7 @@
 #include "SharedDefines.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <mutex>
 #include <cmath>
 #include <string>
@@ -124,6 +125,8 @@ void PartyAssembler::LoadConfig()
     _raidSize = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidSize", 10);
     _raid25Pct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.Raid25Pct", 25);
     _raidHeroicPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidHeroicPct", 15);
+    _musterEveryMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterEveryMin", 45);
+    _musterTimeoutMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterTimeoutMin", 12);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
     _travelToDungeon = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.TravelToDungeon", true);
     sDriveGrouped = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.DriveGroupedBots", false);
@@ -1159,16 +1162,71 @@ bool PartyAssembler::AssembleOne()
     if (pool.size() < _targetSize)
         return false;
 
+    // Muster: while a faction musters, its level-capped candidates are held
+    // back from ordinary formation so the free bench can grow - measured
+    // without this, churn kept the bench at 8-9 and a 25 could never seat.
+    // The moment the called can fill a 25 on one map, the raid rises from
+    // them directly.
+    Player* musterLeader = nullptr;
+    if (_musterTeam >= 0)
+    {
+        std::vector<Player*> called;
+        for (Player* bot : pool)
+            if (bot->GetLevel() >= 80 && bot->GetTeamId() == TeamId(_musterTeam))
+                called.push_back(bot);
+
+        std::unordered_map<uint32, uint32> perMap;
+        uint32 bestMap = 0, bestN = 0;
+        for (Player* bot : called)
+        {
+            uint32 const n = ++perMap[bot->GetMapId()];
+            if (n > bestN)
+            {
+                bestN = n;
+                bestMap = bot->GetMapId();
+            }
+        }
+
+        if (bestN >= 25)
+        {
+            std::vector<Player*> seated;
+            for (Player* bot : called)
+                if (bot->GetMapId() == bestMap)
+                    seated.push_back(bot);
+            pool.swap(seated);
+            musterLeader = pool[urand(0, pool.size() - 1)];
+            LOG_INFO("playerbots",
+                     "Party assembler: the muster answers - {} capped {} raise a raid",
+                     pool.size(), _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
+            _musterTeam = -1;
+        }
+        else
+        {
+            pool.erase(std::remove_if(pool.begin(), pool.end(),
+                           [this](Player* b)
+                           {
+                               return b->GetLevel() >= 80 &&
+                                      b->GetTeamId() == TeamId(_musterTeam);
+                           }),
+                       pool.end());
+            if (pool.size() < _targetSize)
+                return false;
+        }
+    }
+
     // Leader first, then everyone compatible with the leader. Picking the leader at
     // random rather than by level keeps parties spread across the level brackets
     // instead of always forming at the cap.
-    Player* leader = pool[urand(0, pool.size() - 1)];
+    Player* leader = musterLeader ? musterLeader : pool[urand(0, pool.size() - 1)];
 
     // Only now, with a leader in hand, can we tell whether a raid is even possible:
-    // it needs the size, the level and a raid entrance on this continent.
+    // it needs the size, the level and a raid entrance on this continent. A
+    // mustered pool skips the rolls - the muster was the decision.
     uint8 raidFloor = 0;
-    bool wantRaid = _raidPct && _raidSize > _targetSize && pool.size() >= _raidSize &&
-                    urand(1, 100) <= _raidPct && HasRaidTarget(leader, raidFloor);
+    bool wantRaid = musterLeader
+        ? HasRaidTarget(leader, raidFloor)
+        : _raidPct && _raidSize > _targetSize && pool.size() >= _raidSize &&
+              urand(1, 100) <= _raidPct && HasRaidTarget(leader, raidFloor);
     uint32 targetSize = wantRaid ? _raidSize : _targetSize;
 
     std::vector<Player*> compatible;
@@ -1197,9 +1255,10 @@ bool PartyAssembler::AssembleOne()
 
     // A raid grows to 25 only when the compatible bench can actually seat it -
     // chosen here, after filtering, so there is never a 25-intent that must
-    // shed members later.
-    if (wantRaid && _raid25Pct && compatible.size() + 1 >= 25 &&
-        urand(1, 100) <= _raid25Pct)
+    // shed members later. A mustered pool takes the seat without a roll; the
+    // muster existed for exactly this.
+    if (wantRaid && compatible.size() + 1 >= 25 &&
+        (musterLeader || (_raid25Pct && urand(1, 100) <= _raid25Pct)))
         targetSize = 25;
 
     if (compatible.size() + 1 < targetSize)
@@ -1361,6 +1420,31 @@ void PartyAssembler::Tick(uint32 diff)
     // Drop parties that have since disbanded, so the cap reflects reality.
     for (auto it = _assembled.begin(); it != _assembled.end();)
         it = sGroupMgr->GetGroupByGUID(*it) ? std::next(it) : _assembled.erase(it);
+
+    // Muster clock. One tick is one assembler interval, so minutes convert at
+    // the configured cadence rather than wall time - close enough for a
+    // mechanism whose only job is "hold the bench for a while, then let go".
+    if (_musterEveryMin)
+    {
+        uint32 const ticksPerMin = std::max<uint32>(1, 60000u / std::max<uint32>(1, _intervalMs));
+        if (_musterTeam < 0)
+        {
+            if (++_musterCooldownTicks >= _musterEveryMin * ticksPerMin)
+            {
+                _musterCooldownTicks = 0;
+                _musterAgeTicks = 0;
+                _musterTeam = urand(0, 1) ? TEAM_ALLIANCE : TEAM_HORDE;
+                LOG_INFO("playerbots", "Party assembler: the {} muster their capped ranks",
+                         _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
+            }
+        }
+        else if (++_musterAgeTicks >= _musterTimeoutMin * ticksPerMin)
+        {
+            LOG_INFO("playerbots",
+                     "Party assembler: the muster lapses with too few answering the call");
+            _musterTeam = -1;
+        }
+    }
 
     // Journeys already under way are advanced every tick, not just when a new party
     // is formed - that is what keeps a leader walking to the door.

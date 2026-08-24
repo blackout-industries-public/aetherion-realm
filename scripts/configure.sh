@@ -99,6 +99,10 @@ set_conf "$PB" "AiPlayerbot.Party.RaidSize" "${PARTY_RAID_SIZE:-10}"
 # attempt heroic where the destination offers it and access checks pass.
 set_conf "$PB" "AiPlayerbot.Party.Raid25Pct" "${PARTY_RAID25_PCT:-25}"
 set_conf "$PB" "AiPlayerbot.Party.RaidHeroicPct" "${PARTY_RAID_HEROIC_PCT:-15}"
+# The muster: hold one faction's capped bots back from party formation
+# until 25 can seat, so full-size raids actually occur. 0 disables.
+set_conf "$PB" "AiPlayerbot.Party.MusterEveryMin" "${PARTY_MUSTER_EVERY_MIN:-45}"
+set_conf "$PB" "AiPlayerbot.Party.MusterTimeoutMin" "${PARTY_MUSTER_TIMEOUT_MIN:-12}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"
 set_conf "$PB" "AiPlayerbot.Party.TravelToDungeon" "${PARTY_TRAVEL:-1}"
 

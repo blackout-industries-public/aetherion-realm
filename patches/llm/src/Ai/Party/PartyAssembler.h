@@ -219,6 +219,15 @@ private:
     // destination offers one and every member clears its access check.
     uint32 _raid25Pct{25};
     uint32 _raidHeroicPct{15};
+    // The muster: ordinary formation consumes capped bots so fast that a free
+    // bench of 25 never occurs naturally. Every EveryMin minutes one faction's
+    // level-capped candidates are held back from party formation until they
+    // number enough for a 25-raid or the muster times out.
+    uint32 _musterEveryMin{45};
+    uint32 _musterTimeoutMin{12};
+    uint32 _musterCooldownTicks{0};
+    uint32 _musterAgeTicks{0};
+    int32 _musterTeam{-1};
     bool _queueLfg{true};
     bool _travelToDungeon{true};
 
