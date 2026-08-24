@@ -208,13 +208,19 @@ const alerts = computed<Alert[]>(() => {
       text: `${stale.map((f: any) => f.feed).join(', ')} ${stale.length === 1 ? 'feed has' : 'feeds have'} gone stale`,
     })
   // Errand rows are the verdict census, not money needs - they never fund.
+  // Only PRICED needs can alarm: unpriced gear wants are the realm's standing
+  // condition, and an alert that never clears is just wallpaper. This matches
+  // the ECON lede's definition, so strip and lede can never contradict.
   const needs = (econ.value?.needs ?? []).filter((n: any) => n.type !== 'errand')
-  const unfunded = needs.reduce((s: number, n: any) => s + Math.max(0, n.n - n.funded), 0)
+  const unfunded = needs.reduce((s: number, n: any) => {
+    const priced = n.priced ?? (n.type === 'gear' ? 0 : n.n)
+    return s + Math.max(0, priced - n.funded)
+  }, 0)
   if (unfunded > 0) {
     const oldest = (econ.value?.starved ?? [])[0]
     list.push({
       key: 'needs', tone: V.accent, tab: 'econ', jump: 'ECON',
-      text: `${fmt.int(unfunded)} needs unfunded${oldest ? `, oldest ${fmt.ago(oldest.since)}` : ''}`,
+      text: `${fmt.int(unfunded)} priced needs unfunded${oldest ? `, oldest ${fmt.ago(oldest.since)}` : ''}`,
     })
   }
   return list.slice(0, 3)

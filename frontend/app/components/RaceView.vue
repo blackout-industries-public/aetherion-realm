@@ -62,8 +62,15 @@ const lede = computed(() => {
 })
 
 const clockNote = computed(() =>
-  `${started.value ? 'gun' : 'watch'} → now · circles are level firsts in the ` +
-  `claimant's class colour · diamonds are boss firsts`)
+  started.value
+    ? `gun → now · circles are level firsts in the claimant's class colour · ` +
+      `diamonds are boss firsts`
+    : 'stopped')
+
+// A plot needs a race. Without a declared gun every first predates the watch
+// and the marks collapse into a blob at zero - honest words beat a wrong
+// picture, so the strip only renders once a wipe writes the starting gun.
+const clockPlottable = computed(() => started.value != null)
 
 const clockMarks = computed(() =>
   (props.race?.levelFirsts ?? []).map((f: any) => ({
@@ -81,8 +88,11 @@ const clockBosses = computed(() => {
     const p = frac(b.at)
     if (p - last < 0.06) continue
     last = p
+    // Base name only: parenthetical dungeon suffixes truncate into noise at
+    // diamond-label size.
+    const base = String(b.boss).split('(')[0]!.trim()
     kept.push({
-      at: p, label: String(b.boss).split(' ').pop() ?? b.boss,
+      at: p, label: base.split(' ').pop() ?? base,
       title: `${b.boss} · ${stamp(b.at)}`,
     })
   }
@@ -129,9 +139,14 @@ const shapeBars = computed(() => {
         <span :style="{ fontFamily: FONT.display, fontWeight: 600, fontSize: '10px', letterSpacing: '.16em', color: V.dim, textTransform: 'uppercase' }">The race clock</span>
         <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, textAlign: 'right' }">{{ clockNote }}</span>
       </header>
-      <div :style="{ padding: '6px 26px 10px' }">
+      <div v-if="clockPlottable" :style="{ padding: '6px 26px 10px' }">
         <UiTimeline :marks="clockMarks" :bosses="clockBosses" />
       </div>
+      <p v-else :style="{ margin: 0, padding: '8px 12px 12px', fontSize: '13px', color: V.muted, lineHeight: 1.5 }">
+        The clock is stopped. A server wipe writes the starting gun; from that
+        moment this strip plots every level first and boss first against real
+        elapsed time.
+      </p>
     </section>
 
     <div :style="{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', alignItems: 'start' }">
