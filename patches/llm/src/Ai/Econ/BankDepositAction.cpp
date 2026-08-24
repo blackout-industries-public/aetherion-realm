@@ -168,6 +168,41 @@ bool BankDepositAction::Execute(Event /*event*/)
         }
     }
 
+    // E8.2: reagents still missing after the personal vault pass come out of
+    // the GUILD vault - the other half of "members stock it, crafters use it".
+    // The slot comes from the ledger's five-minute cache of guild_bank_item;
+    // a stale slot makes the core's own checks no-op or move a different
+    // stack, both of which the economy absorbs. The daily-withdrawal
+    // allowance stays entirely core-enforced.
+    std::vector<std::pair<uint8, uint8>> vaultPulls;
+    if (Guild* g = bot->GetGuildId() ? sGuildMgr->GetGuildById(bot->GetGuildId()) : nullptr)
+    {
+        std::unordered_set<uint32> stillMissing;
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 0);
+        for (CraftOption const& opt : options)
+            for (auto const& missing : opt.missing)
+                stillMissing.insert(missing.first);
+        for (Item* item : withdrawals)
+            stillMissing.erase(item->GetEntry());
+
+        for (uint32 const entry : stillMissing)
+        {
+            if (vaultPulls.size() >= 3)
+                break;
+            uint8 tab = 0, slot = 0;
+            if (!NeedsLedger::FindVaultReagent(bot->GetGuildId(), entry, tab, slot))
+                continue;
+            NeedsLedger::LogEvent("guild_bank_withdraw", bot->GetGUID().GetCounter(),
+                                  entry, 1, std::to_string(tab));
+            vaultPulls.emplace_back(tab, slot);
+        }
+        // NULL_BAG(0)/NULL_SLOT(255) = auto-store: the player side finds its
+        // own bag space, same as the client's own withdraw path.
+        for (auto const& [tab, slot] : vaultPulls)
+            g->SwapItemsWithInventory(bot, true, tab, slot, 0, 255, 0);
+    }
+
     std::vector<Item*> items;
     CollectDepositItems(items, BankMaxPerVisit());
 
@@ -224,7 +259,8 @@ bool BankDepositAction::Execute(Event /*event*/)
         }
     }
 
-    if (items.empty() && withdrawals.empty() && guildMats.empty() && !tithe)
+    if (items.empty() && withdrawals.empty() && guildMats.empty() && vaultPulls.empty() &&
+        !tithe)
         return false;
 
     if (tithe)
@@ -246,7 +282,7 @@ bool BankDepositAction::Execute(Event /*event*/)
     }
 
     if (items.empty() && withdrawals.empty())
-        return !guildMats.empty() || tithe > 0;
+        return !guildMats.empty() || !vaultPulls.empty() || tithe > 0;
 
     // BANKER_ACTIVATE must land first: HandleAutoBankItemOpcode's CanUseBank()
     // reads m_currentBankerGUID, which only SendShowBank (called from the

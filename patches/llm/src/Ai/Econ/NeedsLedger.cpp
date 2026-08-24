@@ -667,6 +667,50 @@ void NeedsLedger::Tick(uint32 diff)
         ++_passes;
         WriteTelemetry();
     }
+
+    // E8.2: refresh the vault view every five minutes. Guild bank writes go
+    // through immediate transactions, so the table is near-live; the sync
+    // query is a few hundred rows against a primary key join.
+    _vaultAgeMs += _tickMs;
+    if (_vaultAgeMs >= 300000 || _vault.empty())
+    {
+        _vaultAgeMs = 0;
+        RefreshVaultCache();
+    }
+}
+
+void NeedsLedger::RefreshVaultCache()
+{
+    std::unordered_map<uint32, std::vector<VaultSlot>> fresh;
+    if (QueryResult result = CharacterDatabase.Query(
+            "SELECT gbi.guildid, gbi.TabId, gbi.SlotId, ii.itemEntry "
+            "FROM guild_bank_item gbi JOIN item_instance ii ON ii.guid = gbi.item_guid"))
+        do
+        {
+            Field* f = result->Fetch();
+            fresh[f[0].Get<uint32>()].push_back(
+                VaultSlot{f[1].Get<uint8>(), f[2].Get<uint8>(), f[3].Get<uint32>()});
+        } while (result->NextRow());
+
+    std::lock_guard<std::mutex> lock(_vaultMutex);
+    _vault.swap(fresh);
+}
+
+bool NeedsLedger::FindVaultReagent(uint32 guildId, uint32 itemEntry, uint8& tab, uint8& slot)
+{
+    NeedsLedger* self = instance();
+    std::lock_guard<std::mutex> lock(self->_vaultMutex);
+    auto const it = self->_vault.find(guildId);
+    if (it == self->_vault.end())
+        return false;
+    for (VaultSlot const& vs : it->second)
+        if (vs.entry == itemEntry)
+        {
+            tab = vs.tab;
+            slot = vs.slot;
+            return true;
+        }
+    return false;
 }
 
 void NeedsLedger::ProcessShard()

@@ -14,7 +14,9 @@
 
 #include "Define.h"
 
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class Player;
@@ -50,6 +52,11 @@ public:
     static uint8 ClaimErrandBeat(uint32 guid);
     static bool PaidTraining();
     static bool CraftEnabled();
+
+    // E8.2: what the guild vault holds, refreshed from guild_bank_item on the
+    // world thread every few minutes. Crafters use it to pull missing
+    // reagents back OUT of the Materials tab. Map-thread safe.
+    static bool FindVaultReagent(uint32 guildId, uint32 itemEntry, uint8& tab, uint8& slot);
 
     // E5.2: the mailbox errand's target - a real mailbox GameObject chosen on
     // the world thread. Near case hands back the spawn identity so the trip can
@@ -88,6 +95,17 @@ public:
     static std::vector<AhListing> ListingsForHouse(uint8 houseId);
 
 private:
+    struct VaultSlot
+    {
+        uint8 tab;
+        uint8 slot;
+        uint32 entry;
+    };
+    std::unordered_map<uint32, std::vector<VaultSlot>> _vault;   // guildid -> slots
+    std::mutex _vaultMutex;
+    uint32 _vaultAgeMs{0};
+    void RefreshVaultCache();
+
     void EnsureTables();
     void ProcessShard();
     void ComputeNeeds(Player* bot);

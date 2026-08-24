@@ -48,7 +48,8 @@ SET gr.rights = gr.rights | 786432,
 WHERE gr.rid = 1;
 
 INSERT INTO guild_bank_right (guildid, TabId, rid, gbright, SlotPerDay)
-SELECT gr.guildid, tabs.TabId, gr.rid, IF(gr.rid = 1, 255, 3), IF(gr.rid = 1, 25, 0)
+SELECT gr.guildid, tabs.TabId, gr.rid, IF(gr.rid = 1, 255, 3),
+       IF(gr.rid = 1, 25, IF(tabs.TabId = 0, 5, 0))
 FROM guild_rank gr
 JOIN bot_guilds bg ON bg.guildid = gr.guildid
 JOIN (SELECT 0 AS TabId UNION ALL SELECT 1 UNION ALL SELECT 2) tabs
