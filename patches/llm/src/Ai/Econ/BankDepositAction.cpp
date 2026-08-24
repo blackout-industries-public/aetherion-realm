@@ -9,6 +9,8 @@
 
 #include "Bag.h"
 #include "Config.h"
+#include "Guild.h"
+#include "GuildMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Opcodes.h"
@@ -168,8 +170,65 @@ bool BankDepositAction::Execute(Event /*event*/)
 
     std::vector<Item*> items;
     CollectDepositItems(items, BankMaxPerVisit());
-    if (items.empty() && withdrawals.empty())
+
+    // E8: the guild vault, same banker visit. Surplus trade goods go to the
+    // shared Materials tab instead of the personal vault, and a slice of
+    // loose gold is tithed; repairs draw it back out (RepairAllAction). The
+    // direct Guild calls follow the module's own GuildBankAction - rights,
+    // tab existence, and funds stay entirely rank-enforced by Guild itself.
+    Guild* guild = bot->GetGuildId() ? sGuildMgr->GetGuildById(bot->GetGuildId()) : nullptr;
+    std::vector<Item*> guildMats;
+    if (guild && guild->MemberHasTabRights(bot->GetGUID(), 0, GUILD_BANK_RIGHT_DEPOSIT_ITEM))
+        for (auto it = items.begin(); it != items.end() && guildMats.size() < 4;)
+        {
+            if ((*it)->GetTemplate()->Class == ITEM_CLASS_TRADE_GOODS)
+            {
+                guildMats.push_back(*it);
+                it = items.erase(it);
+            }
+            else
+                ++it;
+        }
+
+    uint32 tithe = 0;
+    if (guild)
+    {
+        static uint32 const floorCopper = 10000u * uint32(std::max(
+            sConfigMgr->GetOption<int32>("AiPlayerbot.Econ.Guild.TitheFloorGold", 40), 0));
+        static int32 const tithePct =
+            sConfigMgr->GetOption<int32>("AiPlayerbot.Econ.Guild.TithePct", 10);
+        if (tithePct > 0 && bot->GetMoney() > floorCopper)
+        {
+            tithe = uint32(uint64(bot->GetMoney() - floorCopper) * uint32(tithePct) / 100u);
+            // At least a gold or nothing, at most 20 per visit: pocket change
+            // spams the ledger and a whale should not empty into the vault.
+            tithe = std::min(tithe, 200000u);
+            if (tithe < 10000u)
+                tithe = 0;
+        }
+    }
+
+    if (items.empty() && withdrawals.empty() && guildMats.empty() && !tithe)
         return false;
+
+    if (tithe)
+    {
+        guild->HandleMemberDepositMoney(bot->GetSession(), tithe);
+        NeedsLedger::LogEvent("guild_tithe", bot->GetGUID().GetCounter(), 0, tithe, "");
+    }
+
+    for (Item* item : guildMats)
+    {
+        NeedsLedger::LogEvent("guild_bank_deposit", bot->GetGUID().GetCounter(),
+                              item->GetEntry(), item->GetCount(), "");
+        // 255 = NULL_SLOT: the vault picks the slot, exactly as the module's
+        // guild bank action does. A guild without a tab is a silent no-op.
+        guild->SwapItemsWithInventory(bot, false, 0, 255,
+                                      item->GetBagSlot(), item->GetSlot(), 0);
+    }
+
+    if (items.empty() && withdrawals.empty())
+        return !guildMats.empty() || tithe > 0;
 
     // BANKER_ACTIVATE must land first: HandleAutoBankItemOpcode's CanUseBank()
     // reads m_currentBankerGUID, which only SendShowBank (called from the

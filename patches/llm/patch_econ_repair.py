@@ -76,6 +76,18 @@ patch(f"{module}/src/Bot/RandomPlayerbotMgr.cpp", [
 patch(f"{module}/src/Ai/Base/Actions/RepairAllAction.cpp", [
     ('#include "RepairAllAction.h"\n',
      '#include "RepairAllAction.h"\n#include "NeedsLedger.h"\n', 1),
+    ("""        totalCost += bot->DurabilityRepairAll(true, discountMod, false);
+""",
+     """        totalCost += bot->DurabilityRepairAll(true, discountMod, false);
+
+        // E8: what the wallet could not cover, the guild vault may. The core
+        // enforces rank allowance and vault funds per item, so this second
+        // pass repairs exactly what the guild will pay for and nothing else.
+        if (bot->GetGuildId() && !botAI->HasCheat(BotCheatMask::gold))
+            if (uint32 guildCost = bot->DurabilityRepairAll(true, discountMod, true))
+                NeedsLedger::LogEvent("guild_repair", bot->GetGUID().GetCounter(), 0, 0,
+                                      std::to_string(guildCost));
+""", 1),
     ("""        if (totalCost > 0)
         {""",
      """        if (totalCost > 0 && !botAI->HasCheat(BotCheatMask::gold))
