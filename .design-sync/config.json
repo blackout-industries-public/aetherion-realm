@@ -1,0 +1,14 @@
+{
+  "projectId": "d0b6d7d9-9daa-4427-b4f8-443c96be7b92",
+  "shape": "package",
+  "pkg": "aetherion-observatory",
+  "globalName": "AetherionObservatory",
+  "buildCmd": "docker run --rm -v $PWD/frontend/design-kit:/app -w /app node:22-alpine sh -c 'corepack enable && pnpm install --silent && pnpm run build'",
+  "cssEntry": "styles/aetherion.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "UiPanel": { "cardMode": "column" },
+    "UiBars": { "cardMode": "column" },
+    "UiSpark": { "cardMode": "column" }
+  }
+}

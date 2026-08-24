@@ -1,0 +1,56 @@
+/* Aetherion Observatory tokens - the CSS twin of src/theme.ts. Values must
+   stay identical to the TS module; the TS side is canonical. Single dark
+   warm theme by design: there is no light mode to toggle. */
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cutive+Mono&family=Spectral:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap');
+
+:root {
+  --aeth-bg: oklch(0.145 0.016 52);
+  --aeth-panel: oklch(0.19 0.019 52);
+  --aeth-panel-alt: oklch(0.235 0.018 52);
+  --aeth-raised: oklch(0.215 0.024 54);
+
+  --aeth-line: oklch(0.31 0.026 60);
+  --aeth-line-soft: oklch(0.27 0.02 54);
+  --aeth-line-faint: oklch(0.235 0.018 52);
+  --aeth-inset: inset 0 1px 0 oklch(0.5 0.05 78 / .18);
+
+  --aeth-text-hi: oklch(0.95 0.01 74);
+  --aeth-text: oklch(0.9 0.014 74);
+  --aeth-text-mid: oklch(0.83 0.022 74);
+  --aeth-body: oklch(0.885 0.018 74);
+  --aeth-muted: oklch(0.745 0.026 72);
+  --aeth-dim: oklch(0.68 0.035 74);
+  --aeth-faint: oklch(0.645 0.032 70);
+
+  --aeth-gold: oklch(0.80 0.10 88);
+  --aeth-gold-dim: oklch(0.62 0.09 88);
+  --aeth-gold-bright: oklch(0.86 0.07 88);
+  --aeth-red: oklch(0.62 0.16 22);
+  --aeth-green: oklch(0.74 0.085 158);
+
+  --aeth-bar-track: oklch(0.26 0.02 56);
+
+  --aeth-state-idle: oklch(0.72 0.02 250);
+  --aeth-state-working: oklch(0.80 0.12 60);
+  --aeth-state-town: oklch(0.64 0.14 255);
+  --aeth-state-travelling: oklch(0.85 0.16 90);
+  --aeth-state-questing: oklch(0.85 0.18 140);
+  --aeth-state-grinding: oklch(0.74 0.17 45);
+  --aeth-state-grouped: oklch(0.97 0.005 74);
+  --aeth-state-instance: oklch(0.75 0.13 175);
+  --aeth-state-ghost: oklch(0.76 0.16 330);
+  --aeth-state-dead: oklch(0.62 0.23 20);
+
+  --aeth-font-display: Cinzel, Georgia, serif;
+  --aeth-font-body: Spectral, Georgia, serif;
+  --aeth-font-mono: 'Cutive Mono', ui-monospace, monospace;
+}
+
+/* The Observatory paints its own ground - designs built with this system sit
+   on the dark warm plate, never on a host default. */
+body {
+  background: var(--aeth-bg);
+  color: var(--aeth-body);
+  font-family: var(--aeth-font-body);
+}

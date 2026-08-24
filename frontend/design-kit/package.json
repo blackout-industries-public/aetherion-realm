@@ -1,0 +1,21 @@
+{
+  "name": "aetherion-observatory",
+  "version": "0.1.0",
+  "description": "Aetherion Observatory design system: the dark warm oklch panel language of the realm dashboard",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0"
+  }
+}

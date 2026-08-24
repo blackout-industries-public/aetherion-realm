@@ -25,3 +25,12 @@ __pycache__/
 logs/
 backups/
 config/
+
+# design-sync machinery (regenerated; durable set under .design-sync/ stays tracked)
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+frontend/design-kit/node_modules/
+frontend/design-kit/dist/
