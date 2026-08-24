@@ -297,6 +297,25 @@ void LlmBridge::Submit(Player* bot, Player* speaker, std::string const& message,
     if (_inFlight.load() >= _maxInFlight)
         return;
 
+    // One in-flight reply per REAL speaker, regardless of message text. The
+    // claim map dedupes identical text, but the same say reaches bots through
+    // paths that mangle it differently (the command parser claims its leftover
+    // substring), and every such alias produced a second replier. Two answers
+    // to one human never make sense; sequential questions still flow because
+    // the slot frees the moment the reply is delivered. Bots keep their own
+    // lane so banter depth is unaffected.
+    if (depth == 0 && !GET_PLAYERBOT_AI(speaker))
+    {
+        uint64 const now = NowMs();
+        std::lock_guard<std::mutex> lock(_speakerBusyMutex);
+        auto it = _speakerBusy.find(speaker->GetGUID().GetRawValue());
+        // Self-healing: a slot older than the bridge timeout belongs to a
+        // reply that died in transit and must not gag the speaker forever.
+        if (it != _speakerBusy.end() && now - it->second < uint64(_timeoutMs) + 5000)
+            return;
+        _speakerBusy[speaker->GetGUID().GetRawValue()] = now;
+    }
+
     _inFlight.fetch_add(1);
 
     // What this bot last said out loud, so a reply to its own broadcast lands
@@ -424,6 +443,7 @@ void LlmBridge::Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string b
     std::string body;
     if (!HttpPost("/game/whisper", payload.str(), body))
     {
+        FreeSpeaker(speakerGuid);
         _inFlight.fetch_sub(1);
         return;
     }
@@ -443,8 +463,16 @@ void LlmBridge::Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string b
 
     if (!body.empty())
         QueueReply({botGuid, speakerGuid, body, chatType, channelId, depth, intent});
+    else
+        FreeSpeaker(speakerGuid);
 
     _inFlight.fetch_sub(1);
+}
+
+void LlmBridge::FreeSpeaker(ObjectGuid speaker)
+{
+    std::lock_guard<std::mutex> lock(_speakerBusyMutex);
+    _speakerBusy.erase(speaker.GetRawValue());
 }
 
 void LlmBridge::GreetWorker(ObjectGuid humanGuid, std::string humanName)
@@ -825,7 +853,12 @@ void LlmBridge::Drain(uint32 diff)
     }
 
     for (Reply const& reply : pending)
+    {
+        // The delivery attempt is the outcome: the speaker's reply slot frees
+        // here whether or not the players still exist.
+        FreeSpeaker(reply.speakerGuid);
         Deliver(reply);
+    }
 
     // Fire greetings that have come due. Iterated backwards so erasing is safe.
     for (std::size_t i = _greets.size(); i-- > 0;)

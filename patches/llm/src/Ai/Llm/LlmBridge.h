@@ -87,6 +87,9 @@ private:
 
     void ExecuteIntent(Player* bot, Player* speaker, std::string const& intent);
 
+    // Releases a real speaker's one-in-flight reply slot (see Submit).
+    void FreeSpeaker(ObjectGuid speaker);
+
     // Nothing crossing the thread boundary may hold a Player*: it can be freed while
     // the request is in flight. GUIDs and copied strings only.
     void Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string botName,
@@ -162,6 +165,9 @@ private:
     std::unordered_map<uint64, std::pair<std::string, uint64>> _lastBroadcast;
     std::mutex _broadcastMutex;
     std::unordered_map<std::size_t, uint64> _claims;
+    // Real speakers with a reply currently in flight (guid raw -> claimed-at ms).
+    std::unordered_map<uint64, uint64> _speakerBusy;
+    std::mutex _speakerBusyMutex;
 };
 
 #define sLlmBridge LlmBridge::instance()

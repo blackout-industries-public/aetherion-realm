@@ -226,6 +226,10 @@ class LLM:
 
     @staticmethod
     def sanitize(text: str, speaker_name: str = "") -> str:
+        # The framing tic also arrives bare, with no tokens at all - observed
+        # live: 'json [GINVITE] you got it, welcome aboard.' No character's
+        # line starts with the word json.
+        text = re.sub(r"^\s*(?:json|assistantfinal)\b[:,]?\s*", "", text, flags=re.I)
         if "<|" in text or text.lstrip().startswith("{"):
             # Prefer the JSON envelope's own "text" - it is the actual line.
             last = None

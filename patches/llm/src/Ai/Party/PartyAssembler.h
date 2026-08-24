@@ -175,6 +175,10 @@ private:
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
+    // Hands an adopted run's bots back to the human (or sets them free when
+    // none is left): master restored, strategies rebuilt.
+    void ReleaseAdopted(Group* group);
+
     // Picks and performs the opening move of a journey, returning how it was made.
     Departure BeginTravel(Group* group, Player* leader, Entrance const& door);
     static char const* TravelName(Travel how);

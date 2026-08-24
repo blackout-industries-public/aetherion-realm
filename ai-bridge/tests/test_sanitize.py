@@ -31,5 +31,12 @@ def test_unsalvageable_scaffold_becomes_empty_for_the_fallback_path() -> None:
     assert LLM.sanitize("<|chan sure thing") == ""
 
 
+def test_bare_json_prefix_is_stripped_without_any_tokens() -> None:
+    # Observed live: the framing word arrived alone and the tag was pushed off
+    # line-start, so it leaked into /say unstripped and unhonoured.
+    raw = "json [GINVITE] you got it, welcome aboard."
+    assert LLM.sanitize(raw) == "[GINVITE] you got it, welcome aboard."
+
+
 def test_plain_lines_pass_untouched() -> None:
     assert LLM.sanitize("sure, give me the coords") == "sure, give me the coords"

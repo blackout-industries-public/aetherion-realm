@@ -7,6 +7,7 @@
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "LFGMgr.h"
+#include "Formations.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
 #include "Opcodes.h"
@@ -400,6 +401,8 @@ void PartyAssembler::AdvanceTrips()
             // grouped they would hold a slot in the cap for the rest of the uptime.
             // Never for an adopted run: the group belongs to the player, so the
             // clock only stops the steering and closes the ledger row.
+            if (group && trip.adopted)
+                ReleaseAdopted(group);
             if (group && trip.phase == Phase::Inside && !trip.adopted)
             {
                 // Out of the instance first. Disbanding alone leaves five characters
@@ -419,6 +422,8 @@ void PartyAssembler::AdvanceTrips()
         if (!leader || !GET_PLAYERBOT_AI(leader))
         {
             EndRun(trip.runId, trip.dungeonMap, "leader_lost");
+            if (trip.adopted)
+                ReleaseAdopted(group);
             it = _trips.erase(it);
             continue;
         }
@@ -480,6 +485,7 @@ void PartyAssembler::AdvanceTrips()
             // Without this, dead bots released to a graveyard OUTSIDE the
             // instance and the run burned out with nobody home.
             uint32 alive = 0, present = 0;
+            bool humanAboard = false;
             for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
                 if (Player* m = mi->GetSource())
                     if (m->IsInWorld())
@@ -487,7 +493,16 @@ void PartyAssembler::AdvanceTrips()
                         ++present;
                         if (m->IsAlive())
                             ++alive;
+                        if (!GET_PLAYERBOT_AI(m))
+                            humanAboard = true;
                     }
+            if (trip.adopted && !humanAboard)
+            {
+                trip.adopted = false;
+                LOG_INFO("playerbots",
+                         "Party assembler: the player left {} - the run is the bots' now",
+                         trip.name);
+            }
             if (present && !alive)
             {
                 ++trip.wipes;
@@ -501,6 +516,8 @@ void PartyAssembler::AdvanceTrips()
                              "Party assembler: wipe {} in {} breaks the raid - they call it",
                              trip.wipes, trip.name);
                     EndRun(trip.runId, trip.dungeonMap, "wiped");
+                    if (trip.adopted)
+                        ReleaseAdopted(group);
                     if (!trip.adopted)
                     {
                         SendGroupOutside(group, trip.dungeonMap);
@@ -749,6 +766,32 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     return true;
 }
 
+void PartyAssembler::ReleaseAdopted(Group* group)
+{
+    if (!group)
+        return;
+
+    // Hand the bots back to the human: master restored, strategies rebuilt,
+    // following the player again. With no human left they simply go free.
+    Player* human = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* m = ref->GetSource())
+            if (m->IsInWorld() && !GET_PLAYERBOT_AI(m))
+            {
+                human = m;
+                break;
+            }
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* m = ref->GetSource())
+            if (PlayerbotAI* mAI = GET_PLAYERBOT_AI(m))
+            {
+                mAI->SetMaster(human);
+                mAI->ResetStrategies(false);
+                mAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+            }
+}
+
 bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
 {
     if (!requester || !requester->IsInWorld())
@@ -799,6 +842,28 @@ bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
             return false;
         group->ChangeLeader(promote->GetGUID());
         leader = promote;
+    }
+
+    // The point of adoption: the party is the LEADER's to run. Every bot
+    // member re-masters to the leader - they follow it and open fire when it
+    // pulls, not when the human does - the leader goes masterless so the
+    // steering can drive it (a mastered bot's follow-master strategy overrides
+    // travel), and an arrow formation keeps the caravan spread by role instead
+    // of clumped on one spot.
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* m = ref->GetSource();
+        if (!m || !m->IsInWorld())
+            continue;
+        PlayerbotAI* mAI = GET_PLAYERBOT_AI(m);
+        if (!mAI)
+            continue;
+        mAI->SetMaster(m == leader ? nullptr : leader);
+        mAI->ResetStrategies(false);
+        mAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+        if (FormationValue* fv = (FormationValue*)mAI->GetAiObjectContext()
+                                     ->GetValue<Formation*>("formation"))
+            fv->Load("arrow");
     }
 
     Trip& trip = _trips[group->GetGUID().GetCounter()] =
