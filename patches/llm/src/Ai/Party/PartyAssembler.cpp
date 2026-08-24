@@ -171,6 +171,21 @@ void PartyAssembler::LoadEntrances()
         return;
     }
 
+    // Gear floors for every mode. The door itself no longer hard-checks gear
+    // (that made one green member a veto); these feed the scaled-appetite
+    // math instead.
+    _ilvlFloor.clear();
+    if (QueryResult floors = WorldDatabase.Query(
+            "SELECT map_id, difficulty, min_avg_item_level FROM dungeon_access_template "
+            "WHERE min_avg_item_level > 0"))
+    {
+        do
+        {
+            Field* f = floors->Fetch();
+            _ilvlFloor[(f[0].Get<uint32>() << 8) | f[1].Get<uint8>()] = f[2].Get<uint16>();
+        } while (floors->NextRow());
+    }
+
     do
     {
         Field* f = result->Fetch();
@@ -525,6 +540,38 @@ void PartyAssembler::AdvanceTrips()
     }
 }
 
+float PartyAssembler::PartyAvgIlvl(Group* group)
+{
+    float sum = 0;
+    uint32 n = 0;
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        if (Player* member = itr->GetSource())
+        {
+            sum += member->GetAverageItemLevelForDF();
+            ++n;
+        }
+    return n ? sum / n : 0.f;
+}
+
+// The middle path between a hard gate and a free-for-all: at or above the
+// floor the full knob applies; the chance ramps linearly to zero twenty item
+// levels below it. The party's AVERAGE decides, so one green member drags the
+// odds instead of vetoing the run, and an all-green party still stays home.
+uint32 PartyAssembler::GearScaledPct(Group* group, uint32 mapId, uint8 difficulty,
+                                     uint32 fullPct) const
+{
+    auto const it = _ilvlFloor.find((mapId << 8) | difficulty);
+    if (it == _ilvlFloor.end())
+        return fullPct;
+    float const avg = PartyAvgIlvl(group);
+    if (avg >= it->second)
+        return fullPct;
+    float const deficit = float(it->second) - avg;
+    if (deficit >= 20.f)
+        return 0;
+    return uint32(float(fullPct) * (1.f - deficit / 20.f));
+}
+
 bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
 {
     if (_entrances.empty())
@@ -574,13 +621,13 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     if (!GET_PLAYERBOT_AI(leader))
         return false;
 
-    // Heroic mode for the walked-in party, decided like the raid leg: the map
-    // must actually have the mode and every member must clear its access rows
-    // (the seeded item-level floors do the gear gating). Same roll knob as
-    // raids - a capped party tries heroic at the same rate a raid does.
+    // Heroic mode for the walked-in party: the map must carry the mode, then
+    // the gear-scaled roll decides. Access rows still hard-gate the non-gear
+    // requirements (levels, quests, attunements) member by member.
     Difficulty dungeonDiff = DUNGEON_DIFFICULTY_NORMAL;
-    if (_raidHeroicPct && urand(1, 100) <= _raidHeroicPct &&
-        GetMapDifficultyData(chosen.dungeonMap, DUNGEON_DIFFICULTY_HEROIC))
+    if (_raidHeroicPct && GetMapDifficultyData(chosen.dungeonMap, DUNGEON_DIFFICULTY_HEROIC) &&
+        urand(1, 100) <=
+            GearScaledPct(group, chosen.dungeonMap, DUNGEON_DIFFICULTY_HEROIC, _raidHeroicPct))
     {
         bool everyone = true;
         DungeonProgressionRequirements const* ar =
@@ -944,9 +991,6 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
             level = std::min<uint8>(level, member->GetLevel());
 
     uint32 const size = group->GetMembersCount();
-    // One roll per trip: whether this raid attempts a heroic lockout at all.
-    // Per-destination checks below decide where that ambition can be honored.
-    bool const wantHeroic = _raidHeroicPct && urand(1, 100) <= _raidHeroicPct;
 
     struct Option { Entrance where; std::string name; uint32 raidMap; Difficulty diff; };
     std::vector<Option> options;
@@ -1008,13 +1052,23 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
         else
             diff = RAID_DIFFICULTY_10MAN_NORMAL;
 
-        if (wantHeroic)
+        // Soft gear gate on the normal mode: a party averaging deeper than
+        // fifteen below the floor skips this destination; slightly under
+        // still marches. Nobody is individually vetoed on gear.
         {
-            Difficulty const heroic = size > 10 ? RAID_DIFFICULTY_25MAN_HEROIC
-                                                : RAID_DIFFICULTY_10MAN_HEROIC;
-            if (GetMapDifficultyData(raidMap, heroic) && allSatisfy(raidMap, heroic))
-                diff = heroic;
+            auto const fIt = _ilvlFloor.find((raidMap << 8) | uint8(diff));
+            if (fIt != _ilvlFloor.end() &&
+                PartyAvgIlvl(group) < float(fIt->second) - 15.f)
+                continue;
         }
+
+        Difficulty const heroic =
+            size > 10 ? RAID_DIFFICULTY_25MAN_HEROIC : RAID_DIFFICULTY_10MAN_HEROIC;
+        if (_raidHeroicPct && GetMapDifficultyData(raidMap, heroic) &&
+            urand(1, 100) <=
+                GearScaledPct(group, raidMap, uint8(heroic), _raidHeroicPct) &&
+            allSatisfy(raidMap, heroic))
+            diff = heroic;
 
         if (!allSatisfy(raidMap, diff))
             continue;

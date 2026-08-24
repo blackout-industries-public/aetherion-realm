@@ -102,6 +102,11 @@ private:
     std::unordered_map<uint32, std::vector<Entrance>> _spawns;  // instance map id -> packs
     std::unordered_map<uint32, std::vector<Entrance>> _bosses;  // instance map id -> bosses
     std::unordered_map<uint32, uint32> _mapMinLevel;  // instance map id -> level floor
+    // Gear floors per (map << 8 | difficulty), from dungeon_access_template.
+    // Consumed by the soft gearing math, never as a member-by-member veto.
+    std::unordered_map<uint32, uint16> _ilvlFloor;
+    static float PartyAvgIlvl(Group* group);
+    uint32 GearScaledPct(Group* group, uint32 mapId, uint8 difficulty, uint32 fullPct) const;
 
     // How a real group gets to a dungeon: one player travels, everyone else waits,
     // then they are summoned at the meeting stone by the entrance. Modelling that is

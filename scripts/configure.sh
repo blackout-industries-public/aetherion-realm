@@ -30,10 +30,10 @@ set_conf "$CONF/worldserver.conf" "Updates.EnableDatabases" "0"
 # 60s costs ~1500 row updates a minute at full population - measure tick diff before
 # lowering it further.
 set_conf "$CONF/worldserver.conf" "PlayerSaveInterval" "${PLAYER_SAVE_INTERVAL_MS:-60000}"
-# Gear floors at instance portals: with seed-raid-floors.sh populating
-# min_avg_item_level, this keeps green-geared groups out of heroic raids -
-# bots and humans alike, which is the realism the floors exist for.
-set_conf "$CONF/worldserver.conf" "DungeonAccessRequirements.PortalAvgIlevelCheck" "${PORTAL_ILVL_CHECK:-1}"
+# Gear gating lives in the assembler's scaled-appetite math (party average
+# vs the seeded floors), not at the door: the portal hard-check made one
+# green member a veto and shed stragglers at the threshold. Off by default.
+set_conf "$CONF/worldserver.conf" "DungeonAccessRequirements.PortalAvgIlevelCheck" "${PORTAL_ILVL_CHECK:-0}"
 # Without this, battlegrounds run but pvpstats_battlegrounds and pvpstats_players stay
 # empty, so no match ever has a score, a bracket or a winner.
 set_conf "$CONF/worldserver.conf" "Battleground.StoreStatistics.Enable" "${BG_STORE_STATS:-1}"
