@@ -23,9 +23,19 @@ JOIN acore_auth.account a ON a.id = c.account
 WHERE a.username LIKE 'rndbot%';
 
 INSERT INTO guild_bank_tab (guildid, TabId, TabName, TabIcon, TabText)
-SELECT bg.guildid, 0, 'Materials', '', ''
+SELECT bg.guildid, tabs.TabId, tabs.TabName, '', ''
 FROM bot_guilds bg
-WHERE NOT EXISTS (SELECT 1 FROM guild_bank_tab t WHERE t.guildid = bg.guildid AND t.TabId = 0);
+JOIN (SELECT 0 AS TabId, 'Materials' AS TabName
+      UNION ALL SELECT 1, 'Consumables'
+      UNION ALL SELECT 2, 'Gear') tabs
+WHERE NOT EXISTS (SELECT 1 FROM guild_bank_tab t
+                  WHERE t.guildid = bg.guildid AND t.TabId = tabs.TabId);
+
+-- A vault that opens empty teaches nobody to use it. A modest starter
+-- treasury (100g) makes repair allowances real from day one; everything
+-- after that is tithes in, repairs out.
+UPDATE guild g JOIN bot_guilds bg ON bg.guildid = g.guildid
+SET g.BankMoney = GREATEST(g.BankMoney, 1000000);
 
 UPDATE guild_rank gr JOIN bot_guilds bg ON bg.guildid = gr.guildid
 SET gr.rights = gr.rights | 262144,
@@ -38,8 +48,10 @@ SET gr.rights = gr.rights | 786432,
 WHERE gr.rid = 1;
 
 INSERT INTO guild_bank_right (guildid, TabId, rid, gbright, SlotPerDay)
-SELECT gr.guildid, 0, gr.rid, IF(gr.rid = 1, 255, 3), IF(gr.rid = 1, 25, 0)
-FROM guild_rank gr JOIN bot_guilds bg ON bg.guildid = gr.guildid
+SELECT gr.guildid, tabs.TabId, gr.rid, IF(gr.rid = 1, 255, 3), IF(gr.rid = 1, 25, 0)
+FROM guild_rank gr
+JOIN bot_guilds bg ON bg.guildid = gr.guildid
+JOIN (SELECT 0 AS TabId UNION ALL SELECT 1 UNION ALL SELECT 2) tabs
 WHERE gr.rid >= 1
 ON DUPLICATE KEY UPDATE
   gbright = GREATEST(gbright, VALUES(gbright)),

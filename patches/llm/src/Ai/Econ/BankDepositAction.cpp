@@ -177,13 +177,29 @@ bool BankDepositAction::Execute(Event /*event*/)
     // direct Guild calls follow the module's own GuildBankAction - rights,
     // tab existence, and funds stay entirely rank-enforced by Guild itself.
     Guild* guild = bot->GetGuildId() ? sGuildMgr->GetGuildById(bot->GetGuildId()) : nullptr;
-    std::vector<Item*> guildMats;
-    if (guild && guild->MemberHasTabRights(bot->GetGUID(), 0, GUILD_BANK_RIGHT_DEPOSIT_ITEM))
-        for (auto it = items.begin(); it != items.end() && guildMats.size() < 4;)
+    // Vault layout mirrors the seeded tabs: 0 Materials, 1 Consumables,
+    // 2 Gear. Anything else stays personal.
+    auto const tabFor = [](ItemTemplate const* proto) -> int
+    {
+        if (proto->Class == ITEM_CLASS_TRADE_GOODS)
+            return 0;
+        if (proto->Class == ITEM_CLASS_CONSUMABLE)
+            return 1;
+        if ((proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR) &&
+            proto->Quality >= ITEM_QUALITY_UNCOMMON)
+            return 2;
+        return -1;
+    };
+    std::vector<std::pair<Item*, uint8>> guildMats;
+    if (guild)
+        for (auto it = items.begin(); it != items.end() && guildMats.size() < 6;)
         {
-            if ((*it)->GetTemplate()->Class == ITEM_CLASS_TRADE_GOODS)
+            int const tab = tabFor((*it)->GetTemplate());
+            if (tab >= 0 &&
+                guild->MemberHasTabRights(bot->GetGUID(), uint8(tab),
+                                          GUILD_BANK_RIGHT_DEPOSIT_ITEM))
             {
-                guildMats.push_back(*it);
+                guildMats.emplace_back(*it, uint8(tab));
                 it = items.erase(it);
             }
             else
@@ -217,13 +233,15 @@ bool BankDepositAction::Execute(Event /*event*/)
         NeedsLedger::LogEvent("guild_tithe", bot->GetGUID().GetCounter(), 0, tithe, "");
     }
 
-    for (Item* item : guildMats)
+    for (auto const& [item, tab] : guildMats)
     {
+        // Logged before the swap: the Item* is the bot's bag-side object and
+        // does not survive the move.
         NeedsLedger::LogEvent("guild_bank_deposit", bot->GetGUID().GetCounter(),
-                              item->GetEntry(), item->GetCount(), "");
+                              item->GetEntry(), item->GetCount(), std::to_string(tab));
         // 255 = NULL_SLOT: the vault picks the slot, exactly as the module's
-        // guild bank action does. A guild without a tab is a silent no-op.
-        guild->SwapItemsWithInventory(bot, false, 0, 255,
+        // guild bank action does. A guild without that tab is a silent no-op.
+        guild->SwapItemsWithInventory(bot, false, tab, 255,
                                       item->GetBagSlot(), item->GetSlot(), 0);
     }
 
