@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { T, FONT, V, fmt, spell, titled } from '../theme'
 import UiPanel from './UiPanel.vue'
 import UiEncounters from './UiEncounters.vue'
 import UiSkull from './UiSkull.vue'
 import QuestPanels from './QuestPanels.vue'
+import { CLASS_COLOR } from '../data'
 
 type Encounter = { name: string; killed: boolean }
 
@@ -71,8 +72,18 @@ const card = (p: any) => {
     lootItem: p.loot?.name ?? '',
     lootColor: RARITY_COLOR[p.loot?.rarity ?? ''] ?? V.text,
     progW: p.tone === 'travel' ? `${p.pct}%` : null,
+    // The expanded run dossier's raw material.
+    members: p.members ?? [],
+    encounterList: encounters,
+    dropsList: (p.drops ?? []).map((d: any) => ({
+      name: d.name, color: RARITY_COLOR[d.rarity] ?? V.text,
+    })),
   }
 }
+
+// One run open at a time, per the handoff; the card is the toggle and names
+// inside it stay doors to the character dossier.
+const open = ref<string | number | null>(null)
 
 const conversion = computed(() => {
   const c = props.assembler?.cycle
@@ -158,7 +169,7 @@ const lede = computed(() => {
             background: V.panel, boxShadow: V.inset, padding: '10px 12px',
             cursor: 'pointer', position: 'relative', display: 'block', width: '100%',
           }"
-          @click="emit('select', c.leader)"
+          @click="open = open === c.key ? null : c.key"
         >
           <span :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }">
             <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: c.idColor }">{{ c.id }}</span>
@@ -199,6 +210,48 @@ const lede = computed(() => {
             v-if="c.progW"
             :style="{ position: 'absolute', left: 0, bottom: 0, height: '2px', width: c.progW, background: V.accent, opacity: 0.55 }"
           />
+
+          <span
+            v-if="open === c.key"
+            :style="{ display: 'block', marginTop: '9px', borderTop: `1px solid ${V.lineFaint}`, paddingTop: '8px' }"
+          >
+            <span :style="{ display: 'block', fontFamily: FONT.display, fontWeight: 600, fontSize: '9px', letterSpacing: '.16em', color: V.dim, textTransform: 'uppercase' }">Roster</span>
+            <span
+              v-for="m in c.members"
+              :key="m.name"
+              :style="{ display: 'flex', justifyContent: 'space-between', gap: '8px', padding: '2px 0', fontSize: '12px' }"
+            >
+              <span
+                class="pipe-name"
+                :style="{ color: CLASS_COLOR[m.cls] ?? V.textHi, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }"
+                @click.stop="emit('select', m.name)"
+              >{{ m.name }}</span>
+              <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: m.leader ? V.accentBright : V.faint, flex: 'none' }">
+                {{ m.leader ? 'lead · ' : '' }}{{ m.role }} · {{ m.level }}
+              </span>
+            </span>
+
+            <template v-if="c.encounterList.length">
+              <span :style="{ display: 'block', fontFamily: FONT.display, fontWeight: 600, fontSize: '9px', letterSpacing: '.16em', color: V.dim, textTransform: 'uppercase', marginTop: '7px' }">Bosses</span>
+              <span
+                v-for="b in c.encounterList"
+                :key="b.name"
+                :style="{ display: 'flex', justifyContent: 'space-between', gap: '8px', padding: '2px 0', fontSize: '11.5px' }"
+              >
+                <span :style="{ color: b.killed ? T.green : V.muted }">{{ b.killed ? '↓ ' : '' }}{{ b.name }}</span>
+                <span :style="{ fontFamily: FONT.mono, fontSize: '9.5px', color: b.killed ? T.green : V.faint, flex: 'none' }">{{ b.killed ? 'downed' : 'alive' }}</span>
+              </span>
+            </template>
+
+            <template v-if="c.dropsList.length">
+              <span :style="{ display: 'block', fontFamily: FONT.display, fontWeight: 600, fontSize: '9px', letterSpacing: '.16em', color: V.dim, textTransform: 'uppercase', marginTop: '7px' }">Drops</span>
+              <span
+                v-for="d in c.dropsList"
+                :key="d.name"
+                :style="{ display: 'block', padding: '2px 0', fontSize: '11.5px', color: d.color }"
+              >{{ d.name }}</span>
+            </template>
+          </span>
         </button>
 
         <p v-if="st.foot" :style="{ margin: '2px 2px 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.5 }">{{ st.foot }}</p>

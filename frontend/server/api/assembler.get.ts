@@ -281,6 +281,9 @@ export default defineEventHandler(async () => {
   }
   const bestLoot = new Map<number, { name: string; rarity: string }>()
   const lootRank = new Map<number, number>()
+  // The expanded run card lists recent drops, newest first; greys stay off it
+  // the same way a loot log would skim past them.
+  const allDrops = new Map<number, { name: string; rarity: string }[]>()
   for (const r of (lootRows ?? []) as any[]) {
     const m = /^looted (.+) \((\w+)\)$/.exec(String(r.detail))
     if (!m) continue
@@ -288,6 +291,12 @@ export default defineEventHandler(async () => {
     if (rank > (lootRank.get(r.group_id) ?? -1)) {
       lootRank.set(r.group_id, rank)
       bestLoot.set(r.group_id, { name: m[1]!, rarity: m[2]! })
+    }
+    if (rank >= 2) {
+      const list = allDrops.get(r.group_id) ?? []
+      if (list.length < 6 && !list.some(d => d.name === m[1]))
+        list.push({ name: m[1]!, rarity: m[2]! })
+      allDrops.set(r.group_id, list)
     }
   }
 
@@ -332,6 +341,7 @@ export default defineEventHandler(async () => {
       // For a party still out of doors, ticks measure the whole trip so far.
       tripMins: t.phase === 'inside' ? null : Math.round((t.ticks * tickSeconds) / 60),
       loot: bestLoot.get(t.group_id) ?? null,
+      drops: allDrops.get(t.group_id) ?? [],
       bosses: bosses.get(t.group_id) ?? 0,
       encounters: encounters.get(t.group_id) ?? [],
       deaths: acted.get(t.group_id)?.death ?? 0,
