@@ -102,7 +102,9 @@ void LlmBridge::LoadConfig()
 
     _guildAdEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.GuildAdEnabled", true);
     _guildAdIntervalMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.GuildAdIntervalMs", 420000);
-    _guildAdTimer = 0;
+    // First ad a minute after boot - waiting a whole interval made "is it
+    // working at all" a seven-minute question.
+    _guildAdTimer = _guildAdIntervalMs > 60000 ? _guildAdIntervalMs - 60000 : 0;
     _greetOnLogin = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.GreetOnLogin", true);
     _greetDelayMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.GreetDelayMs", 15000);
     _eventsEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.EventsEnabled", true);
@@ -868,12 +870,22 @@ void LlmBridge::TickGuildAds(uint32 diff)
         Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
         if (!guild || !guild->HasRankRight(bot, GR_RIGHT_INVITE))
             continue;
+        // The witness gate is zone-scoped for channel chat, and Submit will
+        // veto silently. Filtering here instead of after the pick is the whole
+        // difference between "an ad near the player every cycle" and "an ad
+        // whenever the realm-wide dice land in their zone" - which is never.
+        if (!HasHumanWitness(bot, CHAT_MSG_CHANNEL))
+            continue;
         officers.push_back(bot);
         if (officers.size() >= 64)
             break;
     }
     if (officers.empty())
+    {
+        LOG_DEBUG("playerbots", "LLM guild ad: no invite-ranked bot shares a zone "
+                                "with a player this cycle");
         return;
+    }
 
     Player* bot = officers[urand(0, officers.size() - 1)];
     Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
@@ -885,6 +897,10 @@ void LlmBridge::TickGuildAds(uint32 diff)
            "named \"" << guild->GetName() << "\" - mention that name. Say what kind of "
            "players you want (a class, a role, or just friendly folk) in your own words. "
            "No quotes around the ad.";
+    // INFO on purpose: the ad pipeline failed invisibly once; every attempt
+    // should leave a trace.
+    LOG_INFO("playerbots", "LLM guild ad: {} advertises <{}>", bot->GetName(),
+             sGuildMgr->GetGuildById(bot->GetGuildId())->GetName());
     Submit(bot, bot, ask.str(), CHAT_MSG_CHANNEL,
            urand(0, 1) ? uint32(ChatChannelId::TRADE) : uint32(ChatChannelId::GENERAL), 0);
 }
