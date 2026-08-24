@@ -56,11 +56,18 @@ INSTRUCTION = (
     "[FOLLOW] you will follow them\n"
     "[STAY] you will wait here\n"
     "[BUFF] you will cast your buffs on them and the group right now\n"
-    "[QUEUEBG] you will queue yourself for a battleground - only if you are NOT "
-    "in their group; a grouped bot cannot start the queue, so instead tell them "
-    "the group leader queues everyone and you will take the invite\n"
+    "[QUEUEBG] you are getting the battleground queue started for them\n"
     "If none apply, use no tag. Never use a tag you were not asked for."
 )
+
+
+def could_act(player_message: str) -> bool:
+    """Whether any intent gate matches - i.e. the message might be an ask.
+
+    The reflex layer must never swallow such a message: a canned "k" instead
+    of a model pass is how "Queue BG" got an agreement and no queue.
+    """
+    return any(g.search(player_message) for g in _GATES.values())
 
 
 def extract(reply: str, player_message: str) -> tuple[str | None, str]:

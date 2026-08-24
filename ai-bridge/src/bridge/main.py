@@ -178,8 +178,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
         if line := rel.describe(req.speaker):
             system = f"{system}\n{line}"
 
-    # Actions only make sense where a human is addressing the bot directly.
-    if req.channel in ("whisper", "party", "guild"):
+    # Actions make sense wherever a human addresses the bot - including out
+    # loud: standing next to a bot and asking is the most natural ask there is.
+    if req.channel in ("whisper", "party", "guild", "say", "yell"):
         system = f"{system}\n{intents.INSTRUCTION}"
 
     messages = [{"role": "system", "content": system}]
@@ -187,8 +188,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
     messages.append({"role": "user", "content": _phrase(req, message)})
 
     # Reflex first. Spending seconds of inference to produce "np" is the worst trade
-    # available, and it is a large share of what gets said.
-    if (quick := canned_chat(req.message, str(bot.guid))) is not None:
+    # available, and it is a large share of what gets said. But never for a
+    # message that might be an ask - a canned "k" cannot carry an action tag.
+    if not intents.could_act(req.message) and \
+            (quick := canned_chat(req.message, str(bot.guid))) is not None:
         llm.scheduler.stats["reflex"] += 1
         await memory.record(bot.guid, req.speaker, req.message, quick)
         return ChatResponse(reply=quick, bot=bot.name, source="reflex")
