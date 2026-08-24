@@ -245,6 +245,9 @@ set_conf "$PB" "AiPlayerbot.Econ.Mailbox.Enabled" "${ECON_MAILBOX:-0}"
 # E7.5: needs-driven gathering trips - never free-running; a bot walks to
 # nodes only with a reagent shortfall or an unfunded need to farm toward.
 set_conf "$PB" "AiPlayerbot.Econ.Gather.Enabled" "${ECON_GATHER:-0}"
+# Persona duty scale: global multiplier over each archetype's errand
+# appetite (farmer 65 / merchant 50 / adventurer 22 / warlord 10 percent).
+set_conf "$PB" "AiPlayerbot.Econ.Duty.Scale" "${ECON_DUTY_SCALE:-100}"
 # E3.4a: the food cheat is a hidden faucet-equivalent; dropping 'food' makes
 # hunger real. Default keeps today's mask - staging arms the reduced one.
 set_conf "$PB" "AiPlayerbot.BotCheats" "\"${BOT_CHEATS:-food,taxi,raid}\""

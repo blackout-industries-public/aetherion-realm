@@ -44,6 +44,10 @@ public:
     static uint8 constexpr VERDICT_FOCUS = 5;
     static uint8 constexpr VERDICT_GATHER = 6;
     static uint8 UrgentVerdict(uint32 guid);
+    // Persona duty roll for one idle beat: the held verdict kind when the
+    // bot's disposition claims the beat, VERDICT_NONE otherwise (or when no
+    // verdict is held). Map-thread safe.
+    static uint8 ClaimErrandBeat(uint32 guid);
     static bool PaidTraining();
     static bool CraftEnabled();
 

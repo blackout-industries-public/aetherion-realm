@@ -8,7 +8,9 @@ const NEEDS_SUMMARY = `
   SELECT need_type, COUNT(*) AS n,
          SUM(amount > 0 AND free_money >= amount) AS funded,
          SUM(amount) AS total
-  FROM acore_characters.aetherion_needs GROUP BY need_type
+  FROM acore_characters.aetherion_needs
+  WHERE need_type != 'persona'
+  GROUP BY need_type
 `
 
 // The operator story: watch a need arise, then watch whether it gets satisfied.
@@ -18,6 +20,7 @@ const STARVED = `
   FROM acore_characters.aetherion_needs n
   JOIN acore_characters.characters c ON c.guid = n.guid
   WHERE n.amount > n.free_money AND n.amount > 0
+    AND n.need_type NOT IN ('errand', 'persona')
   ORDER BY n.since_ts ASC LIMIT 12
 `
 

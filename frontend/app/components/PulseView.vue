@@ -60,6 +60,13 @@ const errandRows = computed(() =>
 const errandTotal = computed(() =>
   (pulse.value?.errands ?? []).reduce((a: number, e: any) => a + e.n, 0))
 
+// Persona duty is the archetype's errand appetite - shown as the note so the
+// census reads "who they are" and "how hard they work the economy" together.
+const personaRows = computed(() =>
+  (pulse.value?.personas ?? []).map((p: any) => ({
+    label: p.name, value: p.n, note: `${p.duty}% duty`,
+  })))
+
 const NEED_LABEL: Record<string, string> = {
   repair: 'repairs', training: 'training', mount: 'mounts', gear: 'better gear',
   ammo: 'ammunition', materials: 'materials', errand: 'errands',
@@ -117,6 +124,14 @@ const col = computed(() => pulse.value?.collections ?? null)
             :style="{ margin: 0, fontSize: '13px', color: T.muted, lineHeight: 1.5 }"
           >No errand verdicts standing right now.</p>
           <UiBars v-else :rows="errandRows" />
+        </UiPanel>
+
+        <UiPanel v-if="personaRows.length" cap="Personas" note="who the population is">
+          <UiBars :rows="personaRows" labelWidth="90px" />
+          <p :style="{ margin: '8px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.5 }">
+            Disposition is bound to the character: professions plus a stable roll.
+            Duty is the share of idle beats spent on economy errands.
+          </p>
         </UiPanel>
 
         <UiPanel cap="Mail health" :note="mail ? `${fmt.int(mail.letters)} letters pending` : ''">

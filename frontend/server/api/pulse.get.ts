@@ -57,12 +57,23 @@ const NEEDS_FUNDING = `
          SUM(amount > 0) AS priced,
          SUM(amount > 0 AND free_money >= amount) AS funded
   FROM acore_characters.aetherion_needs
+  WHERE need_type NOT IN ('errand', 'persona')
   GROUP BY need_type ORDER BY n DESC
 `
 
+// Persona census: the population's economic dispositions. amount carries the
+// archetype's errand duty percent, identical within a target group.
+const PERSONAS = `
+  SELECT target, COUNT(*) AS n, MAX(amount) AS duty
+  FROM acore_characters.aetherion_needs
+  WHERE need_type = 'persona'
+  GROUP BY target ORDER BY n DESC
+`
+
 export default defineEventHandler(async () => {
-  const [hourly, errands, mailPending, collections, collectors, needs] = await Promise.all([
+  const [hourly, errands, mailPending, collections, collectors, needs, personas] = await Promise.all([
     q(HOURLY), q(ERRANDS), q(MAIL_PENDING), q(COLLECTIONS), q(TOP_COLLECTORS), q(NEEDS_FUNDING),
+    q(PERSONAS),
   ])
 
   const mp = mailPending[0]
@@ -91,6 +102,9 @@ export default defineEventHandler(async () => {
     needs: needs.map(r => ({
       type: r.need_type, n: Number(r.n),
       priced: Number(r.priced ?? 0), funded: Number(r.funded ?? 0),
+    })),
+    personas: personas.map(r => ({
+      name: r.target, n: Number(r.n), duty: Number(r.duty ?? 0),
     })),
   }
 })

@@ -15,6 +15,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "StatsWeightCalculator.h"
 #include "Trainer.h"
@@ -48,6 +49,43 @@ namespace
     // veterans off copper veins (the operator's no-pointless-gathering rule).
     uint32 sGatherMaxTierGap = 150;
 
+    // Economic personas: every bot gets a stable disposition - farmers live
+    // at the nodes and the auction house, warlords in the battlegrounds,
+    // adventurers on the road - so specialists supply each other through the
+    // market the way a real population does. Derived from the bot's own
+    // profession set plus a guid hash, so it survives restarts with no state.
+    uint8 constexpr PERSONA_ADVENTURER = 0;
+    uint8 constexpr PERSONA_FARMER = 1;
+    uint8 constexpr PERSONA_MERCHANT = 2;
+    uint8 constexpr PERSONA_WARLORD = 3;
+    char const* PERSONA_NAMES[] = {"adventurer", "farmer", "merchant", "warlord"};
+    // Idle-beat errand appetite per persona. Measured before this existed:
+    // every errand claimed every beat, and party formation fell 86% in a day.
+    uint8 constexpr PERSONA_DUTY[] = {22, 65, 50, 10};
+    uint32 sDutyScale = 100;
+    // World-thread only: written during the pass, read by WriteTelemetry.
+    std::unordered_map<uint32, uint8> sPersona;
+
+    uint8 ArchetypeOf(Player* bot)
+    {
+        auto skilled = [bot](uint32 skill)
+        { return bot->HasSkill(skill) && bot->GetSkillValue(skill) > 0; };
+        bool const gathers =
+            skilled(SKILL_HERBALISM) || skilled(SKILL_MINING) || skilled(SKILL_SKINNING);
+        bool const crafts = skilled(SKILL_ALCHEMY) || skilled(SKILL_BLACKSMITHING) ||
+                            skilled(SKILL_ENCHANTING) || skilled(SKILL_ENGINEERING) ||
+                            skilled(SKILL_LEATHERWORKING) || skilled(SKILL_TAILORING) ||
+                            skilled(SKILL_JEWELCRAFTING) || skilled(SKILL_INSCRIPTION);
+        uint32 const h = (bot->GetGUID().GetCounter() * 2654435761u) % 100u;
+        if (gathers && crafts)
+            return h < 70 ? PERSONA_FARMER : PERSONA_ADVENTURER;
+        if (gathers)
+            return h < 50 ? PERSONA_FARMER : (h < 75 ? PERSONA_WARLORD : PERSONA_ADVENTURER);
+        if (crafts)
+            return h < 60 ? PERSONA_MERCHANT : PERSONA_ADVENTURER;
+        return h < 45 ? PERSONA_WARLORD : PERSONA_ADVENTURER;
+    }
+
     struct Verdict
     {
         uint8 kind;
@@ -57,6 +95,10 @@ namespace
         // Mailbox target identity (E5.2); zero when the verdict is not mailbox.
         uint32 goEntry = 0;
         uint32 goSpawnId = 0;
+        // Persona duty: the chance (percent) this bot spends an idle beat on
+        // its errand rather than a pastime. Stamped from the archetype at
+        // verdict time; the map thread rolls against it in ClaimErrandBeat.
+        uint8 dutyPct = 30;
     };
 
     // World thread builds verdicts during the pass and swaps them into the
@@ -405,6 +447,7 @@ void NeedsLedger::LoadConfig()
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
     sGatherEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gather.Enabled", false);
     sGatherMaxTierGap = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gather.MaxTierGap", 150);
+    sDutyScale = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Duty.Scale", 100);
 
     if (_enabled || sEventsEnabled)
         EnsureTables();
@@ -469,6 +512,20 @@ uint8 NeedsLedger::UrgentVerdict(uint32 guid)
     std::lock_guard<std::mutex> lock(sVerdictMx);
     auto it = sVerdictMirror.find(guid);
     return it != sVerdictMirror.end() ? it->second.kind : VERDICT_NONE;
+}
+
+uint8 NeedsLedger::ClaimErrandBeat(uint32 guid)
+{
+    std::lock_guard<std::mutex> lock(sVerdictMx);
+    auto it = sVerdictMirror.find(guid);
+    if (it == sVerdictMirror.end())
+        return VERDICT_NONE;
+    // The persona duty roll: a farmer spends most idle beats on the errand,
+    // a warlord almost none. Losing the roll only defers the errand - the
+    // verdict stands and a later beat claims it.
+    if (urand(0, 99) >= it->second.dutyPct)
+        return VERDICT_NONE;
+    return it->second.kind;
 }
 
 bool NeedsLedger::FarVendor(uint32 guid, uint32 botMap, float& x, float& y, float& z)
@@ -1004,6 +1061,18 @@ void NeedsLedger::ComputeNeeds(Player* bot)
         }
     }
 
+    // Persona: recorded every pass for the census, and stamped onto whatever
+    // verdict the chain just stored so the map thread's duty roll is one
+    // mirror lookup. A single stamp point here covers every branch above.
+    {
+        uint8 const persona = ArchetypeOf(bot);
+        sPersona[guid] = persona;
+        auto vit = sVerdictBuild.find(guid);
+        if (vit != sVerdictBuild.end())
+            vit->second.dutyPct = uint8(
+                std::min<uint32>(100, PERSONA_DUTY[persona] * sDutyScale / 100));
+    }
+
     // Drop first-seen entries for needs that no longer exist, so a re-arising
     // need gets a fresh clock.
     for (auto it = seen.begin(); it != seen.end();)
@@ -1137,6 +1206,36 @@ void NeedsLedger::WriteTelemetry()
                 " since_ts) VALUES " + errandSql.str());
     }
     sVerdictBuild.clear();
+
+    // Persona census: who the population IS, alongside what it wants. The
+    // duty percent rides in amount so the dashboard can show appetite too.
+    {
+        std::ostringstream personaSql;
+        uint32 batched = 0;
+        for (auto const& pair : sPersona)
+        {
+            if (batched++)
+                personaSql << ",";
+            personaSql << "(" << pair.first << ",'persona','"
+                       << PERSONA_NAMES[pair.second <= 3 ? pair.second : 0] << "',"
+                       << uint32(std::min<uint32>(
+                              100, PERSONA_DUTY[pair.second <= 3 ? pair.second : 0] *
+                                       sDutyScale / 100))
+                       << ",0,UNIX_TIMESTAMP())";
+            if (batched >= 400)
+            {
+                CharacterDatabase.Execute(
+                    "INSERT INTO aetherion_needs (guid, need_type, target, amount, free_money,"
+                    " since_ts) VALUES " + personaSql.str());
+                personaSql.str("");
+                batched = 0;
+            }
+        }
+        if (batched)
+            CharacterDatabase.Execute(
+                "INSERT INTO aetherion_needs (guid, need_type, target, amount, free_money,"
+                " since_ts) VALUES " + personaSql.str());
+    }
 
     // E8.1: snapshot the live listings. World thread only - these maps have no
     // locking and the expiry sweep iterates them on this same thread.

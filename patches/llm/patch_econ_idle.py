@@ -44,7 +44,7 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
             // comes from the world-thread NeedsLedger mirror; trips reuse
             // WanderNpc with a deliberately chosen target, or GoCamp for the
             // far leg.
-            uint8 const econVerdict = NeedsLedger::UrgentVerdict(bot->GetGUID().GetCounter());
+            uint8 const econVerdict = econClaim;
             // E7 focus trip: reagents ready, recipe needs an anvil/forge/fire.
             // The GO-target accessor serves both mailbox and focus verdicts.
             if (econVerdict == NeedsLedger::VERDICT_FOCUS)
@@ -225,11 +225,16 @@ src = src.replace(IDLE_ANCHOR, IDLE_NEW, 1)
 # idle beat, starving the mailbox errand forever. Collection is quick, funds
 # everything else, and the drain runs on the very next idle anyway.
 PRE_DRAIN = "            // Finished quests are handed in before a new pastime is rolled. DoQuest\n"
-PRE_DRAIN_NEW = """            // Mail first: proceeds and gifts fund every other errand, and the
+PRE_DRAIN_NEW = """            // One persona duty roll governs this whole idle beat: the bot's
+            // disposition decides whether the errand claims it or an ordinary
+            // pastime rolls below. Farmers claim most beats, warlords few -
+            // without this, 1,455 concurrent errands ate the idle time that
+            // used to feed parties and questing (party formation fell 86%).
+            uint8 const econClaim = NeedsLedger::ClaimErrandBeat(bot->GetGUID().GetCounter());
+            // Mail first: proceeds and gifts fund every other errand, and the
             // quest drain below would otherwise starve collection forever on
             // bots with perpetually full logs.
-            if (NeedsLedger::UrgentVerdict(bot->GetGUID().GetCounter()) ==
-                NeedsLedger::VERDICT_MAILBOX)
+            if (econClaim == NeedsLedger::VERDICT_MAILBOX)
             {
                 uint32 mbEntry, mbSpawn;
                 float mx, my, mz;
