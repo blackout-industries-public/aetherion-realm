@@ -60,6 +60,9 @@ public:
     // A human just entered the world. Schedules a greeting from a bot that already
     // knows them - a greeting from a stranger is noise, so the bridge decides who.
     void OnHumanLogin(Player* human);
+    // Remember what a bot just said out loud (canned broadcasts included), so
+    // an answer to it reaches the model with the thought attached.
+    void NoteBroadcast(Player* bot, std::string const& line);
 
     // Something real happened. Grounding reactions in actual game state is also the
     // cheapest hallucination fix there is: the bot is told, not left to guess.
@@ -88,7 +91,7 @@ private:
     // the request is in flight. GUIDs and copied strings only.
     void Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string botName,
                 std::string speakerName, std::string message, uint32 chatType,
-                uint32 channelId, uint32 depth);
+                uint32 channelId, uint32 depth, std::string recentSay = "");
     void GreetWorker(ObjectGuid humanGuid, std::string humanName);
     void EventWorker(ObjectGuid botGuid, ObjectGuid humanGuid, std::string humanName,
                      std::string eventType, std::string detail);
@@ -153,6 +156,11 @@ private:
     std::vector<PendingGreet> _greets;
 
     std::mutex _claimMutex;
+
+    // The bot's own last broadcast line (guid raw -> line, stamp ms), so a
+    // reply to it reaches the model with the thought attached.
+    std::unordered_map<uint64, std::pair<std::string, uint64>> _lastBroadcast;
+    std::mutex _broadcastMutex;
     std::unordered_map<std::size_t, uint64> _claims;
 };
 

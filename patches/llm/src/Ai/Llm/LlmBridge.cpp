@@ -283,10 +283,29 @@ void LlmBridge::Submit(Player* bot, Player* speaker, std::string const& message,
 
     _inFlight.fetch_add(1);
 
+    // What this bot last said out loud, so a reply to its own broadcast lands
+    // with the thought still in hand - "me" answering "who wants to team up"
+    // used to draw a blank because the canned announcer, not the model, asked.
+    std::string recentSay;
+    {
+        std::lock_guard<std::mutex> lock(_broadcastMutex);
+        auto it = _lastBroadcast.find(bot->GetGUID().GetRawValue());
+        if (it != _lastBroadcast.end() && NowMs() - it->second.second < 180000)
+            recentSay = it->second.first;
+    }
+
     std::thread(&LlmBridge::Worker, this, bot->GetGUID(), speaker->GetGUID(),
                 std::string(bot->GetName()), std::string(speaker->GetName()), message,
-                chatType, channelId, depth)
+                chatType, channelId, depth, recentSay)
         .detach();
+}
+
+void LlmBridge::NoteBroadcast(Player* bot, std::string const& line)
+{
+    if (!_enabled || !bot || line.empty())
+        return;
+    std::lock_guard<std::mutex> lock(_broadcastMutex);
+    _lastBroadcast[bot->GetGUID().GetRawValue()] = {line, NowMs()};
 }
 
 char const* LlmBridge::ChannelLabel(uint32 chatType, uint32 depth) const
@@ -310,6 +329,11 @@ char const* LlmBridge::ChannelLabel(uint32 chatType, uint32 depth) const
             return "guild";
         case CHAT_MSG_CHANNEL:
             return "guild";  // shares the guild budget: public, but not human-directed
+        case CHAT_MSG_SAY:
+        case CHAT_MSG_YELL:
+            // Its own label: "ambient" never carries the action instruction,
+            // and a spoken ask is the most direct ask there is.
+            return "say";
         default:
             return "ambient";
     }
@@ -370,13 +394,16 @@ void LlmBridge::QueueReply(Reply const& reply)
 
 void LlmBridge::Worker(ObjectGuid botGuid, ObjectGuid speakerGuid, std::string botName,
                        std::string speakerName, std::string message, uint32 chatType,
-                       uint32 channelId, uint32 depth)
+                       uint32 channelId, uint32 depth, std::string recentSay)
 {
     std::ostringstream payload;
     payload << "{\"bot_guid\":" << botGuid.GetCounter()
             << ",\"speaker\":\"" << JsonEscape(speakerName)
             << "\",\"message\":\"" << JsonEscape(message)
-            << "\",\"channel\":\"" << ChannelLabel(chatType, depth) << "\"}";
+            << "\",\"channel\":\"" << ChannelLabel(chatType, depth) << "\"";
+    if (!recentSay.empty())
+        payload << ",\"recent_say\":\"" << JsonEscape(recentSay) << "\"";
+    payload << "}";
 
     std::string body;
     if (!HttpPost("/game/whisper", payload.str(), body))
@@ -609,14 +636,20 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
         uint8 asGroup = 0;
         if (group)
         {
-            if (speaker && group == speaker->GetGroup() &&
-                group->IsLeader(speaker->GetGUID()))
-            {
+            // Whoever leads starts the queue: the speaker when they lead, the
+            // bot itself when it does, or the group's bot leader on the ask's
+            // behalf. Only a DIFFERENT human leading stops the action - the
+            // ask is not theirs to be volunteered for.
+            Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
+            if (!leader)
+                return;
+            if (speaker && leader == speaker)
                 joiner = speaker;
-                asGroup = 1;
-            }
+            else if (GET_PLAYERBOT_AI(leader))
+                joiner = leader;
             else
                 return;
+            asGroup = 1;
         }
         if (joiner->InBattleground() || joiner->InBattlegroundQueue())
             return;

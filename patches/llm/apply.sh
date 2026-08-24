@@ -81,6 +81,15 @@ inc = '#include "PlayerbotAI.h"'
 assert inc in src, "include anchor not found"
 src = src.replace(inc, inc + '\n#include "LlmBridge.h"', 1)
 
+# Every canned broadcast funnels through SayToChannel; noting the line is what
+# lets a bot answer "me" to its own "who wants to team up?" with the thought
+# still in hand.
+say_note_anchor = '''bool PlayerbotAI::SayToChannel(const std::string& msg, const ChatChannelId& chanId)
+{'''
+assert say_note_anchor in src, "SayToChannel not found; upstream changed"
+src = src.replace(say_note_anchor,
+                  say_note_anchor + '\n    sLlmBridge->NoteBroadcast(bot, msg);\n', 1)
+
 # "do it" parses as the 'do' command and every bot in the party answers
 # "it: unknown action" in red. A real player's chat that names no known
 # action is almost always conversation - one claimed bot answers like a

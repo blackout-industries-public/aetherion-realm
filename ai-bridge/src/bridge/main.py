@@ -34,6 +34,9 @@ CHANNEL_PRIORITY = {
     "whisper": Priority.DIRECT_WHISPER,
     "party": Priority.PARTY,
     "guild": Priority.GUILD,
+    # A human speaking within earshot is as direct as an ask gets.
+    "say": Priority.PARTY,
+    "yell": Priority.PARTY,
     "event": Priority.EVENT_REACTION,
     # Bot answering bot. Deliberately above ambient: the opener is what needs pacing,
     # and throttling the reply the same way turns an exchange into two unrelated lines.
@@ -77,8 +80,11 @@ class ChatRequest(BaseModel):
     bot_name: str | None = None
     speaker: str = Field(min_length=1, max_length=32)
     message: str = Field(min_length=1, max_length=1000)
-    channel: Literal["whisper", "party", "guild", "event", "banter", "greet",
-                     "ambient"] = "whisper"
+    channel: Literal["whisper", "party", "guild", "say", "yell", "event",
+                     "banter", "greet", "ambient"] = "whisper"
+    # What this bot last said out loud (a canned broadcast counts): a reply to
+    # it should land with the thought attached, not draw a blank.
+    recent_say: str | None = Field(default=None, max_length=300)
 
 
 class ChatResponse(BaseModel):
@@ -107,6 +113,8 @@ def _phrase(req: "ChatRequest", message: str | None = None) -> str:
     verb = {"whisper": "whispers to you",
             "party": "says in party chat",
             "guild": "says in guild chat",
+            "say": "says to you, standing nearby",
+            "yell": "yells nearby",
             "banter": "says in the trade channel",
             "event": "-- something happened:"}.get(req.channel, "says")
     return f"{req.speaker} {verb}: {message}"
@@ -180,11 +188,15 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     # Actions make sense wherever a human addresses the bot - including out
     # loud: standing next to a bot and asking is the most natural ask there is.
-    if req.channel in ("whisper", "party", "guild", "say", "yell"):
+    if req.channel in ("whisper", "party", "guild", "say", "yell", "banter"):
         system = f"{system}\n{intents.INSTRUCTION}"
 
     messages = [{"role": "system", "content": system}]
     messages += await memory.history(bot.guid, req.speaker)
+    # The bot's own recent broadcast precedes the reply so "me" answering
+    # "who wants to team up?" reads as the continuation it is.
+    if req.recent_say:
+        messages.append({"role": "assistant", "content": req.recent_say})
     messages.append({"role": "user", "content": _phrase(req, message)})
 
     # Reflex first. Spending seconds of inference to produce "np" is the worst trade
