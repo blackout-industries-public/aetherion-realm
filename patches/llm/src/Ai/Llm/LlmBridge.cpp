@@ -5,6 +5,8 @@
 #include "Config.h"
 #include "GameTime.h"
 #include "Log.h"
+#include "DBCStores.h"
+#include "LFGMgr.h"
 #include "ObjectAccessor.h"
 #include "Group.h"
 #include "Guild.h"
@@ -255,7 +257,12 @@ bool LlmBridge::TryClaim(ObjectGuid speaker, uint32 chatType, std::string const&
                    [](unsigned char c) { return std::tolower(c); });
     std::size_t key = std::hash<std::string>{}(folded);
     key ^= std::hash<uint64>{}(speaker.GetRawValue()) + 0x9e3779b9 + (key << 6) + (key >> 2);
-    key ^= std::hash<uint32>{}(chatType) + 0x9e3779b9 + (key << 6) + (key >> 2);
+    // chatType is deliberately NOT part of the key. One /say reaches bots both
+    // through the say hook (typed SAY) and each bot's command queue (typed
+    // WHISPER), and keying on type let both paths claim - two bots answered
+    // every say. A speaker repeating the identical line on two channels inside
+    // the claim window and wanting two answers is not a real case.
+    (void)chatType;
 
     uint64 const now = NowMs();
 
@@ -637,10 +644,77 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
     }
 
     // Leadership goes through the module's own transfer command - the same
-    // checks a whispered "give leader" would run.
+    // checks a whispered "give leader" would run. The command only works from
+    // the ACTUAL leader, and the claimed bot usually is not it - "pass me
+    // leader" got an "all yours" from a member while the crown never moved.
+    // Any bot can hear the ask; the one that holds the lead executes it.
     if (intent == "give_lead")
     {
-        botAI->HandleCommand(CHAT_MSG_WHISPER, "give leader", speaker);
+        Player* holder = bot;
+        if (Group* group = bot->GetGroup())
+        {
+            Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
+            if (!leader || !GET_PLAYERBOT_AI(leader))
+                return;   // a human leads; their crown is not the bot's to hand over
+            holder = leader;
+        }
+        if (PlayerbotAI* holderAI = GET_PLAYERBOT_AI(holder))
+            holderAI->HandleCommand(CHAT_MSG_WHISPER, "give leader", speaker);
+        return;
+    }
+
+    // Queue the group for the dungeon finder. Same leader rule as the
+    // battleground queue below; the slot is the era's RANDOM dungeon, so the
+    // finder picks the instance and everyone gets the role-check dialog. The
+    // packet recipe mirrors the module's own LfgJoinAction.
+    if (intent == "queue_dungeon")
+    {
+        Player* joiner = bot;
+        if (Group* group = bot->GetGroup())
+        {
+            Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
+            if (!leader)
+                return;
+            if ((speaker && leader == speaker) || GET_PLAYERBOT_AI(leader))
+                joiner = leader;
+            else
+                return;
+        }
+        uint32 const level = joiner->GetLevel();
+        uint32 slot = 0;
+        uint32 bestMin = 0;
+        for (uint32 i = 0; i < sLFGDungeonStore.GetNumRows(); ++i)
+        {
+            LFGDungeonEntry const* entry = sLFGDungeonStore.LookupEntry(i);
+            // Normal-difficulty randoms only: a heroic random hard-fails on
+            // any undergeared member and the error is easy to miss.
+            if (!entry || entry->TypeID != lfg::LFG_TYPE_RANDOM || entry->Difficulty != 0)
+                continue;
+            if (level < entry->MinLevel || level > entry->MaxLevel)
+                continue;
+            if (entry->MinLevel >= bestMin)
+            {
+                bestMin = entry->MinLevel;
+                slot = entry->ID;
+            }
+        }
+        if (!slot)
+            return;
+        uint32 const roles = lfg::PLAYER_ROLE_LEADER |
+                             (PlayerbotAI::IsTank(joiner)   ? lfg::PLAYER_ROLE_TANK
+                              : PlayerbotAI::IsHeal(joiner) ? lfg::PLAYER_ROLE_HEALER
+                                                            : lfg::PLAYER_ROLE_DAMAGE);
+        WorldPacket* data = new WorldPacket(CMSG_LFG_JOIN);
+        *data << roles;
+        *data << bool(false);
+        *data << bool(false);
+        *data << uint8(1);
+        *data << slot;
+        *data << uint8(3) << uint8(0) << uint8(0) << uint8(0);
+        *data << std::string();
+        joiner->GetSession()->QueuePacket(data);
+        LOG_INFO("playerbots", "LLM intent: {} starts dungeon queue slot {} (joiner {})",
+                 bot->GetName(), slot, joiner->GetName());
         return;
     }
 

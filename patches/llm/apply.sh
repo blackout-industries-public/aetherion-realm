@@ -33,11 +33,12 @@ RELEASEACT=src/Ai/Base/Actions/ReleaseSpiritAction.cpp
 TRAINERACT=src/Ai/Base/Actions/TrainerAction.cpp
 MEETSTONEACT=src/Ai/Base/Actions/UseMeetingStoneAction.cpp
 GREETACT=src/Ai/Base/Actions/GreetAction.cpp
+EMOTEACT=src/Ai/Base/Actions/EmoteAction.cpp
 REPAIRACT=src/Ai/Base/Actions/RepairAllAction.cpp
 AUTOMAINT=src/Ai/Base/Actions/AutoMaintenanceOnLevelupAction.cpp
 git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
     "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
-    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT"
+    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT" "$EMOTEACT"
 
 mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
@@ -311,6 +312,29 @@ assert inc in src, "Playerbots include not found in GreetAction"
 
 open(path, "w").write(src)
 print("patched GreetAction.cpp (greet real players only)")
+PY
+
+# 1c. Emote replies answer people, never bots. A received hello made the bot
+#     hello back, which nearby bots received and returned - a self-sustaining
+#     cascade that outlived the greet gate because it is a second emitter.
+python3 - "$MODULE/src/Ai/Base/Actions/EmoteAction.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+
+anchor = '''bool EmoteActionBase::ReceiveEmote(Player* source, uint32 emote, bool verbal)
+{
+'''
+assert anchor in src, "ReceiveEmote head not found; upstream changed"
+src = src.replace(anchor, anchor + '''    // Answering another bot's emote re-emits it to every bot in range - the
+    // hello cascade. Emote replies are for people.
+    if (!source || !source->GetSession() || GET_PLAYERBOT_AI(source))
+        return false;
+
+''', 1)
+
+open(path, "w").write(src)
+print("patched EmoteAction.cpp (emote replies answer people only)")
 PY
 
 # 2b. Bots forming their own parties (see patch_aifactory.py for why this is needed).

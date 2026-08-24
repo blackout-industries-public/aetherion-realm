@@ -22,12 +22,21 @@ _GATES: dict[str, re.Pattern] = {
     "stay":         re.compile(r"\b(stay|wait|hold|stop)\b", re.I),
     "queue_bg":     re.compile(r"\b(queue|que|bg|battleground|warsong|wsg|arathi|"
                                r"alterac|av|ab|eots|eye of the storm)\b", re.I),
+    "queue_dungeon": re.compile(r"\b(queue|que|dungeon|rdf|lfd|instance|heroic)\b", re.I),
     "give_lead":    re.compile(r"\b(lead(er)?|leadership|promote)\b", re.I),
     "buff":         re.compile(r"\b(buff|bless|blessing|fort(itude)?|mark|kings|"
                                r"might|wisdom|intellect)\b", re.I),
 }
 
 ALLOWED = tuple(_GATES)
+
+# Self-actions are trusted on the model's own judgment: a wrongly moved bot or a
+# stray buff costs nothing, and demanding that the player's words pre-match a
+# regex is how "do it" and every paraphrase ended in a friendly reply and no
+# action. Only the invites keep the strict ask-gate - those touch OTHER people,
+# and a hallucinated one is spam a regex should keep impossible.
+_TRUSTED = frozenset(
+    {"come", "follow", "stay", "buff", "queue_bg", "queue_dungeon", "give_lead"})
 
 _TAG = re.compile(r"^\s*\[(?P<tag>[A-Z_]{3,16})\]\s*", re.I)
 
@@ -46,6 +55,8 @@ _ALIASES = {
     "pinvite": "party_invite", "invite": "party_invite", "party_invite": "party_invite",
     "come": "come", "follow": "follow", "stay": "stay",
     "queuebg": "queue_bg", "queue_bg": "queue_bg", "bgqueue": "queue_bg",
+    "queuedungeon": "queue_dungeon", "queue_dungeon": "queue_dungeon",
+    "dungeonqueue": "queue_dungeon", "rdf": "queue_dungeon", "lfd": "queue_dungeon",
     "buff": "buff", "buffs": "buff",
     "lead": "give_lead", "leader": "give_lead", "give_lead": "give_lead",
 }
@@ -59,11 +70,14 @@ INSTRUCTION = (
     "[STAY] you will wait here\n"
     "[BUFF] you will cast your buffs on them and the group right now\n"
     "[QUEUEBG] you are getting the battleground queue started for them\n"
+    "[QUEUEDUNGEON] you are queueing them in the dungeon finder\n"
     "[LEAD] you are handing them the group lead\n"
     "If none apply, use no tag. Never use a tag you were not asked for.\n"
+    "When they ask you to DO something and a tag fits, act - use the tag.\n"
     "Examples:\n"
     "They say: inv me / need a party -> [PINVITE] got you, sending it\n"
     "They say: queue us for av -> [QUEUEBG] on it\n"
+    "They say: queue random dungeon -> [QUEUEDUNGEON] queueing us now\n"
     "They say: can i get kings? -> [BUFF] coming right up\n"
     "They say: pass me lead -> [LEAD] all yours"
 )
@@ -105,9 +119,9 @@ def extract(reply: str, player_message: str) -> tuple[str | None, str]:
     if not intent:
         return None, stripped
 
-    # The model may only confirm an action the player actually raised.
-    gate = _GATES[intent]
-    if not gate.search(player_message):
+    # Trusted self-actions act on the model's judgment alone; the invites may
+    # only confirm an action the player actually raised.
+    if intent not in _TRUSTED and not _GATES[intent].search(player_message):
         return None, stripped
 
     # An action must match the words. A refusal keeps its line but loses its tag.

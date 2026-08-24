@@ -239,19 +239,23 @@ async def chat(req: ChatRequest) -> ChatResponse:
         llm.scheduler.stats["empty"] += 1
         return ChatResponse(reply=random.choice(FALLBACKS), bot=bot.name, source="fallback")
 
-    # Actions are only meaningful when a human addressed the bot directly.
-    intent = None
-    if req.channel in ("whisper", "party", "guild"):
-        # The gate reads the whole exchange: "me" answering the bot's own
-        # "who wants to help?" is an ask for a group, even though the word
-        # never appears in the player's line.
-        asked = f"{req.recent_say} {req.message}" if req.recent_say else req.message
-        intent, reply = intents.extract(reply, asked)
+    # Tag stripping is unconditional - a "[GINVITE] sure, hop in." that reaches
+    # /say verbatim is worse than a lost action, and that is exactly what
+    # happened when only the action channels ran extract. Acting stays limited
+    # to channels where a human addressed the bot directly.
+    # The gate reads the whole exchange: "me" answering the bot's own
+    # "who wants to help?" is an ask for a group, even though the word
+    # never appears in the player's line.
+    asked = f"{req.recent_say} {req.message}" if req.recent_say else req.message
+    intent, reply = intents.extract(reply, asked)
+    if req.channel in ("whisper", "party", "guild", "say", "yell"):
         # An agreeing reply to an unambiguous ask acts even without the tag.
-        if intent is None and req.channel in ("whisper", "party", "guild", "say", "yell"):
+        if intent is None:
             intent = intents.assume(reply, asked)
-        if intent:
-            llm.scheduler.stats[f"intent_{intent}"] += 1
+    else:
+        intent = None
+    if intent:
+        llm.scheduler.stats[f"intent_{intent}"] += 1
 
     if not reply:
         return ChatResponse(reply="", bot=bot.name, source="dropped", intent=intent)

@@ -15,6 +15,7 @@ def test_allowed_matches_the_documented_intent_vocabulary() -> None:
         "follow",
         "stay",
         "queue_bg",
+        "queue_dungeon",
         "buff",
         "give_lead",
     }
@@ -57,12 +58,39 @@ def test_accepts_a_gated_intent_and_strips_the_tag(
     assert "[" not in cleaned and "]" not in cleaned
 
 
-def test_rejects_a_hallucinated_tag_the_player_never_asked_for() -> None:
-    # STAY's gate requires stay/wait/hold/stop in the player's own message - without
-    # it the tag must be dropped even though it is otherwise well-formed.
-    intent, cleaned = intents.extract("[STAY] sure thing", "let's go kill the boss")
+def test_rejects_a_hallucinated_invite_the_player_never_asked_for() -> None:
+    # The invites keep the strict ask-gate: GINVITE needs a guild word in the
+    # player's own message - without it the tag must be dropped even though it
+    # is otherwise well-formed. A hallucinated invite is spam at another
+    # player; a hallucinated self-action is not, which is why only these gate.
+    intent, cleaned = intents.extract("[GINVITE] sure thing", "let's go kill the boss")
     assert intent is None
     assert cleaned == "sure thing"
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ("[STAY] sure thing", "stay"),
+        ("[BUFF] coming right up", "buff"),
+        ("[QUEUEDUNGEON] queueing us now", "queue_dungeon"),
+        ("[RDF] on it", "queue_dungeon"),
+    ],
+)
+def test_trusted_self_actions_act_on_the_models_judgment_alone(
+    reply: str, expected: str
+) -> None:
+    # No gate word anywhere in the player's message: the model read the intent
+    # from context ("Let LLM figure out some stuff") and that is enough for
+    # actions that only move or buff the bot itself.
+    intent, _ = intents.extract(reply, "you know what to do")
+    assert intent == expected
+
+
+def test_a_refusal_still_disarms_a_trusted_tag() -> None:
+    intent, cleaned = intents.extract("[BUFF] not right now", "you know what to do")
+    assert intent is None
+    assert cleaned == "not right now"
 
 
 def test_refusal_language_drops_the_intent_but_keeps_the_line() -> None:
