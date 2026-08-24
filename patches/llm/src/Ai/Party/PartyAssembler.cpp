@@ -122,6 +122,8 @@ void PartyAssembler::LoadConfig()
     _portalPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.PortalPct", 50);
     _raidPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidPct", 20);
     _raidSize = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidSize", 10);
+    _raid25Pct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.Raid25Pct", 25);
+    _raidHeroicPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidHeroicPct", 15);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
     _travelToDungeon = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.TravelToDungeon", true);
     sDriveGrouped = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.DriveGroupedBots", false);
@@ -881,9 +883,10 @@ PartyAssembler::Departure PartyAssembler::BeginTravel(Group* group, Player* lead
     return out;
 }
 
-bool PartyAssembler::HasRaidTarget(Player const* leader) const
+bool PartyAssembler::HasRaidTarget(Player const* leader, uint8& lowestFloor) const
 {
     uint8 const level = leader->GetLevel();
+    bool found = false;
     for (auto const& entry : _entrances)
     {
         MapEntry const* map = sMapStore.LookupEntry(entry.first);
@@ -894,9 +897,11 @@ bool PartyAssembler::HasRaidTarget(Player const* leader) const
             continue;
         if (entry.second.map != leader->GetMapId())
             continue;
-        return true;
+        if (!found || floorIt->second < lowestFloor)
+            lowestFloor = floorIt->second;
+        found = true;
     }
-    return false;
+    return found;
 }
 
 bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
@@ -904,10 +909,36 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
     if (_entrances.empty())
         return false;
 
-    uint8 const level = leader->GetLevel();
+    // The whole group must clear the door, not just the leader: TeleportTo
+    // refuses each member individually, and a raid that sheds its low-level
+    // half at the portal fights with whoever remains.
+    uint8 level = leader->GetLevel();
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        if (Player* member = itr->GetSource())
+            level = std::min<uint8>(level, member->GetLevel());
 
-    struct Option { Entrance where; std::string name; uint32 raidMap; };
+    uint32 const size = group->GetMembersCount();
+    // One roll per trip: whether this raid attempts a heroic lockout at all.
+    // Per-destination checks below decide where that ambition can be honored.
+    bool const wantHeroic = _raidHeroicPct && urand(1, 100) <= _raidHeroicPct;
+
+    struct Option { Entrance where; std::string name; uint32 raidMap; Difficulty diff; };
     std::vector<Option> options;
+
+    // Every member must satisfy the access rows for the chosen difficulty -
+    // this is what keeps a heroic Trial of the Grand Crusader pick from
+    // marching an unattuned raid to a door that refuses it.
+    auto allSatisfy = [group](uint32 mapId, Difficulty diff)
+    {
+        DungeonProgressionRequirements const* ar = sObjectMgr->GetAccessRequirement(mapId, diff);
+        if (!ar)
+            return true;
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            if (Player* member = itr->GetSource())
+                if (!member->Satisfy(ar, mapId))
+                    return false;
+        return true;
+    };
 
     for (auto const& entry : _entrances)
     {
@@ -929,7 +960,40 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
         if (door.map != leader->GetMapId())
             continue;
 
-        options.push_back({door, map->name[0] ? map->name[0] : "a raid", raidMap});
+        // Fit the difficulty to the group's size and this map's actual modes.
+        // Legacy raids expose only the 10-normal slot with a large player cap,
+        // so a 25-strong group still qualifies there at that slot; a map whose
+        // cap is genuinely 10 drops out for the big group instead of shedding
+        // fifteen members at the portal.
+        Difficulty diff;
+        if (size > 10)
+        {
+            if (GetMapDifficultyData(raidMap, RAID_DIFFICULTY_25MAN_NORMAL))
+                diff = RAID_DIFFICULTY_25MAN_NORMAL;
+            else
+            {
+                MapDifficulty const* legacy =
+                    GetMapDifficultyData(raidMap, RAID_DIFFICULTY_10MAN_NORMAL);
+                if (!legacy || legacy->maxPlayers < size)
+                    continue;
+                diff = RAID_DIFFICULTY_10MAN_NORMAL;
+            }
+        }
+        else
+            diff = RAID_DIFFICULTY_10MAN_NORMAL;
+
+        if (wantHeroic)
+        {
+            Difficulty const heroic = size > 10 ? RAID_DIFFICULTY_25MAN_HEROIC
+                                                : RAID_DIFFICULTY_10MAN_HEROIC;
+            if (GetMapDifficultyData(raidMap, heroic) && allSatisfy(raidMap, heroic))
+                diff = heroic;
+        }
+
+        if (!allSatisfy(raidMap, diff))
+            continue;
+
+        options.push_back({door, map->name[0] ? map->name[0] : "a raid", raidMap, diff});
     }
 
     if (options.empty())
@@ -946,12 +1010,19 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
     if (!GET_PLAYERBOT_AI(leader))
         return false;
 
+    // Direct call, not the client opcode: the handler refuses changes once
+    // anyone stands on a dungeon map, and every member here is outdoors at
+    // trip start. Propagates to all members and persists.
+    group->SetRaidDifficulty(chosen.diff);
+
     float const away = PlanarDistance(leader, chosen.where);
     Departure const start = BeginTravel(group, leader, chosen.where);
     Travel const how = start.how;
 
-    LOG_INFO("playerbots", "Party assembler: {} leads a raid to {} ({:.0f} yards, {})",
-             leader->GetName(), chosen.name, away, TravelName(how));
+    LOG_INFO("playerbots",
+             "Party assembler: {} leads a {}-strong raid to {} ({:.0f} yards, {}, difficulty {})",
+             leader->GetName(), group->GetMembersCount(), chosen.name, away, TravelName(how),
+             uint32(chosen.diff));
 
     _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.raidMap, chosen.where, chosen.name, Phase::Travelling, how,
@@ -1095,8 +1166,9 @@ bool PartyAssembler::AssembleOne()
 
     // Only now, with a leader in hand, can we tell whether a raid is even possible:
     // it needs the size, the level and a raid entrance on this continent.
+    uint8 raidFloor = 0;
     bool wantRaid = _raidPct && _raidSize > _targetSize && pool.size() >= _raidSize &&
-                    urand(1, 100) <= _raidPct && HasRaidTarget(leader);
+                    urand(1, 100) <= _raidPct && HasRaidTarget(leader, raidFloor);
     uint32 targetSize = wantRaid ? _raidSize : _targetSize;
 
     std::vector<Player*> compatible;
@@ -1115,8 +1187,20 @@ bool PartyAssembler::AssembleOne()
                                 : leader->GetLevel() - bot->GetLevel();
         if (diff > _levelSpread)
             continue;
+        // A member below every reachable raid's floor would sink the whole
+        // trip: the door check uses the group's lowest level, so one such
+        // pick turns the raid into an immediate dissolve.
+        if (wantRaid && bot->GetLevel() < raidFloor)
+            continue;
         compatible.push_back(bot);
     }
+
+    // A raid grows to 25 only when the compatible bench can actually seat it -
+    // chosen here, after filtering, so there is never a 25-intent that must
+    // shed members later.
+    if (wantRaid && _raid25Pct && compatible.size() + 1 >= 25 &&
+        urand(1, 100) <= _raid25Pct)
+        targetSize = 25;
 
     if (compatible.size() + 1 < targetSize)
     {
@@ -1126,8 +1210,10 @@ bool PartyAssembler::AssembleOne()
         targetSize = _targetSize;
     }
 
-    // Fill one tank and one healer before filling with damage, so the party is
-    // plausible enough for the dungeon finder to accept the roles.
+    // Role floors scale with the format: a party runs on one tank and one
+    // healer, a 10-raid on two and three, a 25-raid on three and six - the
+    // shape a real roster would bring, and what raid bosses' damage patterns
+    // assume.
     std::vector<Player*> picked;
     auto take = [&picked, &compatible](auto predicate) {
         auto it = std::find_if(compatible.begin(), compatible.end(), predicate);
@@ -1138,10 +1224,16 @@ bool PartyAssembler::AssembleOne()
         return true;
     };
 
-    if (!CanTank(leader))
-        take([](Player* p) { return PartyAssembler::CanTank(p); });
-    if (!CanHeal(leader))
-        take([](Player* p) { return PartyAssembler::CanHeal(p); });
+    uint32 tanksNeeded = targetSize >= 25 ? 3 : wantRaid ? 2 : 1;
+    uint32 healersNeeded = targetSize >= 25 ? 6 : wantRaid ? 3 : 1;
+    if (CanTank(leader) && tanksNeeded)
+        --tanksNeeded;
+    else if (CanHeal(leader) && healersNeeded)
+        --healersNeeded;
+    while (tanksNeeded && take([](Player* p) { return PartyAssembler::CanTank(p); }))
+        --tanksNeeded;
+    while (healersNeeded && take([](Player* p) { return PartyAssembler::CanHeal(p); }))
+        --healersNeeded;
 
     while (picked.size() + 1 < targetSize && !compatible.empty())
     {
@@ -1165,7 +1257,14 @@ bool PartyAssembler::AssembleOne()
     // Must happen before members are added: a party group reports itself full at five,
     // so converting afterwards leaves a raid that silently stayed a five-man.
     if (wantRaid)
+    {
         group->ConvertToRaid();
+        // Baseline every raid at 10-normal: members carry personal difficulty
+        // between groups, so without this a bot who once raided heroic seeds
+        // its next group with a lockout nobody chose. SendPartyToRaid sets the
+        // real difficulty once the destination is known.
+        group->SetRaidDifficulty(RAID_DIFFICULTY_10MAN_NORMAL);
+    }
 
     uint32 added = 0;
     uint32 gathered = 0;
@@ -1232,6 +1331,19 @@ bool PartyAssembler::AssembleOne()
     // level. It is never a fallback for a raid: WotLK has no raid finder.
     if (!travelling && !wantRaid && _queueLfg)
         QueueForDungeon(leader);
+
+    // A raid that cannot start its trip dissolves on the spot. The formation
+    // gate only sees the leader; the trip check sees the whole group's levels
+    // and gear, so it can be stricter - and a raid it refuses would otherwise
+    // idle in the cap for the rest of the uptime with no timer to reap it.
+    if (!travelling && wantRaid)
+    {
+        LOG_INFO("playerbots",
+                 "Party assembler: {}'s raid found no reachable target and dissolves",
+                 leader->GetName());
+        group->Disband();
+        return false;
+    }
 
     return true;
 }

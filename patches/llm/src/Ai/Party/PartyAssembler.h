@@ -83,7 +83,9 @@ private:
 
     // Checked before a raid is committed to. A ten-man that forms with nowhere to
     // go cannot be converted back, so it would just stand in place forever.
-    bool HasRaidTarget(Player const* leader) const;
+    // lowestFloor reports the smallest min-level among the reachable raids, so
+    // member selection can refuse anyone the trip check would later trip over.
+    bool HasRaidTarget(Player const* leader, uint8& lowestFloor) const;
 
     // Roughly "can hold threat" / "can heal", by class. Deliberately loose: a party
     // of five that is merely plausible beats waiting for a perfect one.
@@ -212,6 +214,11 @@ private:
     uint32 _portalPct{50};
     uint32 _raidPct{20};
     uint32 _raidSize{10};
+    // Share of raids that expand to 25 members when the bench allows, and
+    // share of raid trips that attempt the heroic difficulty where the
+    // destination offers one and every member clears its access check.
+    uint32 _raid25Pct{25};
+    uint32 _raidHeroicPct{15};
     bool _queueLfg{true};
     bool _travelToDungeon{true};
 

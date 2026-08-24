@@ -271,6 +271,8 @@ AiPlayerbot.Party.FootRange = 1200
 AiPlayerbot.Party.PortalPct = 50
 AiPlayerbot.Party.RaidPct = 20
 AiPlayerbot.Party.RaidSize = 10
+AiPlayerbot.Party.Raid25Pct = 25
+AiPlayerbot.Party.RaidHeroicPct = 15
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
 

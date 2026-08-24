@@ -30,6 +30,10 @@ set_conf "$CONF/worldserver.conf" "Updates.EnableDatabases" "0"
 # 60s costs ~1500 row updates a minute at full population - measure tick diff before
 # lowering it further.
 set_conf "$CONF/worldserver.conf" "PlayerSaveInterval" "${PLAYER_SAVE_INTERVAL_MS:-60000}"
+# Gear floors at instance portals: with seed-raid-floors.sh populating
+# min_avg_item_level, this keeps green-geared groups out of heroic raids -
+# bots and humans alike, which is the realism the floors exist for.
+set_conf "$CONF/worldserver.conf" "DungeonAccessRequirements.PortalAvgIlevelCheck" "${PORTAL_ILVL_CHECK:-1}"
 # Without this, battlegrounds run but pvpstats_battlegrounds and pvpstats_players stay
 # empty, so no match ever has a score, a bracket or a winner.
 set_conf "$CONF/worldserver.conf" "Battleground.StoreStatistics.Enable" "${BG_STORE_STATS:-1}"
@@ -91,6 +95,10 @@ set_conf "$PB" "AiPlayerbot.Party.FootRange" "${PARTY_FOOT_RANGE:-1200}"
 set_conf "$PB" "AiPlayerbot.Party.PortalPct" "${PARTY_PORTAL_PCT:-50}"
 set_conf "$PB" "AiPlayerbot.Party.RaidPct" "${PARTY_RAID_PCT:-20}"
 set_conf "$PB" "AiPlayerbot.Party.RaidSize" "${PARTY_RAID_SIZE:-10}"
+# Raid formats: share of raids seated as 25s, and share of raid trips that
+# attempt heroic where the destination offers it and access checks pass.
+set_conf "$PB" "AiPlayerbot.Party.Raid25Pct" "${PARTY_RAID25_PCT:-25}"
+set_conf "$PB" "AiPlayerbot.Party.RaidHeroicPct" "${PARTY_RAID_HEROIC_PCT:-15}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"
 set_conf "$PB" "AiPlayerbot.Party.TravelToDungeon" "${PARTY_TRAVEL:-1}"
 
