@@ -108,12 +108,6 @@ private:
     static float PartyAvgIlvl(Group* group);
     uint32 GearScaledPct(Group* group, uint32 mapId, uint8 difficulty, uint32 fullPct) const;
 
-    // The run-history ledger. RecordRunStart returns the new row id; EndRun
-    // stamps the ending and snapshots boss progress from the instance save.
-    uint32 _runSeq{0};
-    uint32 RecordRunStart(Group* group, Player* leader, std::string const& name, uint32 mapId,
-                          bool isRaid, uint8 difficulty, Travel how, uint32 startYards);
-    void EndRun(uint32 runId, uint32 mapId, char const* outcome);
 
     // How a real group gets to a dungeon: one player travels, everyone else waits,
     // then they are summoned at the meeting stone by the entrance. Modelling that is
@@ -141,6 +135,14 @@ private:
         std::string place;   // capital hearthed or portalled to, empty on foot
         std::string actor;   // the mage who opened the portal, when there was one
     };
+
+    // The run-history ledger. RecordRunStart returns the new row id; EndRun
+    // stamps the ending and snapshots boss progress from the instance save.
+    // Declared after Travel, which the signature needs.
+    uint32 _runSeq{0};
+    uint32 RecordRunStart(Group* group, Player* leader, std::string const& name, uint32 mapId,
+                          bool isRaid, uint8 difficulty, Travel how, uint32 startYards);
+    void EndRun(uint32 runId, uint32 mapId, char const* outcome);
 
     struct Trip
     {
