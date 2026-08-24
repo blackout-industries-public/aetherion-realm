@@ -36,7 +36,10 @@ patch(SCRIPT, [
      "        sPartyAssembler->LoadConfig();\n        sNeedsLedger->LoadConfig();\n"),
     ("    new PlayerbotsScript();",
      "    new PlayerbotsScript();\n    NeedsLedger::RegisterAuctionScript();"),
-], "NeedsLedger")
+    # Marker must be a string only THIS patch writes: the harvest hook in the
+    # apply.sh script section also says "NeedsLedger", and a bare class-name
+    # marker made this whole block skip as already-applied.
+], "sNeedsLedger->Tick")
 
 FACTORY = f"{module}/src/Bot/Factory/PlayerbotFactory.cpp"
 VISIT = """        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);

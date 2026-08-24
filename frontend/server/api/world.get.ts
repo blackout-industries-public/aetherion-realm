@@ -201,11 +201,24 @@ export default defineEventHandler(async () => {
   // time - not where the actors stand now. Failure degrades to no heat.
   let heat: any[] = []
   try {
+    // Two sources for the professions layer: the harvest ledger counts every
+    // herb, vein and skin (loot never stops, unlike skill-ups, which cap),
+    // and skill-up events still cover the crafting trades.
     const [rows] = await getPool().query<any[]>(
       `SELECT zone, SUBSTRING_INDEX(detail, ' ', 1) AS what, kind, COUNT(*) AS n
        FROM aetherion_ai.bot_events
        WHERE ts > UNIX_TIMESTAMP() - 86400 AND zone > 0 AND kind IN ('pvp','profession')
-       GROUP BY zone, what, kind`)
+       GROUP BY zone, what, kind
+       UNION ALL
+       SELECT CAST(e.detail AS UNSIGNED) AS zone,
+              CASE it.SubClass WHEN 9 THEN 'Herbalism' WHEN 7 THEN 'Mining'
+                               ELSE 'Skinning' END AS what,
+              'profession' AS kind, SUM(e.count) AS n
+       FROM acore_characters.aetherion_econ_events e
+       JOIN acore_world.item_template it ON it.entry = e.item
+       WHERE e.kind = 'harvest' AND e.ts > UNIX_TIMESTAMP() - 86400
+         AND CAST(e.detail AS UNSIGNED) > 0
+       GROUP BY zone, what`)
     heat = (rows as any[]).map(r => ({
       zone: Number(r.zone), what: r.what, kind: r.kind, n: Number(r.n),
     }))

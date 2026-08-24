@@ -133,15 +133,30 @@ events_new = """    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) ov
         sLlmBridge->OnGameEvent(player, "died", std::string(player->GetName()) + " just died");
     }
 
-    void OnPlayerLootItem(Player* player, Item* item, uint32 /*count*/, ObjectGuid /*lootguid*/) override
+    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid lootguid) override
     {
-        // Only rare and better. Reacting to every grey drop would be both absurd and
-        // ruinously expensive.
-        if (!item || !item->GetTemplate() || item->GetTemplate()->Quality < ITEM_QUALITY_RARE)
+        if (!item || !item->GetTemplate())
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+
+        // Harvest ledger: every herb pulled, vein struck and hide skinned,
+        // stamped with the zone it happened in. Skill-ups cannot carry the
+        // professions heat map - they stop at cap - so the loot itself does.
+        // Node produce arrives from a GameObject; skins from a creature.
+        if (proto->Class == ITEM_CLASS_TRADE_GOODS &&
+            ((lootguid.IsGameObject() && (proto->SubClass == ITEM_SUBCLASS_HERB ||
+                                          proto->SubClass == ITEM_SUBCLASS_METAL_STONE)) ||
+             proto->SubClass == ITEM_SUBCLASS_LEATHER))
+            NeedsLedger::LogEvent("harvest", player->GetGUID().GetCounter(), proto->ItemId,
+                                  count ? count : 1, std::to_string(player->GetZoneId()));
+
+        // Only rare and better reaches the chat layer. Reacting to every grey
+        // drop would be both absurd and ruinously expensive.
+        if (proto->Quality < ITEM_QUALITY_RARE)
             return;
 
         sLlmBridge->OnGameEvent(player, "loot",
-            std::string(player->GetName()) + " just looted " + item->GetTemplate()->Name1);
+            std::string(player->GetName()) + " just looted " + proto->Name1);
     }
 
 """ + events_anchor

@@ -45,7 +45,7 @@ const LAYERS = [
   { key: 'activity', label: 'ACTIVITY',    name: 'Activity',    hint: 'what they do',        note: 'what each character is doing' },
   { key: 'density',  label: 'HOTSPOTS',    name: 'Hotspots',    hint: 'where they are',      note: 'where the population actually is' },
   { key: 'pvp',      label: 'WORLD PVP',   name: 'World PvP',   hint: 'kills scored here',   note: 'where honourable kills happened, last 24h' },
-  { key: 'prof',     label: 'PROFESSIONS', name: 'Professions', hint: 'trades worked here',  note: 'where skill-ups were earned, last 24h' },
+  { key: 'prof',     label: 'PROFESSIONS', name: 'Professions', hint: 'trades worked here',  note: 'where herbs, veins and skins were taken, last 24h' },
 ] as const
 type LayerKey = (typeof LAYERS)[number]['key']
 
@@ -502,7 +502,7 @@ const consolePanel = {
               :fill="b.fill" opacity="0.42"
               :stroke="b.fill" stroke-opacity="0.8" stroke-width="1"
             >
-              <title>{{ b.name }} · {{ b.n }} {{ layer === 'pvp' ? 'kills scored' : 'skill-ups earned' }} in 24h</title>
+              <title>{{ b.name }} · {{ b.n }} {{ layer === 'pvp' ? 'kills scored' : 'harvests' }} in 24h</title>
             </circle>
           </g>
 
