@@ -305,7 +305,25 @@ src = src.replace(anchor, anchor + '''
     // spam, and the emote spends its charm where nobody reads it.
     if (!player->GetSession() || GET_PLAYERBOT_AI(player))
         return false;
+
+    // Realm-wide trickle: greet memory resets on relogin, so every restart
+    // made the whole crowd greet the player at once - a wall by other means.
+    // One greet per 20s across all bots keeps it an occasional charm. The
+    // load/store race across map threads is benign: at worst two greets land
+    // in the same instant.
+    static std::atomic<uint64> lastGreetMs{0};
+    uint64 const nowMs = static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (nowMs - lastGreetMs.load(std::memory_order_relaxed) < 20000)
+        return false;
+    lastGreetMs.store(nowMs, std::memory_order_relaxed);
 ''', 1)
+
+for header in ('#include <atomic>', '#include <chrono>'):
+    if header not in src:
+        src = src.replace('#include "Playerbots.h"',
+                          header + '\n#include "Playerbots.h"', 1)
 
 inc = '#include "Playerbots.h"'
 assert inc in src, "Playerbots include not found in GreetAction"

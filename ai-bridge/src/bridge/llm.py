@@ -7,6 +7,7 @@ low-priority work is dropped outright rather than delayed once capacity is gone.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -35,6 +36,16 @@ PROTECTED = Priority.GUILD
 # Models are told to answer as a player. Some still narrate or wrap in quotes, and a
 # stray "As an AI" must never reach a player, so the output is scrubbed, not trusted.
 _STRIP = re.compile(r"^\s*[\"'*]+|[\"'*]+\s*$")
+# Harmony-format models leak their channel scaffolding into content. Observed
+# live, whispered verbatim to a player: <|channel|>commentary to=final
+# <|constrain|>json<|message|>{"text":"[GINVITE] test, you're in!"}. The words
+# the character typed are inside the JSON envelope; everything else is the
+# model talking to itself.
+_SCAFFOLD_TOKEN = re.compile(r"<\|[^<>|]{1,24}\|>")
+_SCAFFOLD_FRAMING = re.compile(
+    r"\b(?:commentary\s+)?to=final\b|^\s*(?:json|commentary|analysis|assistantfinal)\b[: ]*",
+    re.I)
+_JSON_TEXT = re.compile(r"\{[^{}]*\"text\"[^{}]*\}")
 # Models habitually prefix the speaker ("Sylindia: sure") or open with stage
 # direction ("*whisper*: sure"). Both must go; only typed words reach the player.
 _SPEAKER = re.compile(r"^\s*[A-Za-z][\w' -]{0,30}\s*:\s*")
@@ -215,6 +226,22 @@ class LLM:
 
     @staticmethod
     def sanitize(text: str, speaker_name: str = "") -> str:
+        if "<|" in text or text.lstrip().startswith("{"):
+            # Prefer the JSON envelope's own "text" - it is the actual line.
+            last = None
+            for last in _JSON_TEXT.finditer(text):
+                pass
+            if last is not None:
+                try:
+                    inner = json.loads(last.group(0)).get("text")
+                except ValueError:
+                    inner = None
+                if isinstance(inner, str) and inner.strip():
+                    text = inner
+            text = _SCAFFOLD_TOKEN.sub(" ", text)
+            text = _SCAFFOLD_FRAMING.sub("", text)
+            if "<|" in text:
+                return ""   # scrubbing failed; a fallback beats leaked markup
         text = _THINK.sub("", text)                 # reasoning models leak scratchpads
         text = _NARRATION.sub("", text)
         text = " ".join(text.split())
