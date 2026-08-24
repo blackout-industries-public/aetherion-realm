@@ -574,13 +574,36 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     if (!GET_PLAYERBOT_AI(leader))
         return false;
 
+    // Heroic mode for the walked-in party, decided like the raid leg: the map
+    // must actually have the mode and every member must clear its access rows
+    // (the seeded item-level floors do the gear gating). Same roll knob as
+    // raids - a capped party tries heroic at the same rate a raid does.
+    Difficulty dungeonDiff = DUNGEON_DIFFICULTY_NORMAL;
+    if (_raidHeroicPct && urand(1, 100) <= _raidHeroicPct &&
+        GetMapDifficultyData(chosen.dungeonMap, DUNGEON_DIFFICULTY_HEROIC))
+    {
+        bool everyone = true;
+        DungeonProgressionRequirements const* ar =
+            sObjectMgr->GetAccessRequirement(chosen.dungeonMap, DUNGEON_DIFFICULTY_HEROIC);
+        if (ar)
+            for (GroupReference* itr = group->GetFirstMember(); everyone && itr != nullptr;
+                 itr = itr->next())
+                if (Player* member = itr->GetSource())
+                    everyone = member->Satisfy(ar, chosen.dungeonMap);
+        if (everyone)
+            dungeonDiff = DUNGEON_DIFFICULTY_HEROIC;
+    }
+    group->SetDungeonDifficulty(dungeonDiff);
+
     float const away = PlanarDistance(leader, chosen.where);
     Departure const start = BeginTravel(group, leader, chosen.where);
     Travel const how = start.how;
 
-    LOG_INFO("playerbots", "Party assembler: {} heads for {} ({:.0f} yards, {}) - "
+    LOG_INFO("playerbots", "Party assembler: {} heads for {}{} ({:.0f} yards, {}) - "
              "party waits for the summon",
-             leader->GetName(), chosen.name, away, TravelName(how));
+             leader->GetName(), chosen.name,
+             dungeonDiff == DUNGEON_DIFFICULTY_HEROIC ? " (heroic)" : "",
+             away, TravelName(how));
 
     // Only the leader travels. The rest wait where they are, exactly as a group waits
     // in a city for a summon rather than all running separately.
