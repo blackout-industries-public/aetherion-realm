@@ -28,17 +28,17 @@ FROM bot_guilds bg
 WHERE NOT EXISTS (SELECT 1 FROM guild_bank_tab t WHERE t.guildid = bg.guildid AND t.TabId = 0);
 
 UPDATE guild_rank gr JOIN bot_guilds bg ON bg.guildid = gr.guildid
-SET gr.rights = gr.rights | 0x40000,
+SET gr.rights = gr.rights | 262144,
     gr.BankMoneyPerDay = GREATEST(gr.BankMoneyPerDay, 50000)
 WHERE gr.rid >= 2;
 
 UPDATE guild_rank gr JOIN bot_guilds bg ON bg.guildid = gr.guildid
-SET gr.rights = gr.rights | 0xC0000,
+SET gr.rights = gr.rights | 786432,
     gr.BankMoneyPerDay = GREATEST(gr.BankMoneyPerDay, 200000)
 WHERE gr.rid = 1;
 
 INSERT INTO guild_bank_right (guildid, TabId, rid, gbright, SlotPerDay)
-SELECT gr.guildid, 0, gr.rid, IF(gr.rid = 1, 0xFF, 0x03), IF(gr.rid = 1, 25, 0)
+SELECT gr.guildid, 0, gr.rid, IF(gr.rid = 1, 255, 3), IF(gr.rid = 1, 25, 0)
 FROM guild_rank gr JOIN bot_guilds bg ON bg.guildid = gr.guildid
 WHERE gr.rid >= 1
 ON DUPLICATE KEY UPDATE
