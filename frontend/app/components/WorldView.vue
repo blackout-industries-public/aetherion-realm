@@ -26,6 +26,8 @@ const props = defineProps<{
   selectedGuid: number | null
   refreshAgo: number
   refreshEvery: number
+  // Per-zone event heat, 24h: rows of {zone, what, kind, n} from the recorder.
+  heat?: { zone: number; what: string; kind: string; n: number }[]
 }>()
 
 const emit = defineEmits<{ select: [string] }>()
@@ -42,8 +44,8 @@ const RAMPS: Record<string, string[]> = {
 const LAYERS = [
   { key: 'activity', label: 'ACTIVITY',    name: 'Activity',    hint: 'what they do',        note: 'what each character is doing' },
   { key: 'density',  label: 'HOTSPOTS',    name: 'Hotspots',    hint: 'where they are',      note: 'where the population actually is' },
-  { key: 'pvp',      label: 'WORLD PVP',   name: 'World PvP',   hint: "today's kills",       note: "today's kills by where the killer stands" },
-  { key: 'prof',     label: 'PROFESSIONS', name: 'Professions', hint: 'who carries a trade', note: 'who carries a gathering or crafting skill' },
+  { key: 'pvp',      label: 'WORLD PVP',   name: 'World PvP',   hint: 'kills scored here',   note: 'where honourable kills happened, last 24h' },
+  { key: 'prof',     label: 'PROFESSIONS', name: 'Professions', hint: 'trades worked here',  note: 'where skill-ups were earned, last 24h' },
 ] as const
 type LayerKey = (typeof LAYERS)[number]['key']
 
@@ -145,13 +147,56 @@ const visible = computed(() => {
   return z ? base.filter(e => inRect(e.x, e.y, z)) : base
 })
 
-// What each character contributes to the active layer. Zero means it is not part of
-// this view at all, which is different from "a cell with no one in it".
-function weightOf(e: Entity): number {
-  if (layer.value === 'pvp') return e.kills || 0
-  if (layer.value === 'prof') return (e.prof & (1 << profBit.value)) ? 1 : 0
+// Population density is the only layer still weighed by who stands where;
+// the event layers below draw where things HAPPENED instead - a killer who
+// hearthed to Dalaran no longer paints Dalaran red.
+function weightOf(_e: Entity): number {
   return 1
 }
+
+// Zone bubbles for the event layers: the recorder stamps every event with the
+// zone it happened in; the bubble anchors at the centroid of that zone's
+// present characters. A zone with heat but nobody currently home has no
+// anchor and is listed in the note instead of guessed onto the map.
+const zoneBubbles = computed(() => {
+  if (layer.value !== 'pvp' && layer.value !== 'prof') return { bubbles: [] as any[], total: 0, unanchored: 0 }
+  const wantKind = layer.value === 'pvp' ? 'pvp' : 'profession'
+  const profWord = layer.value === 'prof' && profName.value ? profName.value.split(' ')[0] : null
+  const byZone = new Map<number, number>()
+  let total = 0
+  for (const row of props.heat ?? []) {
+    if (row.kind !== wantKind) continue
+    if (profWord && row.what !== profWord) continue
+    byZone.set(row.zone, (byZone.get(row.zone) ?? 0) + Number(row.n))
+    total += Number(row.n)
+  }
+  const anchors = new Map<number, { x: number; y: number; n: number }>()
+  for (const e of visible.value) {
+    if (!byZone.has(e.zone)) continue
+    const { cx, cy } = project(e)
+    if (cx < 0 || cx > 1000 || cy < 0 || cy > 560) continue
+    const a = anchors.get(e.zone) ?? { x: 0, y: 0, n: 0 }
+    a.x += cx; a.y += cy; a.n++
+    anchors.set(e.zone, a)
+  }
+  const ramp = RAMPS[layer.value]!
+  const max = Math.max(1, ...byZone.values())
+  const bubbles: any[] = []
+  let unanchored = 0
+  for (const [zone, n] of byZone) {
+    const a = anchors.get(zone)
+    if (!a || !a.n) { unanchored += n; continue }
+    const t = n / max
+    bubbles.push({
+      zone, n,
+      x: a.x / a.n, y: a.y / a.n,
+      r: 9 + Math.sqrt(n / max) * 26,
+      fill: ramp[t > 0.62 ? 4 : t > 0.38 ? 3 : t > 0.2 ? 2 : t > 0.08 ? 1 : 0]!,
+      name: zoneName(zone),
+    })
+  }
+  return { bubbles, total, unanchored }
+})
 
 // Binned rather than a blurred kernel: a grid cell is an honest count of characters in
 // a known area, and it stays readable at 2500 points where overlapping dots do not.
@@ -159,7 +204,7 @@ const CELL = 40
 const COLS = Math.ceil(1000 / CELL)
 
 const heat = computed(() => {
-  if (layer.value === 'activity') return { cells: [] as any[], max: 0, total: 0 }
+  if (layer.value !== 'density') return { cells: [] as any[], max: 0, total: 0 }
   const grid = new Map<number, number>()
   let total = 0
   for (const e of visible.value) {
@@ -194,8 +239,15 @@ const profName = computed(() => props.professions?.[profBit.value]?.name ?? '')
 
 const heatNote = computed(() => {
   const base = layer.value === 'prof' && profName.value
-    ? `Professions · who carries ${profName.value}`
+    ? `Professions · ${profName.value} worked here, last 24h`
     : `${activeLayer.value.name} · ${activeLayer.value.note}`
+  if (layer.value === 'pvp' || layer.value === 'prof') {
+    const zb = zoneBubbles.value
+    const bits = [`${fmt.int(zb.total)} events`]
+    if (zb.unanchored)
+      bits.push(`${fmt.int(zb.unanchored)} in zones nobody is home to plot`)
+    return `${base} · ${bits.join(' · ')}`
+  }
   return heat.value.total ? `${base} · ${fmt.int(heat.value.total)} total` : base
 })
 
@@ -436,8 +488,22 @@ const consolePanel = {
               :x="c.x" :y="c.y" :width="CELL" :height="CELL"
               :fill="c.fill" :opacity="c.opacity"
             >
-              <title>{{ c.n }} {{ layer === 'pvp' ? 'kills' : 'characters' }}</title>
+              <title>{{ c.n }} characters</title>
             </rect>
+          </g>
+
+          <!-- Event heat: one bubble per zone where things actually happened,
+               sized by count, anchored at the zone's present population. -->
+          <g v-if="zoneBubbles.bubbles.length">
+            <circle
+              v-for="b in zoneBubbles.bubbles"
+              :key="b.zone"
+              :cx="b.x" :cy="b.y" :r="b.r"
+              :fill="b.fill" opacity="0.42"
+              :stroke="b.fill" stroke-opacity="0.8" stroke-width="1"
+            >
+              <title>{{ b.name }} · {{ b.n }} {{ layer === 'pvp' ? 'kills scored' : 'skill-ups earned' }} in 24h</title>
+            </circle>
           </g>
 
           <text

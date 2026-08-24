@@ -802,7 +802,7 @@ uint32 PartyAssembler::RecordRunStart(Group* group, Player* leader, std::string 
                 "INSERT INTO aetherion_run_members (run_id, guid, name, class, level, role)"
                 " VALUES ({}, {}, '{}', {}, {}, '{}')",
                 id, m->GetGUID().GetCounter(), Sql(m->GetName()), uint32(m->getClass()),
-                m->GetLevel(), CanTank(m) ? "tank" : CanHeal(m) ? "healer" : "dps");
+                m->GetLevel(), PlayerbotAI::IsTank(m) ? "tank" : PlayerbotAI::IsHeal(m) ? "healer" : "dps");
     return id;
 }
 
@@ -992,7 +992,7 @@ void PartyAssembler::WriteTelemetry()
 
             // Role is the same loose test used to build the party, so what the board
             // shows is what the assembler actually reasoned about.
-            char const* role = CanTank(m) ? "tank" : CanHeal(m) ? "healer" : "dps";
+            char const* role = PlayerbotAI::IsTank(m) ? "tank" : PlayerbotAI::IsHeal(m) ? "healer" : "dps";
             CharacterDatabase.Execute(
                 "INSERT INTO aetherion_party_members (group_id, guid, name, class, level, "
                 "is_leader, role) VALUES ({}, {}, '{}', {}, {}, {}, '{}')",
@@ -1528,17 +1528,27 @@ bool PartyAssembler::AssembleOne()
         return true;
     };
 
+    // Selection is by TRUE role - the bot's talent-driven strategy, not its
+    // class. Class-based picks seated six "tanks" in one ten-raid: every
+    // plate wearer counted, and the filler stacked more. Best practice:
+    // 1/1/3 for a party, 2/3/5 for a ten, 3/6/16 for a twenty-five.
     uint32 tanksNeeded = targetSize >= 25 ? 3 : wantRaid ? 2 : 1;
     uint32 healersNeeded = targetSize >= 25 ? 6 : wantRaid ? 3 : 1;
-    if (CanTank(leader) && tanksNeeded)
+    if (PlayerbotAI::IsTank(leader) && tanksNeeded)
         --tanksNeeded;
-    else if (CanHeal(leader) && healersNeeded)
+    else if (PlayerbotAI::IsHeal(leader) && healersNeeded)
         --healersNeeded;
-    while (tanksNeeded && take([](Player* p) { return PartyAssembler::CanTank(p); }))
+    while (tanksNeeded && take([](Player* p) { return PlayerbotAI::IsTank(p); }))
         --tanksNeeded;
-    while (healersNeeded && take([](Player* p) { return PartyAssembler::CanHeal(p); }))
+    while (healersNeeded && take([](Player* p) { return PlayerbotAI::IsHeal(p); }))
         --healersNeeded;
 
+    // Fill with damage first; only a short bench lets extra tanks or healers
+    // ride along as makeshift dps.
+    while (picked.size() + 1 < targetSize &&
+           take([](Player* p) { return !PlayerbotAI::IsTank(p) && !PlayerbotAI::IsHeal(p); }))
+    {
+    }
     while (picked.size() + 1 < targetSize && !compatible.empty())
     {
         picked.push_back(compatible.back());

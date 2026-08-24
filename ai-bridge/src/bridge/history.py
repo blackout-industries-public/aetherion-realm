@@ -26,9 +26,17 @@ DDL = f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.bot_events (
     ts       DOUBLE          NOT NULL,
     kind     VARCHAR(24)     NOT NULL,
     detail   VARCHAR(160)    NOT NULL,
+    zone     INT UNSIGNED    NOT NULL DEFAULT 0,
     PRIMARY KEY (id),
-    KEY events_lookup (guid, id)
+    KEY events_lookup (guid, id),
+    KEY events_heat (kind, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+
+# In-place migration for tables created before events carried a location.
+# MySQL 8 has no ADD COLUMN IF NOT EXISTS, so the duplicate error is the
+# idempotence check.
+MIGRATE_ZONE = f"ALTER TABLE {SCHEMA}.bot_events ADD COLUMN zone INT UNSIGNED NOT NULL DEFAULT 0"
+MIGRATE_HEAT_KEY = f"ALTER TABLE {SCHEMA}.bot_events ADD KEY events_heat (kind, ts)"
 
 SAMPLE = """
     SELECT c.guid, c.name, c.level, c.zone, c.map, c.online, c.health,
@@ -137,6 +145,11 @@ class HistoryRecorder:
             minsize=1, maxsize=2, autocommit=True)
         async with self._pool.acquire() as conn, conn.cursor() as cur:
             await cur.execute(DDL)
+            for migration in (MIGRATE_ZONE, MIGRATE_HEAT_KEY):
+                try:
+                    await cur.execute(migration)
+                except Exception:
+                    pass  # already applied - the duplicate error is the check
             await cur.execute(PLACES)
             for map_id, comment in await cur.fetchall():
                 # "Ulduar,Halls of Stone - 10man" - the wing is the recognisable part.
@@ -195,8 +208,14 @@ class HistoryRecorder:
 
                 p_level, p_zone, p_map, p_alive, p_inst, p_kills, p_grouped, p_quests = previous
 
+                # Every event carries the zone it happened in - that is what
+                # lets the map draw heat where things ACTUALLY occur instead
+                # of where their actors happen to stand at read time.
+                def ev(kind: str, detail: str) -> None:
+                    events.append((guid, now, kind, detail, zone))
+
                 if level > p_level:
-                    events.append((guid, now, "level", f"reached level {level}"))
+                    ev("level", f"reached level {level}")
                     # Race milestones. A bot can cross several thresholds between two
                     # samples, so every threshold in the gap is claimed, not just the
                     # final level.
@@ -204,26 +223,25 @@ class HistoryRecorder:
                         if p_level < t <= level:
                             milestones.append((now, "first_level", str(t), guid, name))
                 if zone != p_zone:
-                    events.append((guid, now, "zone", f"moved to zone {zone}"))
+                    ev("zone", f"moved to zone {zone}")
                 if p_alive and health == 0:
-                    events.append((guid, now, "death", "died"))
+                    ev("death", "died")
                 if not p_alive and health > 0:
-                    events.append((guid, now, "revive", "resurrected"))
+                    ev("revive", "resurrected")
                 if instance and not p_inst:
                     where = self._places.get(map_id, f"an instance on map {map_id}")
-                    events.append((guid, now, "instance", f"entered {where}"))
+                    ev("instance", f"entered {where}")
                 if p_inst and not instance:
-                    events.append((guid, now, "instance", "left the instance"))
+                    ev("instance", "left the instance")
                 if kills > p_kills:
-                    events.append((guid, now, "pvp", f"honourable kill ({kills} total)"))
+                    ev("pvp", f"honourable kill ({kills} total)")
                 if quests_done > p_quests:
                     handed_in = quests_done - p_quests
-                    events.append((guid, now, "quest",
-                                   f"completed {handed_in} quest{'s' if handed_in > 1 else ''}"))
+                    ev("quest", f"completed {handed_in} quest{'s' if handed_in > 1 else ''}")
                 if grouped and not p_grouped:
-                    events.append((guid, now, "party", "joined a party"))
+                    ev("party", "joined a party")
                 if p_grouped and not grouped:
-                    events.append((guid, now, "party", "left the party"))
+                    ev("party", "left the party")
 
             events.extend(await self._loot(cur, now))
             events.extend(await self._skillups(cur, now))
@@ -236,8 +254,8 @@ class HistoryRecorder:
 
             if events:
                 await cur.executemany(
-                    f"INSERT INTO {SCHEMA}.bot_events (guid, ts, kind, detail) "
-                    "VALUES (%s,%s,%s,%s)", events)
+                    f"INSERT INTO {SCHEMA}.bot_events (guid, ts, kind, detail, zone) "
+                    "VALUES (%s,%s,%s,%s,%s)", events)
 
             # Trim on the same tick rather than with a separate schedule.
             cutoff = now - settings.history_retention_days * 86400
@@ -279,7 +297,10 @@ class HistoryRecorder:
                 label += f" x{count}"
             if word:
                 label += f" ({word})"
-            out.append((owner, now, "loot", label[:160]))
+            # The owner's zone from this same tick's sample - loot happens
+            # where the looter stands.
+            prev = self._prev.get(owner)
+            out.append((owner, now, "loot", label[:160], prev[1] if prev else 0))
         return out
 
     async def _skillups(self, cur, now: float) -> list[tuple]:
@@ -295,7 +316,9 @@ class HistoryRecorder:
             self._skills[key] = value
             if first_run or prev is None or value <= prev:
                 continue
-            out.append((guid, now, "profession", f"{TRADES[skill]} {value}"))
+            prev = self._prev.get(guid)
+            out.append((guid, now, "profession", f"{TRADES[skill]} {value}",
+                        prev[1] if prev else 0))
         return out
 
     async def _boss_firsts(self, cur, now: float) -> list[tuple]:

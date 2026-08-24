@@ -496,6 +496,7 @@ onUnmounted(() => {
         :refresh-ago="refreshAgo"
         :refresh-every="saveInterval"
         :professions="world?.professions ?? []"
+        :heat="world?.heat ?? []"
         @select="select"
       />
       <GroupsView v-else-if="tab === 'groups'" :assembler="assembler" :quests="quests" @select="select" />

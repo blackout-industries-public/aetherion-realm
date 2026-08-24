@@ -196,14 +196,29 @@ export default defineEventHandler(async () => {
     }
   })
 
+  // Event heat for the map's PvP and Professions layers: where things
+  // happened in the last day, by the zone the recorder stamped at event
+  // time - not where the actors stand now. Failure degrades to no heat.
+  let heat: any[] = []
+  try {
+    const [rows] = await getPool().query<any[]>(
+      `SELECT zone, SUBSTRING_INDEX(detail, ' ', 1) AS what, kind, COUNT(*) AS n
+       FROM aetherion_ai.bot_events
+       WHERE ts > UNIX_TIMESTAMP() - 86400 AND zone > 0 AND kind IN ('pvp','profession')
+       GROUP BY zone, what, kind`)
+    heat = (rows as any[]).map(r => ({
+      zone: Number(r.zone), what: r.what, kind: r.kind, n: Number(r.n),
+    }))
+  } catch { /* recorder table without the zone column yet; layers stay empty */ }
+
   if (entities.length) {
     lastGood = { at: Date.now(), entities }
-    return { at: lastGood.at, realmUp, stale: false, entities, professions: PROFESSIONS }
+    return { at: lastGood.at, realmUp, stale: false, entities, professions: PROFESSIONS, heat }
   }
 
   if (lastGood) {
-    return { at: lastGood.at, realmUp, stale: true, entities: lastGood.entities, professions: PROFESSIONS }
+    return { at: lastGood.at, realmUp, stale: true, entities: lastGood.entities, professions: PROFESSIONS, heat }
   }
 
-  return { at: Date.now(), realmUp, stale: false, entities: [], professions: PROFESSIONS }
+  return { at: Date.now(), realmUp, stale: false, entities: [], professions: PROFESSIONS, heat }
 })
