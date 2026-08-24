@@ -163,7 +163,8 @@ hooks_new = """        PLAYERHOOK_ON_GIVE_EXP,
         PLAYERHOOK_ON_BEFORE_TELEPORT,
         PLAYERHOOK_ON_LEVEL_CHANGED,
         PLAYERHOOK_ON_PLAYER_JUST_DIED,
-        PLAYERHOOK_ON_LOOT_ITEM
+        PLAYERHOOK_ON_LOOT_ITEM,
+        PLAYERHOOK_CAN_PLAYER_USE_CHAT
     }) {}"""
 assert hooks_anchor in src, "PlayerScript hook whitelist not found; upstream changed"
 src = src.replace(hooks_anchor, hooks_new, 1)
@@ -232,6 +233,33 @@ chan_new = '''        sRandomPlayerbotMgr.HandleCommand(type, msg, player);
         return true;'''
 assert chan_anchor in src, "channel hook anchor not found; upstream changed"
 src = src.replace(chan_anchor, chan_new, 1)
+
+# Open-world speech. The say/yell chat hook was never whitelisted, so bots
+# could not hear a player standing right next to them - the operator's
+# report was "not even a whisper to piss off". A real player speaking in
+# earshot always gets exactly one answer: the ghosting was the bug, and a
+# roll that stays silent 75% of the time is ghosting with extra steps. The
+# reply-chance roll still governs bot-to-bot ambience.
+say_anchor = """    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Player* receiver) override"""
+say_new = """    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg) override
+    {
+        if (type != CHAT_MSG_SAY && type != CHAT_MSG_YELL)
+            return true;
+
+        if (sLlmBridge->IsEnabled() && !player->GetSession()->IsBot() &&
+            sLlmBridge->WantsChatType(type) &&
+            sLlmBridge->TryClaim(player->GetGUID(), type, msg))
+        {
+            if (Player* responder = sLlmBridge->PickResponder(player))
+                sLlmBridge->Submit(responder, player, msg, type);
+        }
+
+        return true;
+    }
+
+    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Player* receiver) override"""
+assert say_anchor in src, "whisper chat hook anchor not found; upstream changed"
+src = src.replace(say_anchor, say_new, 1)
 
 open(path, "w").write(src)
 print("patched Playerbots.cpp")
