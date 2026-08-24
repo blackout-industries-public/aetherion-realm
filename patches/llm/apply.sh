@@ -120,6 +120,22 @@ login_new = """            PlayerbotsMgr::instance().AddPlayerbotData(player, fa
 assert login_anchor in src, "OnPlayerLogin body not found; upstream changed"
 src = src.replace(login_anchor, login_new, 1)
 
+# The script registers an explicit hook whitelist; an override the list does
+# not name is never called. Every event override added below must enlist here,
+# or it compiles fine and silently never fires - which is exactly how the
+# levelup/death/loot events were dead from the day they were written.
+hooks_anchor = """        PLAYERHOOK_ON_GIVE_EXP,
+        PLAYERHOOK_ON_BEFORE_TELEPORT
+    }) {}"""
+hooks_new = """        PLAYERHOOK_ON_GIVE_EXP,
+        PLAYERHOOK_ON_BEFORE_TELEPORT,
+        PLAYERHOOK_ON_LEVEL_CHANGED,
+        PLAYERHOOK_ON_PLAYER_JUST_DIED,
+        PLAYERHOOK_ON_LOOT_ITEM
+    }) {}"""
+assert hooks_anchor in src, "PlayerScript hook whitelist not found; upstream changed"
+src = src.replace(hooks_anchor, hooks_new, 1)
+
 events_anchor = """    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Player* receiver) override"""
 events_new = """    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
     {
