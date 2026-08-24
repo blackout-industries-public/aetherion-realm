@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { T, FONT, V, fmt, spell, titled } from '../theme'
 import UiPanel from './UiPanel.vue'
 import UiEncounters from './UiEncounters.vue'
@@ -84,6 +84,47 @@ const card = (p: any) => {
 // One run open at a time, per the handoff; the card is the toggle and names
 // inside it stay doors to the character dossier.
 const open = ref<string | number | null>(null)
+
+// History is self-fetched: it has its own table and cadence, and the shell's
+// assembler payload should stay a live mirror rather than grow an archive.
+const { data: runsData } = useFetch<any>('/api/runs', { server: false })
+let runsTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  runsTimer = setInterval(async () => {
+    runsData.value = await $fetch('/api/runs').catch(() => runsData.value)
+  }, 60000)
+})
+onUnmounted(() => { if (runsTimer) clearInterval(runsTimer) })
+
+const OUTCOME: Record<string, { label: string; tone: string }> = {
+  cleared: { label: 'CLEARED', tone: T.green },
+  partial: { label: 'PARTIAL', tone: 'oklch(0.80 0.10 88)' },
+  fruitless: { label: 'NO KILLS', tone: V.faint },
+  travel_timeout: { label: 'LOST ON ROAD', tone: T.red },
+  door_timeout: { label: 'DIED AT DOOR', tone: T.red },
+  enter_failed: { label: 'REFUSED ENTRY', tone: T.red },
+  leader_lost: { label: 'LEADER LOST', tone: T.red },
+  disbanded: { label: 'DISBANDED', tone: V.muted },
+  underway: { label: 'UNDERWAY', tone: V.accentBright },
+}
+
+const runRows = computed(() =>
+  (runsData.value?.runs ?? []).map((r: any) => {
+    const o = OUTCOME[r.underway ? 'underway' : r.outcome]
+      ?? { label: String(r.outcome).toUpperCase(), tone: V.muted }
+    const bits: string[] = []
+    if (r.total > 0) bits.push(`${r.downed}/${r.total} bosses`)
+    if (r.deaths) bits.push(`${r.deaths} deaths`)
+    if (r.drops) bits.push(`${r.drops} drops`)
+    if (r.mins) bits.push(`${r.mins}m`)
+    return {
+      id: r.id, ago: fmt.ago(r.started), dungeon: r.dungeon, isRaid: r.isRaid,
+      heroic: r.heroic, size: r.size, avgIlvl: r.avgIlvl,
+      leader: r.leader, leaderClass: r.leaderClass,
+      label: o.label, tone: o.tone,
+      detail: bits.join(' · ') || '—',
+    }
+  }))
 
 const conversion = computed(() => {
   const c = props.assembler?.cycle
@@ -282,6 +323,43 @@ const lede = computed(() => {
       :style="{ flex: 'none' }"
     >
       <UiEncounters :rows="bossBoard" :columns="2" />
+    </UiPanel>
+
+    <UiPanel
+      v-if="runRows.length"
+      cap="Run history"
+      note="every journey, two weeks kept"
+      :style="{ flex: 'none' }"
+    >
+      <div
+        v-for="r in runRows"
+        :key="r.id"
+        class="hv-row"
+        :style="{
+          display: 'grid',
+          gridTemplateColumns: '52px minmax(140px, 1.4fr) 58px minmax(90px, 1fr) 92px 1fr',
+          gap: '10px', alignItems: 'baseline', padding: '4px 0',
+          borderBottom: `1px solid ${V.lineFaint}`, fontSize: '12px',
+        }"
+      >
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">{{ r.ago }}</span>
+        <span :style="{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }">
+          <span :style="{ color: r.isRaid ? V.accentBright : V.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ r.dungeon }}</span>
+          <UiSkull v-if="r.heroic" :size="10" />
+        </span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.muted }">{{ r.isRaid ? 'R' : 'G' }}{{ r.size }} · {{ r.avgIlvl }}il</span>
+        <span
+          class="pipe-name"
+          :style="{ color: CLASS_COLOR[r.leaderClass] ?? V.textMid, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }"
+          @click="emit('select', r.leader)"
+        >{{ r.leader }}</span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: r.tone }">{{ r.label }}</span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, textAlign: 'right' }">{{ r.detail }}</span>
+      </div>
+      <p :style="{ margin: '8px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.45 }">
+        A run that zoned in is graded by what it killed; one that never did says
+        where the journey died. Gear is the party average at formation.
+      </p>
     </UiPanel>
 
     <div

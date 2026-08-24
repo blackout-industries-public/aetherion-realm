@@ -383,6 +383,14 @@ void PartyAssembler::AdvanceTrips()
         uint32 const budget = trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks;
         if (!group || ++trip.ticks > budget)
         {
+            // The ledger's verdict on this journey: a run that got inside
+            // simply ended (the frontend grades it by bosses downed); one
+            // that never zoned tells exactly where it died.
+            EndRun(trip.runId, trip.dungeonMap,
+                   !group ? "disbanded"
+                   : trip.phase == Phase::Inside ? "ended"
+                   : trip.phase == Phase::Summoning ? "door_timeout"
+                                                    : "travel_timeout");
             // Release a finished run so its bots rejoin the candidate pool. Left
             // grouped they would hold a slot in the cap for the rest of the uptime.
             if (group && trip.phase == Phase::Inside)
@@ -403,6 +411,7 @@ void PartyAssembler::AdvanceTrips()
         Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
         if (!leader || !GET_PLAYERBOT_AI(leader))
         {
+            EndRun(trip.runId, trip.dungeonMap, "leader_lost");
             it = _trips.erase(it);
             continue;
         }
@@ -417,6 +426,10 @@ void PartyAssembler::AdvanceTrips()
             {
                 trip.phase = Phase::Summoning;
                 ++_statArrived;
+                if (trip.runId)
+                    CharacterDatabase.Execute(
+                        "UPDATE aetherion_run_history SET reached_door_at = UNIX_TIMESTAMP()"
+                        " WHERE id = {}", trip.runId);
                 LOG_INFO("playerbots", "Party assembler: {} reached {} - summoning the party",
                          leader->GetName(), trip.name);
             }
@@ -527,12 +540,17 @@ void PartyAssembler::AdvanceTrips()
             {
                 if (!EnterInstance(group, trip))
                 {
+                    EndRun(trip.runId, trip.dungeonMap, "enter_failed");
                     it = _trips.erase(it);
                     continue;
                 }
                 trip.phase = Phase::Inside;
                 trip.ticks = 0;
                 ++_statEntered;
+                if (trip.runId)
+                    CharacterDatabase.Execute(
+                        "UPDATE aetherion_run_history SET entered_at = UNIX_TIMESTAMP()"
+                        " WHERE id = {}", trip.runId);
             }
         }
 
@@ -654,9 +672,11 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
 
     // Only the leader travels. The rest wait where they are, exactly as a group waits
     // in a city for a summon rather than all running separately.
-    _trips[group->GetGUID().GetCounter()] =
+    Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.dungeonMap, chosen.where, chosen.name, Phase::Travelling, how,
              start.place, start.actor, 0};
+    trip.runId = RecordRunStart(group, leader, chosen.name, chosen.dungeonMap, false,
+                                uint8(dungeonDiff), how, uint32(away));
     ++_statTrips;
     return true;
 }
@@ -704,6 +724,47 @@ char const* PartyAssembler::PhaseName(Phase phase)
     }
 }
 
+uint32 PartyAssembler::RecordRunStart(Group* group, Player* leader, std::string const& name,
+                                      uint32 mapId, bool isRaid, uint8 difficulty, Travel how,
+                                      uint32 startYards)
+{
+    uint32 const id = ++_runSeq;
+    CharacterDatabase.Execute(
+        "INSERT INTO aetherion_run_history (id, group_id, started_at, dungeon, map, is_raid,"
+        " difficulty, size, leader, leader_class, avg_ilvl, via, start_yards)"
+        " VALUES ({}, {}, UNIX_TIMESTAMP(), '{}', {}, {}, {}, {}, '{}', {}, {}, '{}', {})",
+        id, group->GetGUID().GetCounter(), Sql(name), mapId, isRaid ? 1 : 0, uint32(difficulty),
+        group->GetMembersCount(), Sql(leader->GetName()), uint32(leader->getClass()),
+        uint32(PartyAvgIlvl(group)), TravelName(how), startYards);
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        if (Player* m = itr->GetSource())
+            CharacterDatabase.Execute(
+                "INSERT INTO aetherion_run_members (run_id, guid, name, class, level, role)"
+                " VALUES ({}, {}, '{}', {}, {}, '{}')",
+                id, m->GetGUID().GetCounter(), Sql(m->GetName()), uint32(m->getClass()),
+                m->GetLevel(), CanTank(m) ? "tank" : CanHeal(m) ? "healer" : "dps");
+    return id;
+}
+
+void PartyAssembler::EndRun(uint32 runId, uint32 mapId, char const* outcome)
+{
+    if (!runId)
+        return;
+    // Boss progress snapshots from the members' instance save at ending time,
+    // in pure SQL - the C++ side never has to marshal encounter state. The
+    // COALESCE keeps an earlier count when the save is already gone.
+    CharacterDatabase.Execute(
+        "UPDATE aetherion_run_history SET ended_at = UNIX_TIMESTAMP(), outcome = '{}',"
+        " bosses_downed = COALESCE((SELECT MAX(BIT_COUNT(i.completedEncounters))"
+        "   FROM aetherion_run_members m"
+        "   JOIN character_instance ci ON ci.guid = m.guid"
+        "   JOIN instance i ON i.id = ci.instance AND i.map = {}"
+        "  WHERE m.run_id = {}), bosses_downed)"
+        " WHERE id = {}",
+        outcome, mapId, runId, runId);
+}
+
 void PartyAssembler::EnsureTelemetryTables()
 {
     CharacterDatabase.DirectExecute("DROP TABLE IF EXISTS aetherion_party_trips");
@@ -743,6 +804,48 @@ void PartyAssembler::EnsureTelemetryTables()
         " guid INT UNSIGNED NOT NULL PRIMARY KEY,"
         " status TINYINT UNSIGNED NOT NULL"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Run history is DURABLE - never dropped on boot, unlike the live mirrors
+    // above. It answers "why did that run fail" days later: identity, gearing
+    // at formation, how far it got, and how it ended.
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS aetherion_run_history ("
+        " id INT UNSIGNED NOT NULL PRIMARY KEY,"
+        " group_id INT UNSIGNED NOT NULL,"
+        " started_at INT UNSIGNED NOT NULL,"
+        " ended_at INT UNSIGNED NOT NULL DEFAULT 0,"
+        " dungeon VARCHAR(64) NOT NULL, map INT UNSIGNED NOT NULL,"
+        " is_raid TINYINT UNSIGNED NOT NULL, difficulty TINYINT UNSIGNED NOT NULL,"
+        " size TINYINT UNSIGNED NOT NULL,"
+        " leader VARCHAR(24) NOT NULL, leader_class TINYINT UNSIGNED NOT NULL,"
+        " avg_ilvl SMALLINT UNSIGNED NOT NULL DEFAULT 0,"
+        " via VARCHAR(16) NOT NULL DEFAULT '',"
+        " start_yards INT UNSIGNED NOT NULL DEFAULT 0,"
+        " reached_door_at INT UNSIGNED NOT NULL DEFAULT 0,"
+        " entered_at INT UNSIGNED NOT NULL DEFAULT 0,"
+        " outcome VARCHAR(16) NOT NULL DEFAULT 'underway',"
+        " bosses_downed TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+        " KEY idx_started (started_at), KEY idx_map (map)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS aetherion_run_members ("
+        " run_id INT UNSIGNED NOT NULL, guid INT UNSIGNED NOT NULL,"
+        " name VARCHAR(24) NOT NULL, class TINYINT UNSIGNED NOT NULL,"
+        " level TINYINT UNSIGNED NOT NULL, role VARCHAR(8) NOT NULL,"
+        " PRIMARY KEY (run_id, guid)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Two weeks of history is the analysis window; members prune with runs.
+    CharacterDatabase.Execute(
+        "DELETE m FROM aetherion_run_members m JOIN aetherion_run_history h"
+        " ON h.id = m.run_id WHERE h.started_at < UNIX_TIMESTAMP() - 14*86400");
+    CharacterDatabase.Execute(
+        "DELETE FROM aetherion_run_history WHERE started_at < UNIX_TIMESTAMP() - 14*86400");
+
+    if (QueryResult seq =
+            CharacterDatabase.Query("SELECT COALESCE(MAX(id), 0) FROM aetherion_run_history"))
+        _runSeq = (*seq)[0].Get<uint32>();
 
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_assembler ("
@@ -1104,9 +1207,11 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
              leader->GetName(), group->GetMembersCount(), chosen.name, away, TravelName(how),
              uint32(chosen.diff));
 
-    _trips[group->GetGUID().GetCounter()] =
+    Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.raidMap, chosen.where, chosen.name, Phase::Travelling, how,
              start.place, start.actor, 0};
+    trip.runId = RecordRunStart(group, leader, chosen.name, chosen.raidMap, true,
+                                uint8(chosen.diff), how, uint32(away));
     ++_statTrips;
     return true;
 }
