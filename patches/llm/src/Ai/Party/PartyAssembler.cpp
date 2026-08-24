@@ -1198,26 +1198,21 @@ bool PartyAssembler::AssembleOne()
             if (bot->GetLevel() >= 80 && bot->GetTeamId() == TeamId(_musterTeam))
                 called.push_back(bot);
 
-        std::unordered_map<uint32, uint32> perMap;
-        uint32 bestMap = 0, bestN = 0;
-        for (Player* bot : called)
+        // Seat realm-wide: the whole ungrouped capped bench is barely above
+        // 25, so demanding one map could never fill. Formation teleports
+        // members to the leader anyway, which is exactly what a summon does.
+        if (called.size() >= 25)
         {
-            uint32 const n = ++perMap[bot->GetMapId()];
-            if (n > bestN)
-            {
-                bestN = n;
-                bestMap = bot->GetMapId();
-            }
-        }
-
-        if (bestN >= 25)
-        {
-            std::vector<Player*> seated;
-            for (Player* bot : called)
-                if (bot->GetMapId() == bestMap)
-                    seated.push_back(bot);
-            pool.swap(seated);
-            musterLeader = pool[urand(0, pool.size() - 1)];
+            pool.swap(called);
+            // Prefer a leader with a raid door on their own continent; a
+            // mustered raid led from a doorless map would dissolve unspent.
+            std::vector<Player*> doorled;
+            uint8 floorScratch = 0;
+            for (Player* bot : pool)
+                if (HasRaidTarget(bot, floorScratch))
+                    doorled.push_back(bot);
+            musterLeader = doorled.empty() ? pool[urand(0, pool.size() - 1)]
+                                           : doorled[urand(0, doorled.size() - 1)];
             LOG_INFO("playerbots",
                      "Party assembler: the muster answers - {} capped {} raise a raid",
                      pool.size(), _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
@@ -1260,8 +1255,9 @@ bool PartyAssembler::AssembleOne()
         if (bot->GetTeamId() != leader->GetTeamId())
             continue;
         // Same continent at minimum: a party whose members are on different maps
-        // cannot travel together and looks like five unrelated bots.
-        if (_sameMapOnly && bot->GetMapId() != leader->GetMapId())
+        // cannot travel together and looks like five unrelated bots. A mustered
+        // raid is the exception - its members are summoned to the leader.
+        if (_sameMapOnly && !musterLeader && bot->GetMapId() != leader->GetMapId())
             continue;
         uint32 const diff = bot->GetLevel() > leader->GetLevel()
                                 ? bot->GetLevel() - leader->GetLevel()

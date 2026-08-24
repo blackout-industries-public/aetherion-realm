@@ -30,6 +30,8 @@ UPDATE dungeon_access_template SET min_avg_item_level = 245 WHERE map_id = 724 A
 UPDATE dungeon_access_template SET min_avg_item_level = 258 WHERE map_id = 724 AND difficulty = 1;
 UPDATE dungeon_access_template SET min_avg_item_level = 264 WHERE map_id = 724 AND difficulty = 2;
 UPDATE dungeon_access_template SET min_avg_item_level = 271 WHERE map_id = 724 AND difficulty = 3;
+UPDATE dungeon_access_template SET min_avg_item_level = 160 WHERE map_id IN (574,575,576,578,595,599,600,601,602,604,608,619) AND difficulty = 1;
+UPDATE dungeon_access_template SET min_avg_item_level = 180 WHERE map_id = 650 AND difficulty = 1;
 SELECT map_id, difficulty, min_avg_item_level FROM dungeon_access_template WHERE min_avg_item_level > 0 ORDER BY map_id, difficulty;
 EOF
 )
