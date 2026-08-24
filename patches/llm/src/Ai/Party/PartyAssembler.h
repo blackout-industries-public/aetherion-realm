@@ -158,6 +158,9 @@ private:
         uint32 stalls{0};
         // History ledger row for this journey; zero means none was written.
         uint32 runId{0};
+        // Full-party falls survived so far; determination runs out past the
+        // configured retries.
+        uint32 wipes{0};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
@@ -241,6 +244,9 @@ private:
     // number enough for a 25-raid or the muster times out.
     uint32 _musterEveryMin{45};
     uint32 _musterTimeoutMin{12};
+    // How many full wipes a run absorbs before the group calls it. Zero
+    // restores the old behavior: first wipe quietly burns the clock out.
+    uint32 _wipeRetries{3};
     uint32 _musterCooldownTicks{0};
     uint32 _musterAgeTicks{0};
     int32 _musterTeam{-1};

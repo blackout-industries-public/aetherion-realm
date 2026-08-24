@@ -7,7 +7,7 @@ import { q } from '../utils/db'
 const RUNS = `
   SELECT h.id, h.started_at, h.ended_at, h.dungeon, h.map, h.is_raid, h.difficulty,
          h.size, h.leader, h.leader_class, h.avg_ilvl, h.via,
-         h.reached_door_at, h.entered_at, h.outcome, h.bosses_downed,
+         h.reached_door_at, h.entered_at, h.outcome, h.bosses_downed, h.wipes,
          enc.total AS bosses_total
   FROM acore_characters.aetherion_run_history h
   LEFT JOIN (SELECT MapID, Difficulty, COUNT(*) AS total
@@ -68,6 +68,7 @@ export default defineEventHandler(async () => {
         via: r.via,
         outcome,
         downed, total,
+        wipes: Number(r.wipes ?? 0),
         deaths: acted.get(Number(r.id))?.deaths ?? 0,
         drops: acted.get(Number(r.id))?.drops ?? 0,
         // Minutes inside, or the whole attempt when they never zoned in.

@@ -105,6 +105,7 @@ const OUTCOME: Record<string, { label: string; tone: string }> = {
   enter_failed: { label: 'REFUSED ENTRY', tone: T.red },
   leader_lost: { label: 'LEADER LOST', tone: T.red },
   disbanded: { label: 'DISBANDED', tone: V.muted },
+  wiped: { label: 'WIPED OUT', tone: T.red },
   underway: { label: 'UNDERWAY', tone: V.accentBright },
 }
 
@@ -114,6 +115,7 @@ const runRows = computed(() =>
       ?? { label: String(r.outcome).toUpperCase(), tone: V.muted }
     const bits: string[] = []
     if (r.total > 0) bits.push(`${r.downed}/${r.total} bosses`)
+    if (r.wipes) bits.push(`${r.wipes} wipe${r.wipes === 1 ? '' : 's'}`)
     if (r.deaths) bits.push(`${r.deaths} deaths`)
     if (r.drops) bits.push(`${r.drops} drops`)
     if (r.mins) bits.push(`${r.mins}m`)

@@ -103,6 +103,9 @@ set_conf "$PB" "AiPlayerbot.Party.RaidHeroicPct" "${PARTY_RAID_HEROIC_PCT:-15}"
 # until 25 can seat, so full-size raids actually occur. 0 disables.
 set_conf "$PB" "AiPlayerbot.Party.MusterEveryMin" "${PARTY_MUSTER_EVERY_MIN:-45}"
 set_conf "$PB" "AiPlayerbot.Party.MusterTimeoutMin" "${PARTY_MUSTER_TIMEOUT_MIN:-12}"
+# Wipe determination: full-party falls a run absorbs (revived at the door,
+# fresh clock) before the group calls it. 0 = first wipe ends progress.
+set_conf "$PB" "AiPlayerbot.Party.WipeRetries" "${PARTY_WIPE_RETRIES:-3}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"
 set_conf "$PB" "AiPlayerbot.Party.TravelToDungeon" "${PARTY_TRAVEL:-1}"
 

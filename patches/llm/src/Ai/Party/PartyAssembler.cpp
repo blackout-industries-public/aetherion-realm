@@ -127,6 +127,7 @@ void PartyAssembler::LoadConfig()
     _raidHeroicPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.RaidHeroicPct", 15);
     _musterEveryMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterEveryMin", 45);
     _musterTimeoutMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterTimeoutMin", 12);
+    _wipeRetries = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.WipeRetries", 3);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
     _travelToDungeon = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.TravelToDungeon", true);
     sDriveGrouped = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.DriveGroupedBots", false);
@@ -466,6 +467,64 @@ void PartyAssembler::AdvanceTrips()
 
         if (trip.phase == Phase::Inside)
         {
+            // Wipe watch. A raid that has fully fallen does what a determined
+            // guild does: steadies itself and pulls again - resurrected at the
+            // instance door with a fresh clock - until repeated wipes break
+            // its spirit and the run ends as 'wiped', not a silent timeout.
+            // Without this, dead bots released to a graveyard OUTSIDE the
+            // instance and the run burned out with nobody home.
+            uint32 alive = 0, present = 0;
+            for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+                if (Player* m = mi->GetSource())
+                    if (m->IsInWorld())
+                    {
+                        ++present;
+                        if (m->IsAlive())
+                            ++alive;
+                    }
+            if (present && !alive)
+            {
+                ++trip.wipes;
+                if (trip.runId)
+                    CharacterDatabase.Execute(
+                        "UPDATE aetherion_run_history SET wipes = {} WHERE id = {}",
+                        trip.wipes, trip.runId);
+                if (trip.wipes > _wipeRetries)
+                {
+                    LOG_INFO("playerbots",
+                             "Party assembler: wipe {} in {} breaks the raid - they call it",
+                             trip.wipes, trip.name);
+                    EndRun(trip.runId, trip.dungeonMap, "wiped");
+                    SendGroupOutside(group, trip.dungeonMap);
+                    group->Disband();
+                    it = _trips.erase(it);
+                    continue;
+                }
+                for (GroupReference* mi = group->GetFirstMember(); mi != nullptr;
+                     mi = mi->next())
+                    if (Player* m = mi->GetSource())
+                        if (m->IsInWorld() && !m->IsAlive())
+                        {
+                            // Same recovery the random-bot manager applies on
+                            // this thread: on their feet, bones gone, combat
+                            // strategies rebuilt.
+                            m->ResurrectPlayer(0.5f);
+                            m->SpawnCorpseBones();
+                            if (PlayerbotAI* mAI = GET_PLAYERBOT_AI(m))
+                                mAI->ResetStrategies(false);
+                        }
+                // Reseat everyone at the inside arrival point and restart the
+                // dwell clock - determination buys a whole fresh attempt.
+                EnterInstance(group, trip);
+                trip.ticks = 0;
+                LOG_INFO("playerbots",
+                         "Party assembler: {} wiped in {} (wipe {}) - they steady "
+                         "themselves and pull again",
+                         leader->GetName(), trip.name, trip.wipes);
+                ++it;
+                continue;
+            }
+
             // Bosses first; trash only where no boss position is known. Held as a
             // pointer rather than an iterator: the two maps are separate containers and
             // comparing an iterator from one against the other's end() is undefined.
@@ -825,8 +884,16 @@ void PartyAssembler::EnsureTelemetryTables()
         " entered_at INT UNSIGNED NOT NULL DEFAULT 0,"
         " outcome VARCHAR(16) NOT NULL DEFAULT 'underway',"
         " bosses_downed TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+        " wipes TINYINT UNSIGNED NOT NULL DEFAULT 0,"
         " KEY idx_started (started_at), KEY idx_map (map)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // The history table is durable, so schema growth has to migrate in place -
+    // MySQL 8 has no ADD COLUMN IF NOT EXISTS, hence the probe.
+    if (!CharacterDatabase.Query("SHOW COLUMNS FROM aetherion_run_history LIKE 'wipes'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN wipes TINYINT UNSIGNED NOT NULL DEFAULT 0");
 
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_run_members ("
