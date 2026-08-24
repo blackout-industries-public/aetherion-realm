@@ -480,6 +480,8 @@ AiPlayerbot.Llm.AmbientUseSay = 1
 
 # A bot that already knows you says hello when you log in, and bots react to things
 # that actually happen. Percentages keep the noisy events from dominating.
+AiPlayerbot.Llm.GuildAdEnabled = 1
+AiPlayerbot.Llm.GuildAdIntervalMs = 420000
 AiPlayerbot.Llm.GreetOnLogin = 1
 AiPlayerbot.Llm.GreetDelayMs = 15000
 AiPlayerbot.Llm.EventsEnabled = 1

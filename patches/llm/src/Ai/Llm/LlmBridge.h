@@ -85,6 +85,11 @@ private:
         std::string intent;
     };
 
+    // A guilded officer bot posts a recruitment ad to a public channel now and
+    // then; broadcast memory plus the guild-invite gate turn a "me!" answered
+    // in channel into a real invite.
+    void TickGuildAds(uint32 diff);
+
     void ExecuteIntent(Player* bot, Player* speaker, std::string const& intent);
 
     // Releases a real speaker's one-in-flight reply slot (see Submit).
@@ -166,6 +171,9 @@ private:
     std::mutex _broadcastMutex;
     std::unordered_map<std::size_t, uint64> _claims;
     // Real speakers with a reply currently in flight (guid raw -> claimed-at ms).
+    bool _guildAdEnabled{true};
+    uint32 _guildAdIntervalMs{420000};
+    uint32 _guildAdTimer{0};
     std::unordered_map<uint64, uint64> _speakerBusy;
     std::mutex _speakerBusyMutex;
 };

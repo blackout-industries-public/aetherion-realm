@@ -190,6 +190,8 @@ set_conf "$PB" "AiPlayerbot.Llm.AmbientMaxDepth" "${LLM_AMBIENT_DEPTH:-1}"
 set_conf "$PB" "AiPlayerbot.Llm.AmbientUseSay" "${LLM_AMBIENT_SAY:-1}"
 
 # Greet returning players, and react to things that actually happened.
+set_conf "$PB" "AiPlayerbot.Llm.GuildAdEnabled" "${LLM_GUILD_ADS:-1}"
+set_conf "$PB" "AiPlayerbot.Llm.GuildAdIntervalMs" "${LLM_GUILD_AD_INTERVAL_MS:-420000}"
 set_conf "$PB" "AiPlayerbot.Llm.GreetOnLogin" "${LLM_GREET:-1}"
 set_conf "$PB" "AiPlayerbot.Llm.GreetDelayMs" "${LLM_GREET_DELAY_MS:-15000}"
 set_conf "$PB" "AiPlayerbot.Llm.EventsEnabled" "${LLM_EVENTS:-1}"

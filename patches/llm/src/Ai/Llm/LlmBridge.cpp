@@ -100,6 +100,9 @@ void LlmBridge::LoadConfig()
     _ambientMaxDepth = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.AmbientMaxDepth", 1);
     _ambientUseSay = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.AmbientUseSay", true);
 
+    _guildAdEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.GuildAdEnabled", true);
+    _guildAdIntervalMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.GuildAdIntervalMs", 420000);
+    _guildAdTimer = 0;
     _greetOnLogin = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.GreetOnLogin", true);
     _greetDelayMs = sConfigMgr->GetOption<int32>("AiPlayerbot.Llm.GreetDelayMs", 15000);
     _eventsEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Llm.EventsEnabled", true);
@@ -841,6 +844,51 @@ void LlmBridge::TickAmbient(uint32 diff)
                CHAT_MSG_CHANNEL, ChatChannelId::TRADE, 0);
 }
 
+void LlmBridge::TickGuildAds(uint32 diff)
+{
+    if (!_guildAdEnabled)
+        return;
+
+    _guildAdTimer += diff;
+    if (_guildAdTimer < _guildAdIntervalMs)
+        return;
+    _guildAdTimer = 0;
+
+    // An officer with invite rights, so a "me!" answered in the channel can
+    // become a real invite through the normal intent path.
+    std::vector<Player*> officers;
+    for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+         it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+    {
+        Player* bot = it->second;
+        if (!bot || !bot->IsInWorld() || bot->isDead() || !bot->GetGuildId())
+            continue;
+        if (!GET_PLAYERBOT_AI(bot))
+            continue;
+        Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+        if (!guild || !guild->HasRankRight(bot, GR_RIGHT_INVITE))
+            continue;
+        officers.push_back(bot);
+        if (officers.size() >= 64)
+            break;
+    }
+    if (officers.empty())
+        return;
+
+    Player* bot = officers[urand(0, officers.size() - 1)];
+    Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+    if (!guild)
+        return;
+
+    std::ostringstream ask;
+    ask << "Write ONE short guild recruitment ad for the public channel. Your guild is "
+           "named \"" << guild->GetName() << "\" - mention that name. Say what kind of "
+           "players you want (a class, a role, or just friendly folk) in your own words. "
+           "No quotes around the ad.";
+    Submit(bot, bot, ask.str(), CHAT_MSG_CHANNEL,
+           urand(0, 1) ? uint32(ChatChannelId::TRADE) : uint32(ChatChannelId::GENERAL), 0);
+}
+
 void LlmBridge::Drain(uint32 diff)
 {
     if (!_enabled)
@@ -880,4 +928,5 @@ void LlmBridge::Drain(uint32 diff)
     }
 
     TickAmbient(diff);
+    TickGuildAds(diff);
 }
