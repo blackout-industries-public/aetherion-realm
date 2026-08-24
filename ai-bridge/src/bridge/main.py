@@ -191,12 +191,16 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if req.channel in ("whisper", "party", "guild", "say", "yell", "banter"):
         system = f"{system}\n{intents.INSTRUCTION}"
 
+    # The bot's own recent broadcast, folded into the SYSTEM prompt: a bare
+    # assistant turn gets ignored by small models - probed live, "what quest
+    # was it again?" still drew a blank - but an explicit framing holds.
+    if req.recent_say:
+        system = (f"{system}\nYou yourself just announced in chat: \"{req.recent_say}\". "
+                  f"{req.speaker}'s message is a direct reply to that announcement - "
+                  "answer in that context.")
+
     messages = [{"role": "system", "content": system}]
     messages += await memory.history(bot.guid, req.speaker)
-    # The bot's own recent broadcast precedes the reply so "me" answering
-    # "who wants to team up?" reads as the continuation it is.
-    if req.recent_say:
-        messages.append({"role": "assistant", "content": req.recent_say})
     messages.append({"role": "user", "content": _phrase(req, message)})
 
     # Reflex first. Spending seconds of inference to produce "np" is the worst trade
@@ -238,7 +242,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # Actions are only meaningful when a human addressed the bot directly.
     intent = None
     if req.channel in ("whisper", "party", "guild"):
-        intent, reply = intents.extract(reply, req.message)
+        # The gate reads the whole exchange: "me" answering the bot's own
+        # "who wants to help?" is an ask for a group, even though the word
+        # never appears in the player's line.
+        asked = f"{req.recent_say} {req.message}" if req.recent_say else req.message
+        intent, reply = intents.extract(reply, asked)
         if intent:
             llm.scheduler.stats[f"intent_{intent}"] += 1
 
