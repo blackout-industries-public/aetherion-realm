@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { T, FONT, STATE, type StateKey, V, fmt, spell, titled } from '../theme'
 import UiMatrix from './UiMatrix.vue'
+import UiSkull from './UiSkull.vue'
 
 const emit = defineEmits<{ select: [name: string]; goto: [tab: string] }>()
 
@@ -84,6 +85,7 @@ const groupRows = computed(() => board.value.slice(0, 5).map((b: any) => {
     idColor: b.isRaid ? V.accent : V.muted,
     size: b.size,
     dest: b.dest,
+    heroic: !!b.heroic,
     leader: b.leader,
     status,
     stColor: b.tone === 'inside' ? T.green
@@ -293,7 +295,10 @@ const cellStyle = {
           >
             <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: g.idColor }">{{ g.id }}</span>
             <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: V.faint }">{{ g.size }}</span>
-            <span :style="{ fontSize: '13.5px', color: V.textHi, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ g.dest }}</span>
+            <span :style="{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }">
+              <span :style="{ fontSize: '13.5px', color: V.textHi, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ g.dest }}</span>
+              <UiSkull v-if="g.heroic" :size="10" title="Heroic lockout" />
+            </span>
             <span :style="{ fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '.08em', color: g.stColor }">{{ g.status }}</span>
           </button>
         </div>

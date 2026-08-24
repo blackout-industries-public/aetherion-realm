@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { T, FONT, V, fmt, spell, titled } from '../theme'
 import UiPanel from './UiPanel.vue'
 import UiEncounters from './UiEncounters.vue'
+import UiSkull from './UiSkull.vue'
 import QuestPanels from './QuestPanels.vue'
 
 type Encounter = { name: string; killed: boolean }
@@ -48,6 +49,7 @@ const card = (p: any) => {
     note: p.tone === 'inside' ? `${p.dwellMins ?? 0}m in` : p.size,
     noteColor: p.tone === 'inside' ? T.green : V.faint,
     dest: p.dest,
+    heroic: !!p.heroic,
     sub: p.tone === 'travel' ? `${via} · ${p.remaining} out`
       : p.tone === 'door' ? `waiting on the summon · ${p.tripMins ?? 0}m under way`
       : p.isRaid ? `${via} · ${raidBots} · ${deaths}`
@@ -162,7 +164,10 @@ const lede = computed(() => {
             <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: c.idColor }">{{ c.id }}</span>
             <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: c.noteColor }">{{ c.note }}</span>
           </span>
-          <span :style="{ display: 'block', fontSize: '14px', color: V.textHi, marginTop: '3px' }">{{ c.dest }}</span>
+          <span :style="{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: V.textHi, marginTop: '3px' }">
+            <span :style="{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ c.dest }}</span>
+            <UiSkull v-if="c.heroic" :size="11" title="Heroic lockout" />
+          </span>
           <span :style="{ display: 'block', fontFamily: FONT.mono, fontSize: '10px', color: V.faint, marginTop: '3px', letterSpacing: '.05em' }">
             {{ c.sub }}<template v-if="c.ledBy"> · led by
               <span

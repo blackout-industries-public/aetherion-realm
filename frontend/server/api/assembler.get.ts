@@ -7,11 +7,13 @@ import { playerbotsConf, confNum } from '../utils/realm'
 const STATS = `SELECT * FROM acore_characters.aetherion_assembler WHERE id = 1`
 
 const TRIPS = `
-  SELECT group_id, leader, leader_level, size, is_raid, min_level, max_level,
-         dungeon, dungeon_map, phase, via, remaining_yards, ticks,
-         leader_class, via_place, via_actor
-  FROM acore_characters.aetherion_party_trips
-  ORDER BY FIELD(phase,'summoning','travelling','inside'), remaining_yards ASC
+  SELECT t.group_id, t.leader, t.leader_level, t.size, t.is_raid, t.min_level,
+         t.max_level, t.dungeon, t.dungeon_map, t.phase, t.via,
+         t.remaining_yards, t.ticks, t.leader_class, t.via_place, t.via_actor,
+         g.difficulty AS dungeon_difficulty, g.raidDifficulty AS raid_difficulty
+  FROM acore_characters.aetherion_party_trips t
+  LEFT JOIN acore_characters.\`groups\` g ON g.guid = t.group_id
+  ORDER BY FIELD(t.phase,'summoning','travelling','inside'), t.remaining_yards ASC
 `
 
 // Total groups on the realm, which is legitimately larger than the assembler's own
@@ -299,12 +301,22 @@ export default defineEventHandler(async () => {
     const pct = t.phase === 'inside' ? 100
       : Math.max(0, Math.min(100, Math.round((1 - t.remaining_yards / span) * 100)))
 
+    // Raid difficulty enum: 0=10N 1=25N 2=10H 3=25H; dungeon difficulty 1 is
+    // heroic. The join is the groups table, so a disbanded group reads null
+    // and stays un-marked rather than guessed.
+    const rd = t.raid_difficulty == null ? null : Number(t.raid_difficulty)
+    const heroic = t.is_raid
+      ? rd === 2 || rd === 3
+      : Number(t.dungeon_difficulty ?? 0) >= 1
+    const cap = t.is_raid ? (rd === 1 || rd === 3 ? 25 : 10) : 5
+
     return {
       id: t.group_id,
       label: `${t.is_raid ? 'Raid' : 'Party'} #${t.group_id}`,
       isRaid: !!t.is_raid,
+      heroic,
       leader: t.leader,
-      size: `${t.size}/${t.is_raid ? 10 : 5}`,
+      size: `${t.size}/${cap}`,
       levels: t.min_level === t.max_level ? `${t.min_level}` : `${t.min_level}-${t.max_level}`,
       dest: t.dungeon,
       dungeonMap: t.dungeon_map,
