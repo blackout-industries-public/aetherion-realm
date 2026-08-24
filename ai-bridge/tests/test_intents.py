@@ -14,6 +14,8 @@ def test_allowed_matches_the_documented_intent_vocabulary() -> None:
         "come",
         "follow",
         "stay",
+        "queue_bg",
+        "buff",
     }
 
 

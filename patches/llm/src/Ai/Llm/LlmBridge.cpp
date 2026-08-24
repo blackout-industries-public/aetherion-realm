@@ -17,6 +17,7 @@
 #include "Random.h"
 #include "SharedDefines.h"
 #include "World.h"
+#include "Opcodes.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -588,9 +589,35 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
     // The movement intents deliberately go through the bot's own command parser - the
     // same path a player whispering "come" would take, with the same security checks.
     // The model therefore gains no capability a player does not already have.
-    if (intent == "come" || intent == "follow" || intent == "stay")
+    if (intent == "come" || intent == "follow" || intent == "stay" || intent == "buff")
+    {
         // Pointer overload on purpose: the reference-taking overload is private.
         botAI->HandleCommand(CHAT_MSG_WHISPER, intent, speaker);
+        return;
+    }
+
+    // Queue for a battleground through the same packet the PvP panel sends.
+    // A grouped bot never starts a queue - WoW queues groups through the
+    // leader, and the reply told the player exactly that.
+    if (intent == "queue_bg")
+    {
+        if (bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue())
+            return;
+        uint8 const level = bot->GetLevel();
+        uint32 const bgType = level >= 80   ? uint32(BATTLEGROUND_RB)
+                              : level >= 61 ? uint32(BATTLEGROUND_EY)
+                              : level >= 51 ? uint32(BATTLEGROUND_AV)
+                              : level >= 20 ? uint32(BATTLEGROUND_AB)
+                                            : uint32(BATTLEGROUND_WS);
+        WorldPacket* packet = new WorldPacket(CMSG_BATTLEMASTER_JOIN, 8 + 4 + 4 + 1);
+        *packet << bot->GetGUID();
+        *packet << bgType;
+        *packet << uint32(0);
+        *packet << uint8(0);
+        bot->GetSession()->QueuePacket(packet);
+        LOG_DEBUG("playerbots", "LLM intent: {} queues for battleground {}", bot->GetName(),
+                  bgType);
+    }
 }
 
 void LlmBridge::TickAmbient(uint32 diff)

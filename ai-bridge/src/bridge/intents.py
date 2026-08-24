@@ -20,6 +20,10 @@ _GATES: dict[str, re.Pattern] = {
     "come":         re.compile(r"\b(come|here|meet|find me|where are you|bring)\b", re.I),
     "follow":       re.compile(r"\b(follow|with me|lead)\b", re.I),
     "stay":         re.compile(r"\b(stay|wait|hold|stop)\b", re.I),
+    "queue_bg":     re.compile(r"\b(queue|que|bg|battleground|warsong|wsg|arathi|"
+                               r"alterac|av|ab|eots|eye of the storm)\b", re.I),
+    "buff":         re.compile(r"\b(buff|bless|blessing|fort(itude)?|mark|kings|"
+                               r"might|wisdom|intellect)\b", re.I),
 }
 
 ALLOWED = tuple(_GATES)
@@ -40,6 +44,8 @@ _ALIASES = {
     "ginvite": "guild_invite", "guildinvite": "guild_invite", "guild_invite": "guild_invite",
     "pinvite": "party_invite", "invite": "party_invite", "party_invite": "party_invite",
     "come": "come", "follow": "follow", "stay": "stay",
+    "queuebg": "queue_bg", "queue_bg": "queue_bg", "bgqueue": "queue_bg",
+    "buff": "buff", "buffs": "buff",
 }
 
 INSTRUCTION = (
@@ -49,6 +55,10 @@ INSTRUCTION = (
     "[COME] you are going to travel to them\n"
     "[FOLLOW] you will follow them\n"
     "[STAY] you will wait here\n"
+    "[BUFF] you will cast your buffs on them and the group right now\n"
+    "[QUEUEBG] you will queue yourself for a battleground - only if you are NOT "
+    "in their group; a grouped bot cannot start the queue, so instead tell them "
+    "the group leader queues everyone and you will take the invite\n"
     "If none apply, use no tag. Never use a tag you were not asked for."
 )
 
