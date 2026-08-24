@@ -60,8 +60,29 @@ INSTRUCTION = (
     "[BUFF] you will cast your buffs on them and the group right now\n"
     "[QUEUEBG] you are getting the battleground queue started for them\n"
     "[LEAD] you are handing them the group lead\n"
-    "If none apply, use no tag. Never use a tag you were not asked for."
+    "If none apply, use no tag. Never use a tag you were not asked for.\n"
+    "Examples:\n"
+    "They say: inv me / need a party -> [PINVITE] got you, sending it\n"
+    "They say: queue us for av -> [QUEUEBG] on it\n"
+    "They say: can i get kings? -> [BUFF] coming right up\n"
+    "They say: pass me lead -> [LEAD] all yours"
 )
+
+
+def assume(reply: str, player_message: str) -> str | None:
+    """The fallback for a model that agrees in words but forgets the tag.
+
+    Only when exactly ONE gate matches the player's ask is the intent adopted -
+    an ambiguous ask stays conversation - and a refusal always stays a refusal.
+    Observed live: "Need party!" answered "yes, i can help you level up" and
+    nobody sent the invite.
+    """
+    if _REFUSAL.search(reply):
+        return None
+    matched = [name for name, gate in _GATES.items() if gate.search(player_message)]
+    if len(matched) != 1:
+        return None
+    return matched[0]
 
 
 def could_act(player_message: str) -> bool:

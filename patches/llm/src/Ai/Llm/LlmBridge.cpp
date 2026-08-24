@@ -23,6 +23,8 @@
 
 #include <boost/asio/ip/tcp.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <functional>
 #include <vector>
@@ -245,7 +247,13 @@ bool LlmBridge::HasHumanWitness(Player* bot, uint32 chatType) const
 
 bool LlmBridge::TryClaim(ObjectGuid speaker, uint32 chatType, std::string const& message)
 {
-    std::size_t key = std::hash<std::string>{}(message);
+    // Case-folded: the same say reaches this through two paths, one of which
+    // lowercases first, and "Need party!" vs "need party!" earned two claims
+    // and two repliers.
+    std::string folded(message);
+    std::transform(folded.begin(), folded.end(), folded.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    std::size_t key = std::hash<std::string>{}(folded);
     key ^= std::hash<uint64>{}(speaker.GetRawValue()) + 0x9e3779b9 + (key << 6) + (key >> 2);
     key ^= std::hash<uint32>{}(chatType) + 0x9e3779b9 + (key << 6) + (key >> 2);
 

@@ -247,6 +247,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
         # never appears in the player's line.
         asked = f"{req.recent_say} {req.message}" if req.recent_say else req.message
         intent, reply = intents.extract(reply, asked)
+        # An agreeing reply to an unambiguous ask acts even without the tag.
+        if intent is None and req.channel in ("whisper", "party", "guild", "say", "yell"):
+            intent = intents.assume(reply, asked)
         if intent:
             llm.scheduler.stats[f"intent_{intent}"] += 1
 
