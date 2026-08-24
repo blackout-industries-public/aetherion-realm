@@ -381,7 +381,11 @@ void PartyAssembler::AdvanceTrips()
         // Give up on a journey that is going nowhere rather than re-asserting a
         // destination forever. A party already inside gets a longer budget: that timer
         // is how long it runs the place, not how long it is allowed to travel.
-        uint32 const budget = trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks;
+        // Humans run dungeons at human pace: an adopted run gets six times the
+        // dwell clock a bot-only sweep needs.
+        uint32 budget = trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks;
+        if (trip.adopted)
+            budget *= 6;
         if (!group || ++trip.ticks > budget)
         {
             // The ledger's verdict on this journey: a run that got inside
@@ -394,7 +398,9 @@ void PartyAssembler::AdvanceTrips()
                                                     : "travel_timeout");
             // Release a finished run so its bots rejoin the candidate pool. Left
             // grouped they would hold a slot in the cap for the rest of the uptime.
-            if (group && trip.phase == Phase::Inside)
+            // Never for an adopted run: the group belongs to the player, so the
+            // clock only stops the steering and closes the ledger row.
+            if (group && trip.phase == Phase::Inside && !trip.adopted)
             {
                 // Out of the instance first. Disbanding alone leaves five characters
                 // standing in a dungeon nothing will ever move them out of.
@@ -495,8 +501,11 @@ void PartyAssembler::AdvanceTrips()
                              "Party assembler: wipe {} in {} breaks the raid - they call it",
                              trip.wipes, trip.name);
                     EndRun(trip.runId, trip.dungeonMap, "wiped");
-                    SendGroupOutside(group, trip.dungeonMap);
-                    group->Disband();
+                    if (!trip.adopted)
+                    {
+                        SendGroupOutside(group, trip.dungeonMap);
+                        group->Disband();
+                    }
                     it = _trips.erase(it);
                     continue;
                 }
@@ -737,6 +746,72 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     trip.runId = RecordRunStart(group, leader, chosen.name, chosen.dungeonMap, false,
                                 uint8(dungeonDiff), how, uint32(away));
     ++_statTrips;
+    return true;
+}
+
+bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
+{
+    if (!requester || !requester->IsInWorld())
+        return false;
+
+    Group* group = requester->GetGroup();
+    if (!group)
+        return false;
+
+    // Already being driven - the ask is satisfied.
+    if (_trips.count(group->GetGUID().GetCounter()))
+        return true;
+
+    Map* map = requester->GetMap();
+    uint32 const mapId = requester->GetMapId();
+    if (!map || !map->IsDungeon())
+        return false;
+
+    // Steering needs somewhere to steer to: seeded bosses, or trash spawns as
+    // the fallback the Inside branch already uses.
+    auto const bossIt = _bosses.find(mapId);
+    auto const trashIt = _spawns.find(mapId);
+    if ((bossIt == _bosses.end() || bossIt->second.empty()) &&
+        (trashIt == _spawns.end() || trashIt->second.empty()))
+        return false;
+
+    // A bot must hold the crown to be steered. When the human leads, the
+    // claimed bot - or failing that any bot member standing in the instance -
+    // is promoted; the player taking the crown back later is the natural
+    // off-switch (the leader_lost branch quietly closes the run).
+    Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
+    if (!leader)
+        return false;
+    if (!GET_PLAYERBOT_AI(leader))
+    {
+        Player* promote =
+            claimedBot && claimedBot->GetGroup() == group && claimedBot->GetMapId() == mapId
+                ? claimedBot : nullptr;
+        if (!promote)
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* m = ref->GetSource())
+                    if (GET_PLAYERBOT_AI(m) && m->IsInWorld() && m->GetMapId() == mapId)
+                    {
+                        promote = m;
+                        break;
+                    }
+        if (!promote)
+            return false;
+        group->ChangeLeader(promote->GetGUID());
+        leader = promote;
+    }
+
+    Trip& trip = _trips[group->GetGUID().GetCounter()] =
+        Trip{mapId, Entrance{}, map->GetMapName(), Phase::Inside, Travel::Foot,
+             map->GetMapName(), leader->GetName(), 0};
+    trip.adopted = true;
+    trip.runId = RecordRunStart(group, leader, trip.name, mapId, group->isRaidGroup(),
+                                uint8(requester->GetDifficulty(map->IsRaid())),
+                                Travel::Foot, 0);
+    ++_statTrips;
+    LOG_INFO("playerbots",
+             "Party assembler: {} takes point in {} - adopted run for {} (run {})",
+             leader->GetName(), trip.name, requester->GetName(), trip.runId);
     return true;
 }
 

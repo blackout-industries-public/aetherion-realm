@@ -38,6 +38,13 @@ public:
     // World thread only. Throttled internally.
     void Tick(uint32 diff);
 
+    // World thread only (called from the LLM intent drain). Adopts the
+    // requester's live group as an Inside trip: the bot leader is steered
+    // boss to boss, wipe determination and the run-history ledger apply, and
+    // the human walks with the caravan. Promotes the claimed bot to leader
+    // when the human holds the crown; taking the crown back ends the run.
+    bool AdoptRun(Player* requester, Player* claimedBot);
+
     // Callable from ANY thread: RandomBotUpdateAction reaches ProcessBot from map
     // threads, so ownership is answered from a mutex-guarded mirror of _assembled
     // rather than the world-thread set itself.
@@ -161,6 +168,10 @@ private:
         // Full-party falls survived so far; determination runs out past the
         // configured retries.
         uint32 wipes{0};
+        // A run adopted from a live group that contains a real player. The
+        // assembler steers and keeps the ledger, but the group is not its to
+        // teleport out or disband when the run ends - the player owns it.
+        bool adopted{false};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 

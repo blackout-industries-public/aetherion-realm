@@ -18,6 +18,7 @@ def test_allowed_matches_the_documented_intent_vocabulary() -> None:
         "queue_dungeon",
         "buff",
         "give_lead",
+        "lead_run",
     }
 
 
@@ -75,6 +76,7 @@ def test_rejects_a_hallucinated_invite_the_player_never_asked_for() -> None:
         ("[BUFF] coming right up", "buff"),
         ("[QUEUEDUNGEON] queueing us now", "queue_dungeon"),
         ("[RDF] on it", "queue_dungeon"),
+        ("[LEADON] follow me, stay close", "lead_run"),
     ],
 )
 def test_trusted_self_actions_act_on_the_models_judgment_alone(

@@ -24,6 +24,9 @@ _GATES: dict[str, re.Pattern] = {
                                r"alterac|av|ab|eots|eye of the storm)\b", re.I),
     "queue_dungeon": re.compile(r"\b(queue|que|dungeon|rdf|lfd|instance|heroic)\b", re.I),
     "give_lead":    re.compile(r"\b(lead(er)?|leadership|promote)\b", re.I),
+    "lead_run":     re.compile(r"\b(lead (us|the way|on|through)|take (us|point)|"
+                               r"guide (us|me)|take the lead|"
+                               r"clear (the|this) (dungeon|place|instance))\b", re.I),
     "buff":         re.compile(r"\b(buff|bless|blessing|fort(itude)?|mark|kings|"
                                r"might|wisdom|intellect)\b", re.I),
 }
@@ -36,7 +39,8 @@ ALLOWED = tuple(_GATES)
 # action. Only the invites keep the strict ask-gate - those touch OTHER people,
 # and a hallucinated one is spam a regex should keep impossible.
 _TRUSTED = frozenset(
-    {"come", "follow", "stay", "buff", "queue_bg", "queue_dungeon", "give_lead"})
+    {"come", "follow", "stay", "buff", "queue_bg", "queue_dungeon", "give_lead",
+     "lead_run"})
 
 _TAG = re.compile(r"^\s*\[(?P<tag>[A-Z_]{3,16})\]\s*", re.I)
 
@@ -59,6 +63,8 @@ _ALIASES = {
     "dungeonqueue": "queue_dungeon", "rdf": "queue_dungeon", "lfd": "queue_dungeon",
     "buff": "buff", "buffs": "buff",
     "lead": "give_lead", "leader": "give_lead", "give_lead": "give_lead",
+    "leadon": "lead_run", "lead_on": "lead_run", "lead_run": "lead_run",
+    "leadrun": "lead_run", "takepoint": "lead_run",
 }
 
 INSTRUCTION = (
@@ -72,6 +78,7 @@ INSTRUCTION = (
     "[QUEUEBG] you are getting the battleground queue started for them\n"
     "[QUEUEDUNGEON] you are queueing them in the dungeon finder\n"
     "[LEAD] you are handing them the group lead\n"
+    "[LEADON] you will take point and lead the group through this dungeon\n"
     "If none apply, use no tag. Never use a tag you were not asked for.\n"
     "When they ask you to DO something and a tag fits, act - use the tag.\n"
     "Examples:\n"
@@ -79,7 +86,8 @@ INSTRUCTION = (
     "They say: queue us for av -> [QUEUEBG] on it\n"
     "They say: queue random dungeon -> [QUEUEDUNGEON] queueing us now\n"
     "They say: can i get kings? -> [BUFF] coming right up\n"
-    "They say: pass me lead -> [LEAD] all yours"
+    "They say: pass me lead -> [LEAD] all yours\n"
+    "They say: lead us through the dungeon -> [LEADON] follow me, stay close"
 )
 
 

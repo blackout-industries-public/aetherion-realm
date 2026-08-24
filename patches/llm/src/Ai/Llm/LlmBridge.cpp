@@ -14,6 +14,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PartyAssembler.h"
 #include "Playerbots.h"   // GET_PLAYERBOT_AI
 #include "RandomPlayerbotMgr.h"
 #include "Random.h"
@@ -715,6 +716,18 @@ void LlmBridge::ExecuteIntent(Player* bot, Player* speaker, std::string const& i
         joiner->GetSession()->QueuePacket(data);
         LOG_INFO("playerbots", "LLM intent: {} starts dungeon queue slot {} (joiner {})",
                  bot->GetName(), slot, joiner->GetName());
+        return;
+    }
+
+    // "Lead us through": the assembler adopts the speaker's live group as a
+    // steered run - bot leader walks boss to boss, wipe determination and the
+    // run ledger apply, and the player follows the caravan.
+    if (intent == "lead_run")
+    {
+        if (!sPartyAssembler->AdoptRun(speaker, bot))
+            LOG_INFO("playerbots",
+                     "LLM intent: lead_run for {} declined (no group, not a known "
+                     "dungeon, or no bot to promote)", speaker->GetName());
         return;
     }
 
