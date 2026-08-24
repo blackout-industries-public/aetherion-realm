@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
-import { T, FONT, fmt } from '../theme'
+import { FONT, V, fmt } from '../theme'
+import { CLASS_COLOR } from '../data'
 import UiPanel from './UiPanel.vue'
 import UiSpark from './UiSpark.vue'
 
@@ -19,21 +20,8 @@ function gold(copper: number) {
   return `${copper}c`
 }
 
-const CLS: Record<number, string> = {
-  1: 'warrior', 2: 'paladin', 3: 'hunter', 4: 'rogue', 5: 'priest',
-  6: 'death knight', 7: 'shaman', 8: 'mage', 9: 'warlock', 11: 'druid',
-}
-
-const lede = computed(() => {
-  const w = wealth.value
-  if (!w?.supply?.bots) {
-    return 'No gold ledger yet. Once the fleet is snapshotted, this page shows ' +
-      'who holds the realm’s money and where it moves.'
-  }
-  const top = w.richest?.[0]
-  return `The fleet of ${fmt.int(w.supply.bots)} bots holds ${gold(w.supply.total)}.` +
-    (top ? ` The richest, ${top.name}, sits on ${gold(top.money)}.` : '')
-})
+const clsColor = (cls: number | null | undefined) =>
+  (cls != null && CLASS_COLOR[cls]) || V.textHi
 
 // SQL caps the top band, so the axis is fixed 0..8; missing bands render as
 // zero-height columns instead of silently vanishing from the histogram.
@@ -73,112 +61,62 @@ const sparkTitle = computed(() => {
   return `24h fleet gold: ${gold(pts[0].total)} at ${fmt.clock(pts[0].ts)} to ` +
     `${gold(pts[pts.length - 1].total)} at ${fmt.clock(pts[pts.length - 1].ts)}`
 })
-
-const flows = computed(() => wealth.value?.flows ?? null)
 </script>
 
 <template>
-  <section :style="{ display: 'grid', gridTemplateRows: 'auto 1fr', gap: '14px', padding: '20px 22px', minHeight: 0, height: '100%', overflow: 'auto' }">
-    <p
-      :style="{
-        margin: 0, borderLeft: `2px solid ${T.goldDim}`, paddingLeft: '15px',
-        fontFamily: FONT.body, fontStyle: 'italic', fontWeight: 300, fontSize: '17.5px',
-        lineHeight: 1.4, color: T.textMid, maxWidth: '64ch',
-      }"
-    >{{ lede }}</p>
-
-    <div :style="{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', alignItems: 'start' }">
-      <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px' }">
-        <UiPanel cap="Richest ten" note="whole fleet; dim names are offline">
-          <p
-            v-if="!(wealth?.richest ?? []).length"
-            :style="{ margin: 0, fontSize: '13px', color: T.muted, lineHeight: 1.5 }"
-          >No characters recorded yet.</p>
-          <div
-            v-for="(r, i) in wealth?.richest ?? []"
-            :key="r.guid"
-            :style="{ display: 'grid', gridTemplateColumns: '20px 1fr auto', gap: '9px', padding: '4px 0', alignItems: 'baseline', borderBottom: `1px solid ${T.lineFaint}` }"
-          >
-            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: i < 3 ? T.goldBright : T.faint }">{{ i + 1 }}</span>
-            <button
-              :style="{ appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '13px', color: r.online ? T.text : T.faint, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }"
-              :title="r.online ? 'online' : 'offline'"
-              @click="emit('select', r.name)"
-            >{{ r.name }} <span :style="{ color: T.faint }">lv {{ r.level }} {{ CLS[r.cls] ?? '' }}</span></button>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '12px', color: T.goldBright, fontVariantNumeric: 'tabular-nums' }">{{ gold(r.money) }}</span>
-          </div>
-        </UiPanel>
-
-        <UiPanel cap="Top earners" note="vendor and mail income, 24h">
-          <p
-            v-if="!(wealth?.earners ?? []).length"
-            :style="{ margin: 0, fontSize: '13px', color: T.muted, lineHeight: 1.5 }"
-          >No copper has come in over the last 24h.</p>
-          <div
-            v-for="(s, i) in wealth?.earners ?? []"
-            :key="s.guid"
-            :style="{ display: 'grid', gridTemplateColumns: '20px 1fr auto auto', gap: '9px', padding: '4px 0', alignItems: 'baseline' }"
-          >
-            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: i < 3 ? T.goldBright : T.faint }">{{ i + 1 }}</span>
-            <button
-              :style="{ appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '13px', color: T.text, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }"
-              @click="emit('select', s.name)"
-            >{{ s.name }} <span :style="{ color: T.faint }">lv {{ s.level }}</span></button>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '12px', color: T.goldBright, fontVariantNumeric: 'tabular-nums' }">{{ gold(s.earned) }}</span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: T.faint }">{{ fmt.int(s.sells + s.collects) }} ev</span>
-          </div>
-        </UiPanel>
+  <section :style="{ flex: 'none', padding: '0 22px 18px', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '16px', alignItems: 'start' }">
+    <UiPanel cap="Top earners" note="vendor and mail income, 24h">
+      <p
+        v-if="!(wealth?.earners ?? []).length"
+        :style="{ margin: 0, fontSize: '13px', color: V.muted, lineHeight: 1.5 }"
+      >No copper has come in over the last 24h.</p>
+      <div
+        v-for="(s, i) in wealth?.earners ?? []"
+        :key="s.guid"
+        :style="{ display: 'grid', gridTemplateColumns: '18px 1fr auto auto', gap: '9px', padding: '4px 0', alignItems: 'baseline' }"
+      >
+        <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: i < 3 ? V.accentBright : V.faint }">{{ i + 1 }}</span>
+        <span :style="{ fontSize: '13px', color: V.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">
+          <button
+            class="nm"
+            :style="{ appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT.body, fontSize: '13px', color: clsColor(s.cls) }"
+            @click="emit('select', s.name)"
+          >{{ s.name }}</button>
+          <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }"> lv {{ s.level }}</span>
+        </span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '12px', color: V.moneyBright, fontVariantNumeric: 'tabular-nums' }">{{ gold(s.earned) }}</span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, fontVariantNumeric: 'tabular-nums' }">{{ fmt.int(s.sells + s.collects) }} ev</span>
       </div>
+    </UiPanel>
 
-      <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px' }">
-        <UiPanel cap="Gold supply" :note="supplyDelta !== null ? `${supplyDelta >= 0 ? '+' : '-'}${gold(Math.abs(supplyDelta))} in 24h` : 'history accumulating'">
-          <div :style="{ fontFamily: FONT.display, fontSize: '22px', fontWeight: 700, color: T.goldBright }">
-            {{ gold(wealth?.supply?.total ?? 0) }}
-          </div>
-          <div v-if="sparkPoints" :title="sparkTitle">
-            <svg
-              viewBox="0 0 100 32"
-              preserveAspectRatio="none"
-              :style="{ display: 'block', width: '100%', height: '36px', marginTop: '8px' }"
-            >
-              <polyline :points="sparkPoints" fill="none" :stroke="T.goldDim" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-            </svg>
-            <div :style="{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontFamily: FONT.mono, fontSize: '9.5px', color: T.faint }">
-              <span>24h ago</span><span>now</span>
-            </div>
-          </div>
-          <p
-            v-else
-            :style="{ margin: '6px 0 0', fontSize: '12px', color: T.muted, lineHeight: 1.5 }"
-          >Not enough band snapshots yet for a sparkline.</p>
-        </UiPanel>
-
-        <UiPanel cap="Wealth distribution" note="online bots, 500g buckets">
-          <UiSpark :points="bucketPoints" label="bots per bucket" />
-        </UiPanel>
-
-        <UiPanel cap="Sinks vs faucets" note="24h, logged flows only">
-          <div :style="{ display: 'flex', gap: '14px', flexWrap: 'wrap', fontFamily: FONT.mono, fontSize: '11.5px', fontVariantNumeric: 'tabular-nums' }">
-            <span
-              :style="{ color: flows?.vendor.copper ? T.green : T.faint }"
-              :title="`${fmt.int(flows?.vendor.n ?? 0)} vendor sales`"
-            >in from vendors +{{ gold(flows?.vendor.copper ?? 0) }}</span>
-            <span
-              :style="{ color: flows?.mail.copper ? T.green : T.faint }"
-              :title="`${fmt.int(flows?.mail.n ?? 0)} mail collections`"
-            >in from mail +{{ gold(flows?.mail.copper ?? 0) }}</span>
-            <span
-              :style="{ color: flows?.repairs.copper ? T.red : T.faint }"
-              :title="`${fmt.int(flows?.repairs.n ?? 0)} repair bills`"
-            >out to repairs -{{ gold(flows?.repairs.copper ?? 0) }}</span>
-          </div>
-          <p :style="{ margin: '6px 0 0', fontSize: '11px', color: T.faint, lineHeight: 1.4 }">
-            Repairs are the only logged sink. AH deposits, the house cut and
-            training fees are not recorded, so the out side understates spend.
-            Mail income includes auction proceeds - transfers, not new copper.
-          </p>
-        </UiPanel>
+    <UiPanel cap="Gold supply" :note="supplyDelta !== null ? `${supplyDelta >= 0 ? '+' : '-'}${gold(Math.abs(supplyDelta))} in 24h` : 'history accumulating'">
+      <div :style="{ fontFamily: FONT.mono, fontSize: '20px', color: V.moneyBright, fontVariantNumeric: 'tabular-nums' }">
+        {{ gold(wealth?.supply?.total ?? 0) }}
       </div>
-    </div>
+      <div v-if="sparkPoints" :title="sparkTitle">
+        <svg
+          viewBox="0 0 100 32"
+          preserveAspectRatio="none"
+          :style="{ display: 'block', width: '100%', height: '36px', marginTop: '8px' }"
+        >
+          <polyline :points="sparkPoints" fill="none" :stroke="V.moneyDim" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>
+        <div :style="{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontFamily: FONT.mono, fontSize: '9.5px', color: V.faint }">
+          <span>24h ago</span><span>now</span>
+        </div>
+      </div>
+      <p
+        v-else
+        :style="{ margin: '6px 0 0', fontSize: '12px', color: V.muted, lineHeight: 1.5 }"
+      >Not enough band snapshots yet for a sparkline.</p>
+    </UiPanel>
+
+    <UiPanel cap="Wealth distribution" note="online bots, 500g buckets">
+      <UiSpark :points="bucketPoints" :hue="V.moneyDim" label="bots per bucket" />
+    </UiPanel>
   </section>
 </template>
+
+<style scoped>
+.nm:hover { text-decoration: underline }
+</style>

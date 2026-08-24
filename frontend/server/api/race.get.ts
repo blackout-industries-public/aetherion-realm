@@ -11,10 +11,14 @@ const MARKER = `
   WHERE kind = 'race_start' ORDER BY id DESC LIMIT 1
 `
 
+// Class joined in so the race clock can paint each first in its claimant's colour;
+// group firsts carry a NULL guid and fall through the LEFT JOIN untouched.
 const FIRSTS = `
-  SELECT kind, detail, ts, guid, who FROM aetherion_ai.milestones
-  WHERE kind IN ('first_level', 'first_boss', 'first_clear')
-  ORDER BY ts
+  SELECT m.kind, m.detail, m.ts, m.guid, m.who, c.class AS cls
+  FROM aetherion_ai.milestones m
+  LEFT JOIN acore_characters.characters c ON c.guid = m.guid
+  WHERE m.kind IN ('first_level', 'first_boss', 'first_clear')
+  ORDER BY m.ts
 `
 
 // Standings: highest level wins, earliest arrival breaks ties - the ding timestamp
@@ -39,6 +43,9 @@ const LADDER_SHAPE = `
 
 const ALLIANCE = new Set([1, 3, 4, 7, 11])
 
+// The recorder writes boss firsts as "Boss Name (Instance)".
+const BOSS_DETAIL = /^(.*?)\s*\(([^)]*)\)\s*$/
+
 export default defineEventHandler(async () => {
   const [marker, firsts, standings, shape] = await Promise.all([
     q(MARKER), q(FIRSTS), q(STANDINGS), q(LADDER_SHAPE),
@@ -50,13 +57,22 @@ export default defineEventHandler(async () => {
     .filter(f => f.kind === 'first_level')
     .map(f => ({
       threshold: Number(f.detail), who: f.who, guid: f.guid,
+      cls: f.cls == null ? null : Number(f.cls),
       at: Number(f.ts) * 1000,
     }))
     .sort((a, b) => a.threshold - b.threshold)
 
+  // Chronological, in full: the clock strip picks its own diamonds and the panel
+  // reads as a chronicle from the gun outward.
   const bossFirsts = firsts
     .filter(f => f.kind === 'first_boss')
-    .map(f => ({ boss: f.detail, who: f.who, at: Number(f.ts) * 1000 }))
+    .map((f) => {
+      const m = BOSS_DETAIL.exec(String(f.detail))
+      return {
+        boss: m ? m[1] : f.detail, instance: m ? m[2] : null,
+        who: f.who, at: Number(f.ts) * 1000,
+      }
+    })
 
   const clears = firsts
     .filter(f => f.kind === 'first_clear')
@@ -67,9 +83,9 @@ export default defineEventHandler(async () => {
     raceStart,
     raceLabel: marker[0]?.detail ?? null,
     levelFirsts,
-    bossFirsts: bossFirsts.slice(-20).reverse(),
+    bossFirsts,
     bossFirstsTotal: bossFirsts.length,
-    clears: clears.slice(-10).reverse(),
+    clears,
     standings: standings.map((r, i) => ({
       rank: i + 1, guid: r.guid, name: r.name, cls: Number(r.cls),
       level: Number(r.level),

@@ -7,7 +7,7 @@ import { getPool } from '../utils/db'
 // on the main aggregate, which would multiply the member rows.
 const STANDINGS = `
   SELECT g.guildid AS id, g.name,
-         lc.name AS master, lc.level AS masterLevel,
+         lc.name AS master, lc.level AS masterLevel, lc.class AS masterClass,
          COUNT(*) AS members,
          SUM(c.online) AS online,
          ROUND(AVG(c.level), 1) AS avgLevel,
@@ -34,7 +34,7 @@ const STANDINGS = `
     JOIN acore_characters.guild_member gm4 ON gm4.guid = ca.guid
     GROUP BY gm4.guildid
   ) a ON a.guildid = g.guildid
-  GROUP BY g.guildid, g.name, lc.name, lc.level, p.grouped, a.achv
+  GROUP BY g.guildid, g.name, lc.name, lc.level, lc.class, p.grouped, a.achv
   ORDER BY avgLevel DESC, members DESC
 `
 
@@ -103,6 +103,7 @@ export default defineEventHandler(async () => {
       id: g.id,
       name: g.name,
       master: g.master ?? null,
+      masterClass: Number(g.masterClass ?? 0),
       members: Number(g.members),
       online: Number(g.online ?? 0),
       avgLevel: Number(g.avgLevel),

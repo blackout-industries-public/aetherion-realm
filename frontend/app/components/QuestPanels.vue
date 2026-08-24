@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { T, FONT, fmt } from '../theme'
+import { T, FONT, V, fmt } from '../theme'
 import { CLASS_COLOR, zoneName } from '../data'
 import UiPanel from './UiPanel.vue'
 import UiBars from './UiBars.vue'
@@ -27,11 +27,14 @@ const bands = computed(() =>
     note: `${fmt.int(b.bots)} bots`,
   })))
 
-const questers = computed(() =>
-  (props.quests?.questers ?? []).map((q: any) => ({
-    label: q.name, value: q.completed, note: `lvl ${q.level}`,
-    tone: CLASS_COLOR[q.cls] ?? T.gold,
-  })))
+const questers = computed(() => {
+  const rows = (props.quests?.questers ?? []).map((q: any) => ({
+    name: q.name, value: q.completed, level: q.level,
+    tone: CLASS_COLOR[q.cls] ?? V.text,
+  }))
+  const max = Math.max(1, ...rows.map((r: any) => r.value))
+  return rows.map((r: any) => ({ ...r, w: `${Math.max(2, (r.value / max) * 100)}%` }))
+})
 
 const tempo = computed(() =>
   (props.quests?.tempo ?? []).map((t: any) => ({ label: t.hour, value: t.completed })))
@@ -55,8 +58,8 @@ const logSplit = computed(() => {
         { v: fmt.int(head.active ?? 0), l: `active · ${head.perBot ?? 0} each` },
         { v: fmt.int(head.completedQuests ?? 0), l: 'completed all-time' },
       ]" :key="s.l">
-        <div :style="{ fontFamily: FONT.mono, fontSize: '19px', color: T.textHi }">{{ s.v }}</div>
-        <div :style="{ fontSize: '11.5px', color: T.muted }">{{ s.l }}</div>
+        <div :style="{ fontFamily: FONT.mono, fontSize: '19px', color: V.textHi }">{{ s.v }}</div>
+        <div :style="{ fontSize: '11.5px', color: V.muted }">{{ s.l }}</div>
       </div>
     </div>
 
@@ -68,7 +71,7 @@ const logSplit = computed(() => {
   </UiPanel>
 
   <UiPanel v-else cap="Quest tempo">
-    <p :style="{ margin: 0, fontSize: '13px', color: T.muted, lineHeight: 1.5 }">
+    <p :style="{ margin: 0, fontSize: '13px', color: V.muted, lineHeight: 1.5 }">
       The recorder has just started watching quest counts. A completion has to happen
       after a baseline sample before anything can be plotted here.
     </p>
@@ -76,7 +79,7 @@ const logSplit = computed(() => {
 
   <UiPanel v-if="bands.length" cap="Who actually quests" note="completed per bot">
     <UiBars :rows="bands" label-width="72px" hue="oklch(0.72 0.13 140)" />
-    <p :style="{ margin: '9px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.45 }">
+    <p :style="{ margin: '9px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.45 }">
       Questing is almost entirely a level-cap activity here. The lower bands hold quests
       but rarely finish them.
     </p>
@@ -87,6 +90,37 @@ const logSplit = computed(() => {
   </UiPanel>
 
   <UiPanel v-if="questers.length" cap="Top questers" note="completed">
-    <UiBars :rows="questers" label-width="104px" />
+    <div
+      v-for="r in questers"
+      :key="r.name"
+      :style="{ display: 'grid', gridTemplateColumns: '104px minmax(40px, 1fr) auto', gap: '10px', alignItems: 'center', padding: '3px 0' }"
+    >
+      <button
+        class="quester-name"
+        :style="{
+          appearance: 'none', background: 'none', border: 'none', padding: 0,
+          cursor: 'pointer', textAlign: 'left', fontFamily: FONT.body,
+          fontSize: '13px', color: r.tone, overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }"
+        :title="r.name"
+        @click="emit('select', r.name)"
+      >{{ r.name }}</button>
+      <span :style="{ height: '7px', background: V.track, position: 'relative', borderRadius: '1px' }">
+        <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: r.w, background: r.tone, borderRadius: '1px 3px 3px 1px' }" />
+      </span>
+      <span :style="{ display: 'flex', alignItems: 'baseline', gap: '6px', justifyContent: 'flex-end' }">
+        <span :style="{ fontFamily: FONT.mono, fontSize: '11.5px', color: V.text, fontVariantNumeric: 'tabular-nums' }">
+          {{ fmt.int(r.value) }}
+        </span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, minWidth: '38px', textAlign: 'right' }">
+          lvl {{ r.level }}
+        </span>
+      </span>
+    </div>
   </UiPanel>
 </template>
+
+<style scoped>
+.quester-name:hover { text-decoration: underline; }
+</style>

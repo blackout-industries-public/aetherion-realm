@@ -6,20 +6,27 @@ import { q } from '../utils/db'
 // item/count and detail = the winning bid in copper - so sale prices are real
 // and the buyer is recoverable by pairing the two events.
 
+// The buyer subquery resolves to a guid rather than a name, so one outer join
+// yields both the buyer's name and class without a second correlated lookup.
 const TRADES = `
-  SELECT s.ts, s.count, s.item,
-         CAST(NULLIF(s.detail, '') AS SIGNED) AS price,
-         cs.name AS seller, it.name AS itemName,
-         (SELECT cb.name FROM acore_characters.aetherion_econ_events b
-            JOIN acore_characters.characters cb ON cb.guid = b.guid
-          WHERE b.kind = 'ah_bought' AND b.item = s.item AND b.count = s.count
-            AND b.detail = s.detail AND b.ts BETWEEN s.ts - 3 AND s.ts + 3
-          ORDER BY ABS(CAST(b.id AS SIGNED) - CAST(s.id AS SIGNED)) LIMIT 1) AS buyer
-  FROM acore_characters.aetherion_econ_events s
-  LEFT JOIN acore_characters.characters cs ON cs.guid = s.guid
-  LEFT JOIN acore_world.item_template it ON it.entry = s.item
-  WHERE s.kind = 'ah_sold'
-  ORDER BY s.id DESC LIMIT 15
+  SELECT t.ts, t.count, t.item,
+         CAST(NULLIF(t.detail, '') AS SIGNED) AS price,
+         cs.name AS seller, cs.class AS sellerCls, it.name AS itemName,
+         cb.name AS buyer, cb.class AS buyerCls
+  FROM (
+    SELECT s.id, s.ts, s.count, s.item, s.detail, s.guid,
+           (SELECT b.guid FROM acore_characters.aetherion_econ_events b
+            WHERE b.kind = 'ah_bought' AND b.item = s.item AND b.count = s.count
+              AND b.detail = s.detail AND b.ts BETWEEN s.ts - 3 AND s.ts + 3
+            ORDER BY ABS(CAST(b.id AS SIGNED) - CAST(s.id AS SIGNED)) LIMIT 1) AS buyerGuid
+    FROM acore_characters.aetherion_econ_events s
+    WHERE s.kind = 'ah_sold'
+    ORDER BY s.id DESC LIMIT 15
+  ) t
+  LEFT JOIN acore_characters.characters cs ON cs.guid = t.guid
+  LEFT JOIN acore_characters.characters cb ON cb.guid = t.buyerGuid
+  LEFT JOIN acore_world.item_template it ON it.entry = t.item
+  ORDER BY t.id DESC
 `
 
 // Median approximated as AVG of non-zero buyouts - cheap, and close enough
@@ -45,7 +52,8 @@ const HOT = `
 `
 
 const BIG_SALES = `
-  SELECT s.ts, s.count, cs.name AS seller, it.name AS itemName,
+  SELECT s.ts, s.count, cs.name AS seller, cs.class AS sellerCls,
+         it.name AS itemName,
          CAST(NULLIF(s.detail, '') AS SIGNED) AS price
   FROM acore_characters.aetherion_econ_events s
   LEFT JOIN acore_characters.characters cs ON cs.guid = s.guid
@@ -100,6 +108,8 @@ export default defineEventHandler(async () => {
     trades: trades.map(r => ({
       at: Number(r.ts) * 1000,
       seller: r.seller ?? 'unknown', buyer: r.buyer ?? null,
+      sellerCls: r.sellerCls == null ? null : Number(r.sellerCls),
+      buyerCls: r.buyerCls == null ? null : Number(r.buyerCls),
       item: r.itemName ?? `item ${r.item}`, count: Number(r.count),
       price: r.price == null ? null : Number(r.price),
     })),
@@ -115,6 +125,7 @@ export default defineEventHandler(async () => {
     })),
     bigSales: bigSales.map(r => ({
       at: Number(r.ts) * 1000, seller: r.seller ?? 'unknown',
+      sellerCls: r.sellerCls == null ? null : Number(r.sellerCls),
       item: r.itemName ?? 'unknown item', count: Number(r.count),
       price: r.price == null ? null : Number(r.price),
     })),

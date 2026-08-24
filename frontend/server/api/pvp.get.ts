@@ -1,4 +1,4 @@
-import { getPool } from '../utils/db'
+import { q } from '../utils/db'
 
 // Battleground and arena maps. There is no raid/bg flag anywhere in SQL on this build -
 // map_dbc ships empty - so the list is explicit rather than inferred from a name.

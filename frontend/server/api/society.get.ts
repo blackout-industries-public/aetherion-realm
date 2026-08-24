@@ -1,5 +1,3 @@
-import { getPool } from '../utils/db'
-
 // Demographics and the shape of life on the realm. Every query here was checked against
 // live data first; several obvious-looking panels were dropped because their tables turn
 // out to be frozen rather than quiet - see the notes on each.
@@ -18,8 +16,9 @@ const MORTALITY = `
 `
 
 // Deaths per class, normalised by how many of that class are actually exposed. The
-// population is exactly 250 per class by construction, which makes the comparison fair
-// without any further weighting.
+// population is seeded uniformly per class by construction, which makes the comparison
+// fair without any further weighting - but the exact headcount is read live (CLASS_POP)
+// rather than asserted, because reseeds have changed it before.
 const WHO_DIES = `
   SELECT p.class AS cls,
          p.online_55plus            AS atRisk,
@@ -42,30 +41,11 @@ const WHO_DIES = `
   ORDER BY perBot DESC
 `
 
-// Level bands with wealth and how many dinged in the last day.
-const LADDER = `
-  SELECT p.band_order AS bandOrder, p.band, p.chars, p.avg_gold AS avgGold,
-         COALESCE(d.dings, 0) AS dings
-  FROM (
-    SELECT CASE WHEN level=80 THEN 9 WHEN level>=70 THEN 8 WHEN level>=60 THEN 7
-                WHEN level>=50 THEN 6 WHEN level>=40 THEN 5 WHEN level>=30 THEN 4
-                WHEN level>=20 THEN 3 WHEN level>=10 THEN 2 ELSE 1 END AS band_order,
-           CASE WHEN level=80 THEN '80' WHEN level>=70 THEN '70-79' WHEN level>=60 THEN '60-69'
-                WHEN level>=50 THEN '50-59' WHEN level>=40 THEN '40-49' WHEN level>=30 THEN '30-39'
-                WHEN level>=20 THEN '20-29' WHEN level>=10 THEN '10-19' ELSE '1-9' END AS band,
-           COUNT(*) AS chars, ROUND(AVG(money)/10000) AS avg_gold
-    FROM acore_characters.characters WHERE online = 1 GROUP BY band_order, band
-  ) p
-  LEFT JOIN (
-    SELECT CASE WHEN lv=80 THEN 9 WHEN lv>=70 THEN 8 WHEN lv>=60 THEN 7 WHEN lv>=50 THEN 6
-                WHEN lv>=40 THEN 5 WHEN lv>=30 THEN 4 WHEN lv>=20 THEN 3
-                WHEN lv>=10 THEN 2 ELSE 1 END AS band_order, COUNT(*) AS dings
-    FROM (SELECT CAST(REGEXP_SUBSTR(detail,'[0-9]+$') AS UNSIGNED) AS lv
-          FROM aetherion_ai.bot_events
-          WHERE kind='level' AND ts > UNIX_TIMESTAMP() - 86400) x
-    GROUP BY band_order
-  ) d ON d.band_order = p.band_order
-  ORDER BY p.band_order
+// The per-class headcount range, so the "N per class" claim on screen is measured,
+// not remembered.
+const CLASS_POP = `
+  SELECT MIN(n) AS lo, MAX(n) AS hi
+  FROM (SELECT COUNT(*) AS n FROM acore_characters.characters GROUP BY class) c
 `
 
 // Loot by rarity per hour. The recorder only writes uncommon and above, so this is a
@@ -99,8 +79,8 @@ const BALANCE = `
 
 
 export default defineEventHandler(async () => {
-  const [mortality, whoDies, ladder, loot, balance] = await Promise.all([
-    q(MORTALITY), q(WHO_DIES), q(LADDER), q(LOOT), q(BALANCE),
+  const [mortality, whoDies, classPop, loot, balance] = await Promise.all([
+    q(MORTALITY), q(WHO_DIES), q(CLASS_POP), q(LOOT), q(BALANCE),
   ])
 
   const factions = new Map<string, { chars: number; atCap: number }>()
@@ -109,6 +89,8 @@ export default defineEventHandler(async () => {
     f.chars += Number(r.chars); f.atCap += Number(r.atCap)
     factions.set(r.faction, f)
   }
+
+  const pop = classPop[0]
 
   return {
     at: Date.now(),
@@ -120,10 +102,7 @@ export default defineEventHandler(async () => {
       cls: Number(r.cls), atRisk: Number(r.atRisk), deaths: Number(r.deaths),
       avgLevel: Number(r.avgLevel), perBot: Number(r.perBot),
     })),
-    ladder: ladder.map(r => ({
-      band: r.band, chars: Number(r.chars),
-      avgGold: Number(r.avgGold), dings: Number(r.dings),
-    })),
+    classPop: pop ? { lo: Number(pop.lo), hi: Number(pop.hi) } : null,
     loot: loot.map(r => ({
       hour: r.hr, rare: Number(r.rare), uncommon: Number(r.uncommon),
       epic: Number(r.epic), total: Number(r.total), looters: Number(r.looters),

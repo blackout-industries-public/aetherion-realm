@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { MAPS, CLASS_COLOR, zoneName } from '../data'
 import { ZONE_MAPS } from '../zonemaps'
-import { T, FONT, STATE, type StateKey, fmt, spell, titled } from '../theme'
+import { FONT, STATE, V, type StateKey, fmt, spell, titled } from '../theme'
+import UiFlow from './UiFlow.vue'
 
 type Entity = {
   guid: number; name: string; level: number; map: number; zone: number
@@ -31,7 +32,7 @@ const emit = defineEmits<{ select: [string] }>()
 
 // Sequential ramps, one hue each, monotone in lightness, low end measured at >=3:1
 // against the plate. A single hue is the rule for magnitude - a rainbow ramp invents
-// category boundaries that are not in the data.
+// category boundaries that are not in the data. Data colors: never themed.
 const RAMPS: Record<string, string[]> = {
   density: ['#2d7baf', '#1e97d0', '#00b4ed', '#22d1ff', '#6debff'],
   pvp:     ['#b45341', '#dc5f52', '#ff6f6b', '#ff8c90', '#ffb3b7'],
@@ -39,15 +40,16 @@ const RAMPS: Record<string, string[]> = {
 }
 
 const LAYERS = [
-  { key: 'activity', label: 'Activity',   hint: 'what each character is doing' },
-  { key: 'density',  label: 'Hotspots',   hint: 'where the population actually is' },
-  { key: 'pvp',      label: 'World PvP',  hint: "today's kills, by where the killer stands" },
-  { key: 'prof',     label: 'Professions', hint: 'who carries a gathering or crafting skill' },
+  { key: 'activity', label: 'ACTIVITY',    name: 'Activity',    hint: 'what they do',        note: 'what each character is doing' },
+  { key: 'density',  label: 'HOTSPOTS',    name: 'Hotspots',    hint: 'where they are',      note: 'where the population actually is' },
+  { key: 'pvp',      label: 'WORLD PVP',   name: 'World PvP',   hint: "today's kills",       note: "today's kills by where the killer stands" },
+  { key: 'prof',     label: 'PROFESSIONS', name: 'Professions', hint: 'who carries a trade', note: 'who carries a gathering or crafting skill' },
 ] as const
 type LayerKey = (typeof LAYERS)[number]['key']
 
 const layer = ref<LayerKey>('activity')
 const profBit = ref(0)
+const spotlight = ref<StateKey | null>(null)
 
 const selectedMap = ref(571)
 
@@ -86,7 +88,7 @@ function diveAt(evt: MouseEvent) {
   const p = pt.matrixTransform(ctm.inverse())
   const b = activeBounds.value
   const worldY = b.left - (p.x / 1000) * (b.left - b.right)
-  const worldX = b.top - (p.y / 667) * (b.top - b.bottom)
+  const worldX = b.top - (p.y / 560) * (b.top - b.bottom)
 
   let best: number | null = null
   let bestArea = Infinity
@@ -98,10 +100,10 @@ function diveAt(evt: MouseEvent) {
   if (best !== null) { zoneId.value = best; hasArt.value = true }
 }
 const hovered = ref<Entity | null>(null)
-const artOpacity = ref(0.9)
 const hasArt = ref(true)
 
-watch(selectedMap, () => { hasArt.value = true; zoneId.value = null })
+watch(selectedMap, () => { hasArt.value = true; zoneId.value = null; spotlight.value = null; hovered.value = null })
+watch(zoneId, () => { spotlight.value = null })
 
 // The client's own projection: normalised X from world Y against LocLeft/LocRight,
 // normalised Y from world X against LocTop/LocBottom. Using the real DBC bounds is
@@ -111,7 +113,7 @@ function project(e: { map: number; x: number; y: number }) {
   if (e.map !== b.map) return { cx: -50, cy: -50 }
   return {
     cx: ((b.left - e.y) / (b.left - b.right)) * 1000,
-    cy: ((b.top - e.x) / (b.top - b.bottom)) * 667,
+    cy: ((b.top - e.x) / (b.top - b.bottom)) * 560,
   }
 }
 
@@ -155,7 +157,6 @@ function weightOf(e: Entity): number {
 // a known area, and it stays readable at 2500 points where overlapping dots do not.
 const CELL = 40
 const COLS = Math.ceil(1000 / CELL)
-const ROWS = Math.ceil(667 / CELL)
 
 const heat = computed(() => {
   if (layer.value === 'activity') return { cells: [] as any[], max: 0, total: 0 }
@@ -165,7 +166,7 @@ const heat = computed(() => {
     const w = weightOf(e)
     if (!w) continue
     const { cx, cy } = project(e)
-    if (cx < 0 || cx > 1000 || cy < 0 || cy > 667) continue
+    if (cx < 0 || cx > 1000 || cy < 0 || cy > 560) continue
     const key = Math.floor(cy / CELL) * COLS + Math.floor(cx / CELL)
     grid.set(key, (grid.get(key) ?? 0) + w)
     total += w
@@ -191,6 +192,13 @@ const rampSteps = computed(() => RAMPS[layer.value] ?? [])
 const activeLayer = computed(() => LAYERS.find(l => l.key === layer.value)!)
 const profName = computed(() => props.professions?.[profBit.value]?.name ?? '')
 
+const heatNote = computed(() => {
+  const base = layer.value === 'prof' && profName.value
+    ? `Professions · who carries ${profName.value}`
+    : `${activeLayer.value.name} · ${activeLayer.value.note}`
+  return heat.value.total ? `${base} · ${fmt.int(heat.value.total)} total` : base
+})
+
 // Counts per profession, so the selector says how many it would show.
 const profCounts = computed(() => {
   const out = new Map<number, number>()
@@ -213,8 +221,12 @@ const dots = computed(() => visible.value.map(e => {
   const { cx, cy } = project(e)
   return {
     e, st, cx, cy,
-    r: e.bot ? (st === 'idle' ? 3.4 : st === 'instance' ? 5 : 4.6) : 7,
+    r: e.bot ? (st === 'idle' ? 3 : 4.1) : 6.5,
     color: STATE[st].color,
+    // Spotlight is an activity-layer idea; on heat layers the few dots left are
+    // the ones worth keeping bright.
+    opacity: layer.value === 'activity' && spotlight.value && st !== spotlight.value
+      ? 0.1 : st === 'idle' ? 0.65 : 1,
   }
 }))
 
@@ -227,6 +239,36 @@ const legend = computed(() => {
   return (Object.keys(STATE) as StateKey[])
     .map(k => ({ k, label: STATE[k].label, color: STATE[k].color, n: counts.get(k) ?? 0 }))
     .filter(s => s.n > 0)
+})
+
+// Top zones labelled at the mean of their people's projected positions: the label
+// sits where the crowd is without a hand-placed coordinate table per continent.
+const zoneLabels = computed(() => {
+  if (zoneId.value !== null) return []
+  const agg = new Map<number, { n: number; sx: number; sy: number }>()
+  for (const e of visible.value) {
+    const { cx, cy } = project(e)
+    if (cx < 0 || cx > 1000 || cy < 0 || cy > 560) continue
+    const a = agg.get(e.zone) ?? { n: 0, sx: 0, sy: 0 }
+    a.n++; a.sx += cx; a.sy += cy
+    agg.set(e.zone, a)
+  }
+  return [...agg.entries()]
+    .sort((a, b) => b[1].n - a[1].n).slice(0, 6)
+    .map(([id, a]) => ({
+      id,
+      x: Math.min(910, Math.max(90, a.sx / a.n)),
+      y: Math.min(548, Math.max(16, a.sy / a.n - 12)),
+      t: zoneName(id).toUpperCase(),
+    }))
+})
+
+const hotZones = computed(() => {
+  const counts = new Map<number, number>()
+  for (const e of visible.value) counts.set(e.zone, (counts.get(e.zone) ?? 0) + 1)
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
+  const max = Math.max(1, ...top.map(t => t[1]))
+  return top.map(([id, n]) => ({ id, name: zoneName(id), n, w: `${Math.round((n / max) * 100)}%` }))
 })
 
 // Trails are accumulated client-side while the page is open, because nothing records
@@ -246,285 +288,374 @@ const trailPath = computed(() => {
   }).join(' ')
 })
 
-const humans = computed(() => props.entities.filter(e => !e.bot).length)
+// The state series is sampled here, not served: nothing server-side records what a
+// continent was doing an hour ago, so the strip honestly begins when the page opens.
+const flowStart = ref(Date.now())
+const flowSamples = ref<Record<number, [number, number, number]>[]>([])
+let lastFlowAt = 0
+watch(() => props.trailTick, () => {
+  if (!props.entities.length) return
+  const now = Date.now()
+  if (flowSamples.value.length && now - lastFlowAt < 25_000) return
+  lastFlowAt = now
+  if (!flowSamples.value.length) flowStart.value = now
+  const by: Record<number, [number, number, number]> = {}
+  for (const e of props.entities) {
+    const st = stateOf(e)
+    const i = st === 'questing' ? 0 : st === 'travelling' ? 1 : st === 'grinding' ? 2 : -1
+    if (i < 0) continue
+    ;(by[e.map] ??= [0, 0, 0])[i]++
+  }
+  flowSamples.value = [...flowSamples.value.slice(-359), by]
+}, { immediate: true })
+
+const flowSeries = computed(() => {
+  const m = selectedMap.value
+  const pick = (i: number) => flowSamples.value.map(s => s[m]?.[i] ?? 0)
+  return [
+    { label: STATE.questing.label, color: STATE.questing.color, values: pick(0) },
+    { label: STATE.travelling.label, color: STATE.travelling.color, values: pick(1) },
+    { label: STATE.grinding.label, color: STATE.grinding.color, values: pick(2) },
+  ]
+})
+const flowRange = computed<[string, string]>(() => [fmt.clock(flowStart.value), 'now'])
 
 const lede = computed(() => {
-  const n = props.entities.length
-  if (!n) return 'Nobody is online. The realm is up but empty.'
-  const who = humans.value === 0
-    ? 'None of them are people.'
-    : `${titled(spell(humans.value))} of them ${humans.value === 1 ? 'is a person' : 'are people'}.`
-  return `${titled(spell(n))} character${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} awake in Azeroth right now. ${who}`
+  const n = visible.value.length
+  const where = zoneId.value !== null ? zoneName(zoneId.value) : MAPS[selectedMap.value]!.name
+  if (!n) return `Nobody walks ${where} right now.`
+  const verb = selectedMap.value === 530 ? (n === 1 ? 'braves' : 'brave') : n === 1 ? 'walks' : 'walk'
+  return `${titled(spell(n))} character${n === 1 ? '' : 's'} ${verb} ${where} right now.`
 })
 
 const refreshPct = computed(() =>
   Math.min(100, Math.round((props.refreshAgo / props.refreshEvery) * 100)))
+
+const capStyle = {
+  fontFamily: FONT.display, fontWeight: 600, fontSize: '10px',
+  letterSpacing: '.16em', color: V.dim,
+} as const
+const consolePanel = {
+  border: `1px solid ${V.line}`, background: V.panel, boxShadow: V.inset, flex: 'none',
+} as const
 </script>
 
 <template>
-  <section :style="{ display: 'grid', gridTemplateRows: 'auto auto 1fr auto', gap: '14px', padding: '20px 22px', minHeight: 0, height: '100%', overflow: 'auto' }">
-    <p
-      :style="{
-        margin: 0, borderLeft: `2px solid ${T.goldDim}`, paddingLeft: '15px',
-        fontFamily: FONT.body, fontStyle: 'italic', fontWeight: 300, fontSize: '17.5px',
-        lineHeight: 1.4, color: T.textMid, maxWidth: '64ch',
-      }"
-    >{{ lede }}</p>
-
-    <div :style="{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-end' }">
-      <div :style="{ display: 'flex', gap: '1px', flexWrap: 'wrap' }">
-        <button
-          v-for="l in LAYERS"
-          :key="l.key"
-          :title="l.hint"
+  <section :style="{ display: 'grid', gridTemplateColumns: '1fr 300px', minHeight: 0, minWidth: 0, height: '100%', overflow: 'hidden' }">
+    <div :style="{ padding: '16px 0 14px 22px', display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0, minHeight: 0, overflow: 'hidden' }">
+      <div :style="{ display: 'flex', alignItems: 'baseline', gap: '18px', flexWrap: 'wrap' }">
+        <p
           :style="{
-            appearance: 'none', cursor: 'pointer', padding: '8px 13px',
-            background: layer === l.key ? T.raised : 'transparent',
-            border: `1px solid ${layer === l.key ? T.goldDim : T.line}`,
-            color: layer === l.key ? T.goldBright : T.muted,
-            fontFamily: FONT.display, fontWeight: 600, fontSize: '10px',
-            letterSpacing: '.14em', textTransform: 'uppercase',
+            margin: 0, borderLeft: `2px solid ${V.accentDim}`, paddingLeft: '13px',
+            fontFamily: FONT.body, fontStyle: 'italic', fontWeight: 300, fontSize: '16px',
+            lineHeight: 1.4, color: V.textMid,
           }"
-          @click="layer = l.key"
-        >{{ l.label }}</button>
-      </div>
+        >{{ lede }}</p>
 
-      <div
-        v-if="layer === 'prof'"
-        :style="{ display: 'flex', gap: '1px', flexWrap: 'wrap' }"
-      >
-        <button
-          v-for="p in professions"
-          :key="p.bit"
-          :style="{
-            appearance: 'none', cursor: 'pointer', padding: '6px 9px',
-            background: profBit === p.bit ? 'oklch(0.26 0.03 155)' : 'transparent',
-            border: `1px solid ${profBit === p.bit ? RAMPS.prof[2] : T.line}`,
-            color: profBit === p.bit ? RAMPS.prof[4] : T.muted,
-            fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '.04em',
-          }"
-          @click="profBit = p.bit"
-        >{{ p.name }} <span :style="{ color: T.faint }">{{ profCounts.get(p.bit) ?? 0 }}</span></button>
-      </div>
-    </div>
-
-    <div v-if="zoneId !== null" :style="{ display: 'flex', gap: '10px', alignItems: 'center' }">
-      <button
-        :style="{
-          appearance: 'none', cursor: 'pointer', padding: '7px 14px',
-          background: 'transparent', border: `1px solid ${T.line}`, color: T.muted,
-          fontFamily: FONT.display, fontWeight: 600, fontSize: '10.5px',
-          letterSpacing: '.14em', textTransform: 'uppercase',
-        }"
-        @click="zoneId = null"
-      >← {{ MAPS[selectedMap]?.name }}</button>
-      <span :style="{ fontFamily: FONT.display, fontWeight: 700, fontSize: '14px', letterSpacing: '.12em', textTransform: 'uppercase', color: T.goldBright }">
-        {{ zoneName(zoneId).toUpperCase() }}
-      </span>
-      <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint }">
-        {{ visible.length }} here
-      </span>
-    </div>
-
-    <div v-else :style="{ display: 'flex', gap: '1px', flexWrap: 'wrap' }">
-      <button
-        v-for="(m, id) in MAPS"
-        :key="id"
-        :style="{
-          appearance: 'none', cursor: 'pointer', padding: '7px 14px',
-          background: Number(id) === selectedMap ? T.raised : 'transparent',
-          border: `1px solid ${Number(id) === selectedMap ? T.goldDim : T.line}`,
-          color: Number(id) === selectedMap ? T.goldBright : T.muted,
-          fontFamily: FONT.display, fontWeight: 600, fontSize: '10.5px',
-          letterSpacing: '.14em', textTransform: 'uppercase', textAlign: 'left',
-        }"
-        @click="selectedMap = Number(id)"
-      >
-        <span style="display:block">{{ m.name }}</span>
-        <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: T.faint, letterSpacing: '.06em' }">
-          {{ fmt.int(mapCounts[Number(id)] ?? 0) }}
+        <span v-if="zoneId === null" :style="{ display: 'flex', gap: '1px', marginLeft: 'auto', flexWrap: 'wrap' }">
+          <button
+            v-for="(m, id) in MAPS"
+            :key="id"
+            :style="{
+              appearance: 'none', cursor: 'pointer', padding: '7px 12px',
+              fontFamily: FONT.display, fontWeight: 600, fontSize: '10px', letterSpacing: '.12em',
+              textTransform: 'uppercase',
+              border: `1px solid ${Number(id) === selectedMap ? V.accentDim : V.line}`,
+              background: Number(id) === selectedMap ? V.raised : 'transparent',
+              color: Number(id) === selectedMap ? V.accentBright : V.muted,
+            }"
+            @click="selectedMap = Number(id)"
+          >{{ m.name }} <span :style="{ fontFamily: FONT.mono, color: V.faint }">{{ fmt.int(mapCounts[Number(id)] ?? 0) }}</span></button>
         </span>
-      </button>
-    </div>
 
-    <div
-      :style="{
-        position: 'relative', minHeight: 0, overflow: 'hidden',
-        border: '1px solid oklch(0.42 0.05 78 / .55)',
-        background: 'oklch(0.185 0.02 56)',
-        boxShadow: 'inset 0 0 0 1px oklch(0.14 0.014 50), inset 0 0 90px oklch(0.09 0.01 45 / .9)',
-      }"
-    >
-      <svg
-        ref="svgEl"
-        viewBox="0 0 1000 667"
-        preserveAspectRatio="xMidYMid meet"
-        :style="{ display: 'block', width: '100%', height: '100%', cursor: zoneId === null ? 'zoom-in' : 'default' }"
-        @click="diveAt"
-      >
-        <!-- Desaturated and dimmed rather than faded: an opacity wash over brown art
-             turns the whole plate to mud, while draining the colour leaves a neutral
-             substrate that coloured dots can sit on top of. -->
-        <image
-          v-if="hasArt"
-          :href="artHref"
-          x="0" y="0" width="1000" height="667"
-          preserveAspectRatio="none"
-          :opacity="artOpacity"
-          style="filter:saturate(0.2) brightness(0.4) contrast(1.12)"
-          @error="hasArt = false"
-        />
-
-        <defs>
-          <radialGradient id="vig" cx="50%" cy="50%" r="72%">
-            <stop offset="55%" stop-color="oklch(0.1 0.012 45)" stop-opacity="0" />
-            <stop offset="100%" stop-color="oklch(0.1 0.012 45)" stop-opacity="0.85" />
-          </radialGradient>
-        </defs>
-        <rect x="0" y="0" width="1000" height="667" fill="url(#vig)" />
-
-        <!-- Survey grid, as in the design: gives the plate structure without competing
-             with the dots. -->
-        <g :stroke="'oklch(0.32 0.02 52)'" stroke-width="0.6" opacity="0.5">
-          <line v-for="gx in 15" :key="`v${gx}`" :x1="gx * 64" y1="0" :x2="gx * 64" y2="667" />
-          <line v-for="gy in 10" :key="`h${gy}`" x1="0" :y1="gy * 64" x2="1000" :y2="gy * 64" />
-        </g>
-
-        <!-- Binned counts. Drawn under the dots so a selected character stays findable
-             even with a layer on. -->
-        <g v-if="heat.cells.length" shape-rendering="crispEdges">
-          <rect
-            v-for="c in heat.cells"
-            :key="c.key"
-            :x="c.x" :y="c.y" :width="CELL" :height="CELL"
-            :fill="c.fill" :opacity="c.opacity"
-          >
-            <title>{{ c.n }} {{ layer === 'pvp' ? 'kills' : 'characters' }}</title>
-          </rect>
-        </g>
-
-        <path
-          v-if="trailPath"
-          :d="trailPath"
-          fill="none"
-          :stroke="T.gold"
-          stroke-width="1.6"
-          stroke-opacity="0.85"
-          stroke-linejoin="round"
-          stroke-linecap="round"
-        />
-
-        <rect
-          v-for="d in (layer === 'activity' ? dots : []).filter(x => x.st === 'working')"
-          :key="`w${d.e.guid}`"
-          :x="d.cx - d.r" :y="d.cy - d.r" :width="d.r * 2" :height="d.r * 2"
-          :transform="`rotate(45 ${d.cx} ${d.cy})`"
-          :fill="d.color"
-          stroke="oklch(0.11 0.01 50 / .95)" stroke-width="1.2"
-          style="cursor:pointer"
-          @mouseenter="hovered = d.e"
-          @mouseleave="hovered = null"
-          @click.stop="emit('select', d.e.name)"
-        />
-        <circle
-          v-for="d in (layer === 'activity' ? dots.filter(x => x.st !== 'working') : dots.filter(x => !x.e.bot || x.e.guid === selectedGuid))"
-          :key="d.e.guid"
-          :cx="d.cx" :cy="d.cy" :r="d.r"
-          :fill="d.color"
-          :stroke="d.e.bot ? 'oklch(0.11 0.01 50 / .95)' : T.textHi"
-          :stroke-width="d.e.bot ? 1.4 : 1.8"
-          :opacity="d.st === 'idle' ? 0.7 : 1"
-          style="cursor:pointer"
-          @mouseenter="hovered = d.e"
-          @mouseleave="hovered = null"
-          @click.stop="emit('select', d.e.name)"
-        />
-      </svg>
-
-      <span
-        v-for="c in [
-          { top: '7px', left: '7px', bt: 1, bl: 1 },
-          { top: '7px', right: '7px', bt: 1, br: 1 },
-          { bottom: '7px', left: '7px', bb: 1, bl: 1 },
-          { bottom: '7px', right: '7px', bb: 1, br: 1 },
-        ]"
-        :key="`${c.top ?? ''}${c.left ?? ''}${c.right ?? ''}`"
-        :style="{
-          position: 'absolute', width: '16px', height: '16px', pointerEvents: 'none',
-          top: c.top, left: c.left, right: c.right, bottom: c.bottom,
-          borderTop: c.bt ? '1px solid oklch(0.66 0.09 86 / .6)' : undefined,
-          borderBottom: c.bb ? '1px solid oklch(0.66 0.09 86 / .6)' : undefined,
-          borderLeft: c.bl ? '1px solid oklch(0.66 0.09 86 / .6)' : undefined,
-          borderRight: c.br ? '1px solid oklch(0.66 0.09 86 / .6)' : undefined,
-        }"
-      />
+        <span v-else :style="{ display: 'flex', gap: '10px', marginLeft: 'auto', alignItems: 'baseline' }">
+          <button
+            :style="{
+              appearance: 'none', cursor: 'pointer', padding: '7px 12px',
+              background: 'transparent', border: `1px solid ${V.line}`, color: V.muted,
+              fontFamily: FONT.display, fontWeight: 600, fontSize: '10px',
+              letterSpacing: '.12em', textTransform: 'uppercase',
+            }"
+            @click="zoneId = null"
+          >← {{ MAPS[selectedMap]?.name }}</button>
+          <span :style="{ fontFamily: FONT.display, fontWeight: 700, fontSize: '13px', letterSpacing: '.12em', textTransform: 'uppercase', color: V.accentBright }">
+            {{ zoneName(zoneId).toUpperCase() }}
+          </span>
+        </span>
+      </div>
 
       <div
-        v-if="hovered"
         :style="{
-          position: 'absolute', left: '12px', bottom: '12px', pointerEvents: 'none',
-          border: `1px solid ${T.line}`, background: 'oklch(0.16 0.017 50 / .95)',
-          padding: '8px 11px', maxWidth: '320px',
+          position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden',
+          border: `1px solid ${V.lineAccentSoft}`,
+          background: `radial-gradient(ellipse at 45% 40%, ${V.mapHi}, ${V.mapLo} 72%)`,
+          boxShadow: 'inset 0 0 0 1px oklch(0.14 0.014 50), inset 0 0 110px oklch(0.07 0.008 45 / .9)',
         }"
       >
-        <div :style="{ fontSize: '15px', color: CLASS_COLOR[hovered.cls] ?? T.textHi, fontWeight: 600 }">
-          {{ hovered.name }}
-        </div>
-        <div :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.muted, marginTop: '3px', letterSpacing: '.06em' }">
-          level {{ hovered.level }} ·
-          {{ (hovered.place ?? zoneName(hovered.zone)).toLowerCase() }} ·
-          {{ hovered.trade ? hovered.trade.toLowerCase() : STATE[stateOf(hovered)].label }}
-        </div>
-      </div>
-    </div>
+        <svg
+          ref="svgEl"
+          viewBox="0 0 1000 560"
+          preserveAspectRatio="xMidYMid meet"
+          :style="{ display: 'block', width: '100%', height: '100%', cursor: zoneId === null ? 'zoom-in' : 'default' }"
+          @click="diveAt"
+        >
+          <!-- Desaturated and dimmed rather than faded: an opacity wash over brown art
+               turns the whole plate to mud, while draining the colour leaves a neutral
+               substrate that coloured dots can sit on top of. -->
+          <image
+            v-if="hasArt"
+            :href="artHref"
+            x="0" y="0" width="1000" height="560"
+            preserveAspectRatio="none"
+            opacity="0.9"
+            style="filter:saturate(0.2) brightness(0.4) contrast(1.12)"
+            @error="hasArt = false"
+          />
 
-    <div>
-      <div :style="{ display: 'flex', alignItems: 'center', gap: '18px', flexWrap: 'wrap' }">
+          <defs>
+            <radialGradient id="vig" cx="50%" cy="50%" r="72%">
+              <stop offset="55%" stop-color="oklch(0.1 0.012 45)" stop-opacity="0" />
+              <stop offset="100%" stop-color="oklch(0.1 0.012 45)" stop-opacity="0.85" />
+            </radialGradient>
+          </defs>
+          <rect x="0" y="0" width="1000" height="560" fill="url(#vig)" />
+
+          <!-- Survey grid, as in the design: gives the plate structure without competing
+               with the dots. -->
+          <g stroke="oklch(0.30 0.02 52)" stroke-width="0.6" opacity="0.45">
+            <line v-for="gx in 15" :key="`v${gx}`" :x1="gx * 64" y1="0" :x2="gx * 64" y2="560" />
+            <line v-for="gy in 8" :key="`h${gy}`" x1="0" :y1="gy * 64" x2="1000" :y2="gy * 64" />
+          </g>
+
+          <!-- Binned counts. Drawn under the dots so a selected character stays findable
+               even with a layer on. -->
+          <g v-if="heat.cells.length" shape-rendering="crispEdges">
+            <rect
+              v-for="c in heat.cells"
+              :key="c.key"
+              :x="c.x" :y="c.y" :width="CELL" :height="CELL"
+              :fill="c.fill" :opacity="c.opacity"
+            >
+              <title>{{ c.n }} {{ layer === 'pvp' ? 'kills' : 'characters' }}</title>
+            </rect>
+          </g>
+
+          <text
+            v-for="z in zoneLabels"
+            :key="z.id"
+            :x="z.x" :y="z.y"
+            text-anchor="middle"
+            fill="oklch(0.55 0.035 72)"
+            opacity="0.85"
+            :style="{ fontFamily: FONT.mono, fontSize: '9px', letterSpacing: '.2em', pointerEvents: 'none' }"
+          >{{ z.t }}</text>
+
+          <path
+            v-if="trailPath"
+            :d="trailPath"
+            fill="none"
+            :stroke="V.accent"
+            stroke-width="1.6"
+            stroke-opacity="0.85"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+
+          <rect
+            v-for="d in (layer === 'activity' ? dots : []).filter(x => x.st === 'working')"
+            :key="`w${d.e.guid}`"
+            :x="d.cx - d.r" :y="d.cy - d.r" :width="d.r * 2" :height="d.r * 2"
+            :transform="`rotate(45 ${d.cx} ${d.cy})`"
+            :fill="d.color"
+            :opacity="d.opacity"
+            stroke="oklch(0.11 0.01 50 / .95)" stroke-width="1.2"
+            style="cursor:pointer"
+            @mouseenter="hovered = d.e"
+            @mouseleave="hovered = null"
+            @click.stop="emit('select', d.e.name)"
+          />
+          <circle
+            v-for="d in (layer === 'activity' ? dots.filter(x => x.st !== 'working') : dots.filter(x => !x.e.bot || x.e.guid === selectedGuid))"
+            :key="d.e.guid"
+            :cx="d.cx" :cy="d.cy" :r="d.r"
+            :fill="d.color"
+            :stroke="d.e.bot ? 'oklch(0.11 0.01 50 / .95)' : V.textHi"
+            :stroke-width="d.e.bot ? 1.2 : 1.8"
+            :opacity="d.opacity"
+            style="cursor:pointer"
+            @mouseenter="hovered = d.e"
+            @mouseleave="hovered = null"
+            @click.stop="emit('select', d.e.name)"
+          />
+        </svg>
+
+        <span :style="{ position: 'absolute', top: '8px', left: '8px', width: '16px', height: '16px', borderTop: `1px solid ${V.tick}`, borderLeft: `1px solid ${V.tick}`, pointerEvents: 'none' }" />
+        <span :style="{ position: 'absolute', top: '8px', right: '8px', width: '16px', height: '16px', borderTop: `1px solid ${V.tick}`, borderRight: `1px solid ${V.tick}`, pointerEvents: 'none' }" />
+        <span :style="{ position: 'absolute', bottom: '8px', left: '8px', width: '16px', height: '16px', borderBottom: `1px solid ${V.tick}`, borderLeft: `1px solid ${V.tick}`, pointerEvents: 'none' }" />
+        <span :style="{ position: 'absolute', bottom: '8px', right: '8px', width: '16px', height: '16px', borderBottom: `1px solid ${V.tick}`, borderRight: `1px solid ${V.tick}`, pointerEvents: 'none' }" />
+
+        <div
+          v-if="hovered"
+          :style="{
+            position: 'absolute', left: '12px', bottom: '12px', pointerEvents: 'none',
+            border: `1px solid ${V.line}`, background: V.overlay,
+            padding: '8px 11px', maxWidth: '320px',
+          }"
+        >
+          <div :style="{ fontSize: '15px', color: CLASS_COLOR[hovered.cls] ?? V.textHi, fontWeight: 600 }">
+            {{ hovered.name }}
+          </div>
+          <div :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: V.muted, marginTop: '3px', letterSpacing: '.06em' }">
+            level {{ hovered.level }} ·
+            {{ (hovered.place ?? zoneName(hovered.zone)).toLowerCase() }} ·
+            {{ hovered.trade ? hovered.trade.toLowerCase() : STATE[stateOf(hovered)].label }}
+          </div>
+        </div>
+
         <!-- A magnitude scale needs its ends labelled or the colour means nothing. -->
-        <span v-if="layer !== 'activity'" :style="{ display: 'flex', alignItems: 'center', gap: '9px' }">
-          <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint }">
-            {{ layer === 'pvp' ? '0 kills' : '0' }}
-          </span>
+        <div
+          v-else-if="layer !== 'activity'"
+          :style="{
+            position: 'absolute', left: '12px', bottom: '12px', pointerEvents: 'none',
+            display: 'flex', alignItems: 'center', gap: '12px',
+            border: `1px solid ${V.line}`, background: V.overlay, padding: '7px 12px',
+          }"
+        >
+          <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">0</span>
           <span :style="{ display: 'flex', gap: '2px' }">
             <span
               v-for="(c, i) in rampSteps"
               :key="i"
-              :style="{ width: '26px', height: '9px', background: c, opacity: 0.2 + i * 0.14 }"
+              :style="{ width: '24px', height: '8px', background: c, opacity: 0.2 + i * 0.14 }"
             />
           </span>
-          <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.text }">
-            {{ heat.max }} per cell
-          </span>
-          <span :style="{ fontSize: '13px', color: T.muted }">
-            {{ activeLayer.label }}<template v-if="layer === 'prof'"> · {{ profName }}</template>
-            <template v-if="heat.total"> · {{ fmt.int(heat.total) }} total</template>
-          </span>
-        </span>
-
-        <span v-if="layer === 'activity'" v-for="s in legend" :key="s.k" :style="{ display: 'flex', alignItems: 'center', gap: '7px' }">
-          <span :style="{ width: '7px', height: '7px', borderRadius: '50%', background: s.color, flex: 'none' }" />
-          <span :style="{ fontSize: '13px', color: T.body }">{{ s.label }}</span>
-          <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: T.faint }">{{ fmt.int(s.n) }}</span>
-        </span>
-
-        <span :style="{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '9px' }">
-          <span :style="{ fontFamily: FONT.display, fontWeight: 600, fontSize: '9.5px', letterSpacing: '.16em', color: T.dim }">
-            POSITION REFRESH
-          </span>
-          <span :style="{ width: '120px', height: '3px', background: T.lineSoft, position: 'relative' }">
-            <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: `${refreshPct}%`, background: T.gold }" />
-          </span>
-          <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: T.muted }">{{ Math.round(refreshAgo) }}s</span>
-        </span>
+          <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.text }">{{ heat.max }} per cell</span>
+          <span :style="{ fontSize: '12px', color: V.muted }">{{ heatNote }}</span>
+        </div>
       </div>
 
-      <p :style="{ margin: '10px 0 0', fontSize: '12.5px', color: T.faint, lineHeight: 1.45, maxWidth: '96ch' }">
-        Positions are written every {{ refreshEvery }}s. Travelling comes from the assembler's own
-        trip records rather than being guessed from those writes. Characters inside an instance have
-        no continent position, so they are drawn on their dungeon's door. Hover to trace a path;
-        large ringed dots are human players. Click anywhere on a continent to dive into that
-        zone; the layers and legend follow you down.
+      <div :style="{ flex: 'none' }">
+        <UiFlow
+          :series="flowSeries"
+          cap="WHAT THE CONTINENT DID THIS SESSION"
+          :range="flowRange"
+          :height="62"
+        />
+        <p v-if="flowSamples.length < 2" :style="{ margin: '4px 0 0', fontSize: '11px', color: V.faint, lineHeight: 1.45 }">
+          Nothing server-side records what a continent was doing an hour ago, so this trace
+          accumulates while the page is open. Give it a minute or two.
+        </p>
+      </div>
+
+      <p :style="{ margin: 0, fontSize: '12px', color: V.faint, lineHeight: 1.45, maxWidth: '100ch' }">
+        Positions write every {{ refreshEvery }}s. Hover a dot for who it is; click to read them.
+        Large ringed dots are human players. Click open ground to dive into that zone;
+        characters inside an instance are drawn on their dungeon's door.
       </p>
     </div>
+
+    <aside :style="{ padding: '16px 22px 16px 18px', display: 'flex', flexDirection: 'column', gap: '12px', overflow: 'auto', minHeight: 0 }">
+      <section :style="consolePanel">
+        <header :style="{ padding: '10px 12px 6px' }"><span :style="capStyle">LAYER</span></header>
+        <div :style="{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: '1px' }">
+          <button
+            v-for="l in LAYERS"
+            :key="l.key"
+            :title="l.note"
+            :style="{
+              appearance: 'none', display: 'flex', justifyContent: 'space-between',
+              alignItems: 'center', gap: '8px', padding: '7px 10px', cursor: 'pointer',
+              border: `1px solid ${layer === l.key ? V.accentDim : V.line}`,
+              background: layer === l.key ? V.raised : 'transparent',
+              fontFamily: FONT.display,
+            }"
+            @click="layer = l.key"
+          >
+            <span :style="{ fontSize: '10px', fontWeight: 600, letterSpacing: '.14em', color: layer === l.key ? V.accentBright : V.muted }">{{ l.label }}</span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint2, textAlign: 'right' }">{{ l.hint }}</span>
+          </button>
+
+          <div v-if="layer === 'prof'" :style="{ display: 'flex', gap: '1px', flexWrap: 'wrap', marginTop: '7px' }">
+            <button
+              v-for="p in professions"
+              :key="p.bit"
+              :style="{
+                appearance: 'none', cursor: 'pointer', padding: '5px 8px',
+                background: profBit === p.bit ? 'oklch(0.26 0.03 155)' : 'transparent',
+                border: `1px solid ${profBit === p.bit ? RAMPS.prof[2] : V.line}`,
+                color: profBit === p.bit ? RAMPS.prof[4] : V.muted,
+                fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '.04em',
+              }"
+              @click="profBit = p.bit"
+            >{{ p.name }} <span :style="{ color: V.faint }">{{ profCounts.get(p.bit) ?? 0 }}</span></button>
+          </div>
+        </div>
+      </section>
+
+      <section :style="consolePanel">
+        <header :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '10px 12px 6px' }">
+          <span :style="capStyle">{{ zoneId !== null ? 'IN THIS ZONE' : 'ON THIS CONTINENT' }}</span>
+          <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">{{ fmt.int(visible.length) }}</span>
+        </header>
+        <div :style="{ padding: '0 12px 12px' }">
+          <button
+            v-for="s in legend"
+            :key="s.k"
+            :style="{
+              appearance: 'none', border: 'none', width: '100%', cursor: 'pointer',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              gap: '8px', minWidth: 0, padding: '3px 4px', fontFamily: FONT.body,
+              background: spotlight === s.k ? V.raised : 'transparent',
+            }"
+            @click="spotlight = spotlight === s.k ? null : s.k"
+          >
+            <span
+              :style="{
+                display: 'flex', alignItems: 'center', gap: '7px', fontSize: '13px',
+                color: spotlight && spotlight !== s.k ? V.faint : V.body,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0,
+              }"
+            >
+              <span
+                :style="{
+                  width: '7px', height: '7px', flex: 'none', background: s.color,
+                  borderRadius: s.k === 'working' ? '0' : '50%',
+                  transform: s.k === 'working' ? 'rotate(45deg)' : 'none',
+                }"
+              />{{ s.label }}
+            </span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: V.text }">{{ fmt.int(s.n) }}</span>
+          </button>
+          <p :style="{ margin: '8px 0 0', fontSize: '11px', color: V.faint, lineHeight: 1.45 }">
+            {{ spotlight ? 'Spotlighting one state — click it again to clear.' : 'Click a state to spotlight those dots.' }}
+          </p>
+        </div>
+      </section>
+
+      <section :style="consolePanel">
+        <header :style="{ padding: '10px 12px 6px' }"><span :style="capStyle">HOTTEST ZONES</span></header>
+        <div :style="{ padding: '0 12px 12px' }">
+          <div
+            v-for="z in hotZones"
+            :key="z.id"
+            :style="{ display: 'grid', gridTemplateColumns: '1fr 64px 32px', gap: '8px', alignItems: 'center', padding: '2.5px 0' }"
+          >
+            <span :style="{ fontSize: '13px', color: V.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }">{{ z.name }}</span>
+            <span :style="{ height: '5px', background: V.track, position: 'relative' }">
+              <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: z.w, background: V.accentBar }" />
+            </span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: V.text, textAlign: 'right' }">{{ z.n }}</span>
+          </div>
+        </div>
+      </section>
+
+      <div :style="{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '9px', flex: 'none' }">
+        <span :style="{ ...capStyle, fontSize: '9px' }">POSITION REFRESH</span>
+        <span :style="{ flex: 1, height: '3px', background: V.lineSoft, position: 'relative' }">
+          <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: `${refreshPct}%`, background: V.accent }" />
+        </span>
+        <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: V.muted }">{{ Math.round(refreshAgo) }}s</span>
+      </div>
+    </aside>
   </section>
 </template>

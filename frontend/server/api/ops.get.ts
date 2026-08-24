@@ -31,6 +31,9 @@ const FRESHNESS = `
     SELECT 'bot events', FLOOR(MAX(ts)), UNIX_TIMESTAMP()-FLOOR(MAX(ts)), COUNT(*)
     FROM aetherion_ai.bot_events
     UNION ALL
+    SELECT 'econ events', FLOOR(MAX(ts)), UNIX_TIMESTAMP()-FLOOR(MAX(ts)), COUNT(*)
+    FROM acore_characters.aetherion_econ_events
+    UNION ALL
     SELECT 'llm turns', FLOOR(MAX(ts)), UNIX_TIMESTAMP()-FLOOR(MAX(ts)), COUNT(*)
     FROM aetherion_ai.turns
     UNION ALL
@@ -60,16 +63,14 @@ const FOOTPRINT = `
   GROUP BY table_schema ORDER BY SUM(data_length+index_length) DESC
 `
 
+// The six rows the redesign's census card asks for, all countable exactly.
 const CENSUS = `
-  SELECT 'accounts' AS metric, COUNT(*) AS value FROM acore_auth.account
-  UNION ALL SELECT 'characters',        COUNT(*) FROM acore_characters.characters
-  UNION ALL SELECT 'online',            COUNT(*) FROM acore_characters.characters WHERE online=1
-  UNION ALL SELECT 'guilds',            COUNT(*) FROM acore_characters.guild
-  UNION ALL SELECT 'groups',            COUNT(*) FROM acore_characters.groups
-  UNION ALL SELECT 'instances bound',   COUNT(*) FROM acore_characters.instance
-  UNION ALL SELECT 'items',             COUNT(*) FROM acore_characters.item_instance
-  UNION ALL SELECT 'corpses',           COUNT(*) FROM acore_characters.corpse
-  UNION ALL SELECT 'bot hours',         ROUND(SUM(totaltime)/3600) FROM acore_characters.characters
+  SELECT 'characters' AS metric, COUNT(*) AS value FROM acore_characters.characters
+  UNION ALL SELECT 'online now',      COUNT(*) FROM acore_characters.characters WHERE online=1
+  UNION ALL SELECT 'guilds',          COUNT(*) FROM acore_characters.guild
+  UNION ALL SELECT 'auctions live',   COUNT(*) FROM acore_characters.auctionhouse
+  UNION ALL SELECT 'mail in flight',  COUNT(*) FROM acore_characters.mail
+  UNION ALL SELECT 'items instanced', COUNT(*) FROM acore_characters.item_instance
 `
 
 

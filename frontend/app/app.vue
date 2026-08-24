@@ -34,9 +34,9 @@ useHead({
   style: [{ textContent: PALETTE_CSS }],
 })
 
-type TabKey = 'world' | 'groups' | 'pvp' | 'race' | 'econ' | 'market'
+type TabKey = 'overview' | 'world' | 'groups' | 'pvp' | 'race' | 'econ' | 'market'
   | 'society' | 'guilds' | 'ops'
-const tab = ref<TabKey>('world')
+const tab = ref<TabKey>('overview')
 
 // Grouped navigation. OVERVIEW joins the LIVE group as one more entry when the
 // tab lands.
@@ -44,6 +44,7 @@ const NAV_GROUPS: { label: string; tabs: { key: TabKey; label: string }[] }[] = 
   {
     label: 'LIVE',
     tabs: [
+      { key: 'overview', label: 'OVERVIEW' },
       { key: 'world', label: 'WORLD' },
       { key: 'groups', label: 'PVE' },
       { key: 'pvp', label: 'PVP' },
@@ -474,8 +475,13 @@ onUnmounted(() => {
     <div v-else />
 
     <div :style="{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) clamp(300px, 24vw, 380px)', minHeight: 0, minWidth: 0, overflow: 'hidden' }">
+      <OverviewView
+        v-if="tab === 'overview'"
+        @select="select"
+        @goto="(k: TabKey) => (tab = k)"
+      />
       <WorldView
-        v-if="tab === 'world'"
+        v-else-if="tab === 'world'"
         :entities="entities"
         :moving="moving"
         :trails="trails"

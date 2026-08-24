@@ -1,75 +1,54 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { T, FONT, fmt, spell, titled } from '../theme'
-import { CLASS_COLOR, zoneName } from '../data'
-import UiPanel from './UiPanel.vue'
-import UiBars from './UiBars.vue'
-import UiSpark from './UiSpark.vue'
+import { FONT, V, fmt, spell, titled } from '../theme'
+import { CLASS_COLOR } from '../data'
 
 const props = defineProps<{
   guilds: any | null; combat: any | null; llm: any | null; society: any | null
 }>()
+
+const emit = defineEmits<{ select: [string] }>()
 
 const CLASS_NAME: Record<number, string> = {
   1: 'Warrior', 2: 'Paladin', 3: 'Hunter', 4: 'Rogue', 5: 'Priest',
   6: 'Death Knight', 7: 'Shaman', 8: 'Mage', 9: 'Warlock', 11: 'Druid',
 }
 
-const mortality = computed(() =>
-  (props.society?.mortality ?? []).map((m: any) => ({
-    label: m.hour, value: m.deaths, second: m.revives,
-  })))
-
-// Deaths normalised by exposure. The population is exactly 250 per class, so the raw
-// rate is already a fair comparison - no further weighting needed.
-const whoDies = computed(() =>
-  (props.society?.whoDies ?? [])
-    .filter((w: any) => w.deaths > 0)
-    .map((w: any) => ({
-      label: CLASS_NAME[w.cls] ?? `Class ${w.cls}`,
-      value: w.deaths,
-      note: `${w.perBot.toFixed(2)}/bot`,
-      tone: CLASS_COLOR[w.cls],
-    })))
-
-const ladder = computed(() =>
-  (props.society?.ladder ?? []).map((l: any) => ({
-    label: l.band, value: l.chars,
-    note: l.dings ? `+${l.dings}` : `${l.avgGold}g`,
-  })))
-
-const loot = computed(() =>
-  (props.society?.loot ?? []).map((l: any) => ({ label: l.hour, value: l.total })))
-
-const lootMix = computed(() => {
-  const rows = props.society?.loot ?? []
-  const sum = (k: string) => rows.reduce((n: number, r: any) => n + (r[k] || 0), 0)
-  return [
-    { label: 'uncommon', value: sum('uncommon'), tone: 'oklch(0.74 0.10 158)' },
-    { label: 'rare', value: sum('rare'), tone: 'oklch(0.70 0.13 250)' },
-    { label: 'epic', value: sum('epic'), tone: 'oklch(0.68 0.15 305)' },
-  ].filter(r => r.value > 0)
-})
-
-const balance = computed(() =>
-  (props.society?.balance ?? []).map((b: any) => ({
-    label: b.race, value: b.chars, note: `lvl ${b.avgLevel}`,
-    tone: b.faction === 'alliance' ? 'oklch(0.68 0.13 250)' : 'oklch(0.62 0.17 25)',
-  })))
-const emit = defineEmits<{ select: [string] }>()
-
+// Fixed data colors: semantic death/revive, rarity, faction. They never follow the
+// chrome palette. 'pro' is the one archetype that rides the accent, per the handoff.
+const DEATH = 'oklch(0.66 0.19 25)'
+const REVIVE = 'oklch(0.62 0.10 158)'
+const RARITY: Record<string, string> = {
+  uncommon: 'oklch(0.74 0.10 158)', rare: 'oklch(0.70 0.13 250)', epic: 'oklch(0.68 0.15 305)',
+}
+const FACTION: Record<string, string> = {
+  alliance: 'oklch(0.68 0.13 250)', horde: 'oklch(0.62 0.17 25)',
+}
 const ARCH_COLOR: Record<string, string> = {
   normal: 'oklch(0.74 0.085 158)',
-  pro: T.gold,
+  pro: V.accent,
   clueless: 'oklch(0.78 0.12 45)',
   afk: 'oklch(0.56 0.028 68)',
   scumbag: 'oklch(0.68 0.10 302)',
   roleplayer: 'oklch(0.82 0.08 350)',
-  goldseller: T.red,
+  goldseller: 'oklch(0.62 0.16 22)',
 }
 
-const topGuilds = computed(() => (props.guilds?.guilds ?? []).slice(0, 9))
-const maxAvg = computed(() => Math.max(80, ...topGuilds.value.map((g: any) => g.avgLevel ?? 0)))
+// Panel chrome, prototype-exact. Local rather than UiPanel so every chrome color here
+// resolves through the palette variables.
+const PANEL = { border: `1px solid ${V.line}`, background: V.panel, boxShadow: V.inset }
+const HEAD = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+  gap: '10px', padding: '10px 12px 6px',
+}
+const CAP = {
+  fontFamily: FONT.display, fontWeight: 600, fontSize: '10px',
+  letterSpacing: '.16em', color: V.dim, textTransform: 'uppercase', whiteSpace: 'nowrap',
+}
+const NOTE = { fontFamily: FONT.mono, fontSize: '10px', color: V.faint, whiteSpace: 'nowrap' }
+const BODY = { padding: '0 12px 12px' }
+const TRACK = { height: '7px', background: V.track, position: 'relative' }
+const VAL = { fontFamily: FONT.mono, fontSize: '11.5px', color: V.text, fontVariantNumeric: 'tabular-nums' }
 
 const lede = computed(() => {
   const n = props.guilds?.totalGuilds ?? 0
@@ -81,134 +60,80 @@ const lede = computed(() => {
 
 const hookOn = computed(() => !!props.llm?.hook?.enabled)
 const bridgeUp = computed(() => !!props.llm?.bridge?.up)
+const hookStats = computed(() => [
+  { l: 'p50 latency', v: props.llm?.bridge?.p50 != null ? `${props.llm.bridge.p50.toFixed(2)}s` : '—' },
+  { l: 'served', v: fmt.int(props.llm?.bridge?.served ?? 0) },
+  { l: 'max in flight', v: props.llm?.hook?.maxInFlight ?? '—' },
+  { l: 'reasoning', v: props.llm?.bridge?.reasoning ?? '—' },
+])
+
+const chatter = computed(() => (props.llm?.chatter ?? []).slice(0, 8))
+
+const mortality = computed(() => props.society?.mortality ?? [])
+const mortPeak = computed(() =>
+  Math.max(1, ...mortality.value.map((m: any) => Math.max(m.deaths, m.revives))))
+
+const whoDies = computed(() =>
+  (props.society?.whoDies ?? [])
+    .filter((w: any) => w.deaths > 0)
+    .map((w: any) => ({
+      name: CLASS_NAME[w.cls] ?? `Class ${w.cls}`,
+      color: CLASS_COLOR[w.cls] ?? V.body,
+      deaths: w.deaths,
+      note: `${w.perBot.toFixed(2)}/bot`,
+    })))
+const diesMax = computed(() => Math.max(1, ...whoDies.value.map((w: any) => w.deaths)))
+const diesNote = computed(() => {
+  const p = props.society?.classPop
+  if (!p?.lo) return 'level 55+, last 24h'
+  const pop = p.lo === p.hi ? `${p.lo}` : `${p.lo}–${p.hi}`
+  return `level 55+, last 24h · ${pop} per class`
+})
+
+const lootMix = computed(() => {
+  const rows = props.society?.loot ?? []
+  const sum = (k: string) => rows.reduce((n: number, r: any) => n + (r[k] || 0), 0)
+  return (['uncommon', 'rare', 'epic'] as const)
+    .map(k => ({ name: k, value: sum(k), color: RARITY[k]! }))
+    .filter(r => r.value > 0)
+})
+const lootMax = computed(() => Math.max(1, ...lootMix.value.map(r => r.value)))
+
+const balance = computed(() =>
+  (props.society?.balance ?? []).map((b: any) => ({
+    name: b.race, value: b.chars, note: `lvl ${b.avgLevel}`,
+    color: FACTION[b.faction] ?? V.dim,
+  })))
+const balanceMax = computed(() => Math.max(1, ...balance.value.map((b: any) => b.value)))
+
+const pct = (v: number, max: number) => `${Math.max(v > 0 ? 2 : 0, Math.round((v / max) * 100))}%`
 </script>
 
 <template>
-  <section :style="{ display: 'grid', gridTemplateRows: 'auto 1fr', gap: '14px', padding: '20px 22px', minHeight: 0, height: '100%', overflow: 'auto' }">
+  <section :style="{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, height: '100%', overflow: 'auto' }">
     <p
       :style="{
-        margin: 0, borderLeft: `2px solid ${T.goldDim}`, paddingLeft: '15px',
-        fontFamily: FONT.body, fontStyle: 'italic', fontWeight: 300, fontSize: '17.5px',
-        lineHeight: 1.4, color: T.textMid, maxWidth: '64ch',
+        margin: 0, borderLeft: `2px solid ${V.accentDim}`, paddingLeft: '13px',
+        fontFamily: FONT.body, fontStyle: 'italic', fontWeight: 300, fontSize: '16px',
+        lineHeight: 1.4, color: V.textMid,
       }"
     >{{ lede }}</p>
 
-    <div :style="{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) minmax(340px, 1.15fr)', gap: '16px', alignItems: 'start' }">
-      <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }">
-        <UiPanel cap="Guilds" :note="`${fmt.int(guilds?.totalGuilds ?? 0)} formed · avg lvl`">
-          <div
-            v-for="g in topGuilds"
-            :key="g.id"
-            :style="{ display: 'grid', gridTemplateColumns: '18px minmax(90px, 1fr) 1fr 30px', gap: '10px', alignItems: 'center', padding: '5px 0' }"
-          >
-            <span
-              :style="{
-                width: '18px', height: '18px', border: `1px solid ${T.line}`,
-                display: 'grid', placeItems: 'center', fontFamily: FONT.display,
-                fontSize: '9.5px', color: T.muted,
-              }"
-            >{{ g.name?.charAt(0) ?? '?' }}</span>
-            <span :style="{ fontSize: '14px', color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ g.name }}</span>
-            <span :style="{ height: '4px', background: T.lineSoft, position: 'relative' }">
-              <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: `${((g.avgLevel ?? 0) / maxAvg) * 100}%`, background: T.goldDim }" />
-            </span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: T.muted, textAlign: 'right' }">{{ g.avgLevel ?? 0 }}</span>
-          </div>
-        </UiPanel>
-
-        <UiPanel
-          v-if="guilds?.beaten?.length"
-          cap="Bosses beaten"
-          :note="`${guilds.beaten.length} named`"
-        >
-          <div
-            v-for="(b, i) in guilds.beaten"
-            :key="b.boss"
-            :style="{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'baseline', padding: '4px 0', borderBottom: i < guilds.beaten.length - 1 ? `1px solid ${T.lineFaint}` : 'none' }"
-          >
-            <span :style="{ minWidth: 0 }">
-              <span :style="{ fontSize: '14px', color: T.text, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ b.boss }}</span>
-              <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint }">{{ b.instance }}</span>
-            </span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '12px', color: T.green, whiteSpace: 'nowrap' }">×{{ b.kills }}</span>
-          </div>
-        </UiPanel>
-
-        <UiPanel
-          v-else-if="guilds?.kills?.length"
-          cap="Recent boss kills"
-          :note="`${fmt.int(guilds?.bossesBeaten ?? 0)} beaten`"
-        >
-          <div
-            v-for="(k, i) in guilds.kills.slice(0, 8)"
-            :key="i"
-            :style="{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '5px 0', borderBottom: i < 7 ? `1px solid ${T.lineFaint}` : 'none' }"
-          >
-            <span :style="{ minWidth: 0 }">
-              <span :style="{ fontSize: '14px', color: T.text, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ k.boss }}</span>
-              <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint }">{{ k.instance }}</span>
-            </span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: T.muted, whiteSpace: 'nowrap' }">{{ k.players }}p</span>
-          </div>
-        </UiPanel>
-
-        <UiPanel v-if="ladder.length" cap="The ladder" note="online, by level band">
-          <UiBars :rows="ladder" label-width="72px" />
-          <p :style="{ margin: '8px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.4 }">
-            Right column shows level-ups in the last 24h where any happened, otherwise
-            average gold held.
-          </p>
-        </UiPanel>
-
-        <UiPanel v-if="loot.length" cap="Loot stream" note="6h, uncommon and above">
-          <UiSpark :points="loot" hue="oklch(0.74 0.13 88)" label="drops per hour" />
-          <div :style="{ marginTop: '10px' }">
-            <UiBars :rows="lootMix" label-width="80px" />
-          </div>
-        </UiPanel>
-
-        <UiPanel v-if="balance.length" cap="Faction and race" note="online">
-          <UiBars :rows="balance" label-width="80px" />
-        </UiPanel>
-
-        <UiPanel cap="Open-world conflict" :note="`${fmt.int(combat?.killsToday ?? 0)} today`">
-          <button
-            v-for="f in (combat?.killers ?? []).slice(0, 8)"
-            :key="f.guid"
-            :style="{
-              width: '100%', appearance: 'none', background: 'none', border: 'none',
-              padding: '4px 0', cursor: 'pointer', display: 'flex',
-              justifyContent: 'space-between', gap: '10px', alignItems: 'baseline', textAlign: 'left',
-            }"
-            @click="emit('select', f.name)"
-          >
-            <span :style="{ fontSize: '14px', color: CLASS_COLOR[f.cls] ?? T.text }">{{ f.name }}</span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint, flex: 1, textAlign: 'right' }">{{ zoneName(f.zone).toLowerCase() }}</span>
-            <span :style="{ fontFamily: FONT.mono, fontSize: '12px', color: T.text, minWidth: '32px', textAlign: 'right' }">{{ f.kills }}</span>
-          </button>
-        </UiPanel>
-      </div>
-
+    <div :style="{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: '16px', alignItems: 'start' }">
       <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }">
         <!-- The hook and the bridge fail independently. Saying which one is down is the
              difference between a useful panel and a red light. -->
         <section
           :style="{
-            border: `1px solid ${hookOn && bridgeUp ? T.line : T.red}`,
-            background: hookOn && bridgeUp ? T.panel : 'oklch(0.21 0.045 25)',
-            boxShadow: T.inset, padding: '11px 13px',
+            border: `1px solid ${hookOn && bridgeUp ? V.line : 'oklch(0.62 0.16 22)'}`,
+            background: hookOn && bridgeUp ? V.panel : 'oklch(0.21 0.045 25)',
+            boxShadow: V.inset, padding: '11px 13px',
           }"
         >
-          <div
-            :style="{
-              fontFamily: FONT.display, fontWeight: 600, fontSize: '10px',
-              letterSpacing: '.16em', color: hookOn && bridgeUp ? T.dim : T.red,
-              textTransform: 'uppercase',
-            }"
-          >
+          <div :style="{ ...CAP, color: hookOn && bridgeUp ? V.dim : 'oklch(0.62 0.16 22)' }">
             In-game LLM hook · {{ hookOn ? 'enabled' : 'disabled' }}
           </div>
-          <p :style="{ margin: '7px 0 0', fontSize: '13.5px', color: T.textMid, lineHeight: 1.45 }">
+          <p :style="{ margin: '7px 0 0', fontSize: '13.5px', color: V.textMid, lineHeight: 1.45 }">
             <template v-if="!bridgeUp">
               The bridge is not answering. Bots fall back to the canned reflex table until it returns.
             </template>
@@ -224,82 +149,178 @@ const bridgeUp = computed(() => !!props.llm?.bridge?.up)
               </template>
             </template>
           </p>
-
           <div :style="{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginTop: '11px' }">
-            <div v-for="s in [
-              { l: 'p50 latency', v: llm?.bridge?.p50 != null ? `${llm.bridge.p50.toFixed(2)}s` : '—' },
-              { l: 'served', v: fmt.int(llm?.bridge?.served ?? 0) },
-              { l: 'max in flight', v: llm?.hook?.maxInFlight ?? '—' },
-              { l: 'reasoning', v: llm?.bridge?.reasoning ?? '—' },
-            ]" :key="s.l">
-              <div :style="{ fontFamily: FONT.mono, fontSize: '15px', color: T.textHi }">{{ s.v }}</div>
-              <div :style="{ fontSize: '11px', color: T.faint }">{{ s.l }}</div>
+            <div v-for="s in hookStats" :key="s.l">
+              <div :style="{ fontFamily: FONT.mono, fontSize: '15px', color: V.textHi }">{{ s.v }}</div>
+              <div :style="{ fontSize: '11px', color: V.faint }">{{ s.l }}</div>
             </div>
           </div>
         </section>
 
-        <UiPanel cap="Chatter" :note="`${fmt.int(llm?.chatter?.length ?? 0)} recent turns`">
-          <p
-            v-if="!llm?.chatter?.length"
-            :style="{ margin: 0, fontSize: '13.5px', color: T.muted, lineHeight: 1.45 }"
-          >Nothing said yet. Bots only reach the model when a real player is present.</p>
-
-          <button
-            v-for="c in (llm?.chatter ?? []).slice(0, 10)"
-            :key="c.id"
-            :style="{
-              width: '100%', appearance: 'none', background: 'none', border: 'none',
-              padding: '4px 0', cursor: c.bot ? 'pointer' : 'default', textAlign: 'left',
-              display: 'grid', gridTemplateColumns: 'minmax(70px, auto) 1fr', gap: '9px', alignItems: 'baseline',
-            }"
-            @click="c.bot && emit('select', c.who)"
-          >
-            <span :style="{ fontSize: '13.5px', color: c.bot ? (CLASS_COLOR[c.cls] ?? T.gold) : T.muted, overflow: 'hidden', textOverflow: 'ellipsis' }">{{ c.who }}</span>
-            <span :style="{ fontSize: '13.5px', color: T.textMid, lineHeight: 1.4 }">{{ c.text }}</span>
-          </button>
-        </UiPanel>
-
-        <UiPanel v-if="mortality.length" cap="Mortality" note="deaths vs revives, 24h">
-          <UiSpark
-            :points="mortality"
-            hue="oklch(0.66 0.19 25)"
-            second-hue="oklch(0.62 0.10 158)"
-            label="deaths"
-            second-label="revives"
-          />
-          <p :style="{ margin: '8px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.4 }">
-            The only recorded evidence of combat: this schema has no combat log.
-          </p>
-        </UiPanel>
-
-        <UiPanel v-if="whoDies.length" cap="Who dies" note="level 55+, last 24h">
-          <UiBars :rows="whoDies" label-width="96px" />
-          <p :style="{ margin: '8px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.4 }">
-            Exactly 250 characters exist per class, so these counts compare directly.
-          </p>
-        </UiPanel>
-
-        <UiPanel cap="Cognitive archetypes" note="seeded from guid">
-          <div :style="{ display: 'flex', height: '10px', gap: '1px', marginBottom: '9px' }">
-            <span
-              v-for="a in llm?.archetypes ?? []"
-              :key="a.key"
-              :style="{ width: `${a.pct}%`, background: ARCH_COLOR[a.key] ?? T.dim }"
-              :title="`${a.label} ${a.pct}%`"
-            />
+        <section :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Chatter</span>
+            <span :style="NOTE">{{ chatter.length }} recent turns</span>
+          </header>
+          <div :style="BODY">
+            <p
+              v-if="!chatter.length"
+              :style="{ margin: 0, fontSize: '13.5px', color: V.muted, lineHeight: 1.45 }"
+            >Nothing said yet. Bots only reach the model when a real player is present.</p>
+            <button
+              v-for="c in chatter"
+              :key="c.id"
+              :style="{
+                width: '100%', appearance: 'none', background: 'none', border: 'none',
+                padding: '4px 0', cursor: c.bot ? 'pointer' : 'default', textAlign: 'left',
+                display: 'grid', gridTemplateColumns: '88px 1fr', gap: '9px', alignItems: 'baseline',
+              }"
+              @click="c.bot && emit('select', c.who)"
+            >
+              <span
+                :class="{ nm: c.bot }"
+                :style="{
+                  fontSize: '13.5px', color: c.bot ? (CLASS_COLOR[c.cls] ?? V.textHi) : V.dim,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }"
+              >{{ c.who }}</span>
+              <span :style="{ fontSize: '13.5px', color: V.textMid, lineHeight: 1.4 }">{{ c.text }}</span>
+            </button>
+            <p
+              v-if="chatter.length"
+              :style="{ margin: '8px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.45 }"
+            >Dim speakers are humans; coloured names are bots you can click.</p>
           </div>
-          <div :style="{ display: 'flex', flexWrap: 'wrap', gap: '10px 16px' }">
-            <span v-for="a in llm?.archetypes ?? []" :key="a.key" :style="{ display: 'flex', alignItems: 'center', gap: '6px' }">
-              <span :style="{ width: '7px', height: '7px', background: ARCH_COLOR[a.key] ?? T.dim, flex: 'none' }" />
-              <span :style="{ fontSize: '13px', color: T.body }">{{ a.label }}</span>
-              <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: T.faint }">{{ a.pct }}%</span>
-            </span>
+        </section>
+
+        <section :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Cognitive archetypes</span>
+            <span :style="NOTE">seeded from guid</span>
+          </header>
+          <div :style="BODY">
+            <div :style="{ display: 'flex', height: '10px', gap: '1px', marginBottom: '9px' }">
+              <span
+                v-for="a in llm?.archetypes ?? []"
+                :key="a.key"
+                :style="{ width: `${a.pct}%`, background: ARCH_COLOR[a.key] ?? V.dim }"
+                :title="`${a.label} ${a.pct}%`"
+              />
+            </div>
+            <div :style="{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }">
+              <span v-for="a in llm?.archetypes ?? []" :key="a.key" :style="{ display: 'flex', alignItems: 'center', gap: '6px' }">
+                <span :style="{ width: '7px', height: '7px', background: ARCH_COLOR[a.key] ?? V.dim, flex: 'none' }" />
+                <span :style="{ fontSize: '13px', color: V.body }">{{ a.label }}</span>
+                <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: V.faint }">{{ a.pct }}%</span>
+              </span>
+            </div>
+            <p :style="{ margin: '9px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.45 }">
+              Derived from each character's guid, so a bot keeps its temperament across restarts.
+            </p>
           </div>
-          <p :style="{ margin: '9px 0 0', fontSize: '11.5px', color: T.faint, lineHeight: 1.4 }">
-            Derived from each character's guid, so a bot keeps its temperament across restarts.
-          </p>
-        </UiPanel>
+        </section>
+      </div>
+
+      <div :style="{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }">
+        <section v-if="mortality.length" :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Mortality</span>
+            <span :style="NOTE">deaths vs revives, 24h · peak {{ fmt.int(mortPeak) }}</span>
+          </header>
+          <div :style="BODY">
+            <!-- Revives paint behind deaths at half strength: one shared scale, so a bar
+                 taller than its shadow means the hour cost more than it gave back. -->
+            <div :style="{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '48px' }">
+              <span
+                v-for="m in mortality"
+                :key="m.hour"
+                :title="`${m.hour} — ${m.deaths} deaths, ${m.revives} revives`"
+                :style="{ flex: 1, position: 'relative', height: '100%', display: 'flex', alignItems: 'flex-end' }"
+              >
+                <span :style="{ position: 'absolute', left: 0, right: 0, bottom: 0, height: `${Math.round((m.revives / mortPeak) * 100)}%`, background: REVIVE, opacity: .5 }" />
+                <span :style="{ position: 'relative', width: '100%', height: `${Math.round((m.deaths / mortPeak) * 100)}%`, background: DEATH }" />
+              </span>
+            </div>
+            <div :style="{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '6px' }">
+              <span :style="{ display: 'flex', alignItems: 'center', gap: '5px' }">
+                <span :style="{ width: '7px', height: '7px', background: DEATH }" />
+                <span :style="{ fontSize: '12px', color: V.muted }">deaths</span>
+              </span>
+              <span :style="{ display: 'flex', alignItems: 'center', gap: '5px' }">
+                <span :style="{ width: '7px', height: '7px', background: REVIVE, opacity: .5 }" />
+                <span :style="{ fontSize: '12px', color: V.muted }">revives</span>
+              </span>
+              <span :style="{ marginLeft: 'auto', fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">the only recorded evidence of combat</span>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="whoDies.length" :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Who dies</span>
+            <span :style="NOTE">{{ diesNote }}</span>
+          </header>
+          <div :style="BODY">
+            <div
+              v-for="d in whoDies"
+              :key="d.name"
+              :style="{ display: 'grid', gridTemplateColumns: '96px 1fr auto auto', gap: '9px', alignItems: 'center', padding: '3px 0' }"
+            >
+              <span :style="{ fontSize: '13px', color: d.color }">{{ d.name }}</span>
+              <span :style="TRACK">
+                <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: pct(d.deaths, diesMax), background: d.color }" />
+              </span>
+              <span :style="VAL">{{ fmt.int(d.deaths) }}</span>
+              <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, minWidth: '56px', textAlign: 'right' }">{{ d.note }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="lootMix.length" :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Loot mix</span>
+            <span :style="NOTE">6h, uncommon and above</span>
+          </header>
+          <div :style="BODY">
+            <div
+              v-for="l in lootMix"
+              :key="l.name"
+              :style="{ display: 'grid', gridTemplateColumns: '80px 1fr auto', gap: '9px', alignItems: 'center', padding: '3px 0' }"
+            >
+              <span :style="{ fontSize: '13px', color: l.color }">{{ l.name }}</span>
+              <span :style="TRACK">
+                <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: pct(l.value, lootMax), background: l.color }" />
+              </span>
+              <span :style="VAL">{{ fmt.int(l.value) }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="balance.length" :style="PANEL">
+          <header :style="HEAD">
+            <span :style="CAP">Faction and race</span>
+            <span :style="NOTE">online</span>
+          </header>
+          <div :style="BODY">
+            <div
+              v-for="b in balance"
+              :key="b.name"
+              :style="{ display: 'grid', gridTemplateColumns: '80px 1fr auto auto', gap: '9px', alignItems: 'center', padding: '3px 0' }"
+            >
+              <span :style="{ fontSize: '13px', color: V.body }">{{ b.name }}</span>
+              <span :style="TRACK">
+                <span :style="{ position: 'absolute', inset: '0 auto 0 0', width: pct(b.value, balanceMax), background: b.color }" />
+              </span>
+              <span :style="VAL">{{ fmt.int(b.value) }}</span>
+              <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint, minWidth: '42px', textAlign: 'right' }">{{ b.note }}</span>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.nm:hover { text-decoration: underline; }
+</style>

@@ -4,9 +4,12 @@ import { q } from '../utils/db'
 // in-server NeedsLedger's per-minute export; gold and destruction history append
 // server-side so restarts do not erase the baselines.
 
+// priced counts rows the ledger has costed; funded/priced is the honest ratio -
+// unpriced rows (amount=0, e.g. most gear/materials) can never fund.
 const NEEDS_SUMMARY = `
   SELECT need_type, COUNT(*) AS n,
          SUM(amount > 0 AND free_money >= amount) AS funded,
+         SUM(amount > 0) AS priced,
          SUM(amount) AS total
   FROM acore_characters.aetherion_needs
   WHERE need_type != 'persona'
@@ -16,7 +19,7 @@ const NEEDS_SUMMARY = `
 // The operator story: watch a need arise, then watch whether it gets satisfied.
 // Longest-starved first - these are the bots the economy exists to serve.
 const STARVED = `
-  SELECT n.guid, c.name, c.level, n.need_type, n.target, n.amount, n.free_money, n.since_ts
+  SELECT n.guid, c.name, c.level, c.class, n.need_type, n.target, n.amount, n.free_money, n.since_ts
   FROM acore_characters.aetherion_needs n
   JOIN acore_characters.characters c ON c.guid = n.guid
   WHERE n.amount > n.free_money AND n.amount > 0
@@ -82,7 +85,7 @@ const AH_FLOW = `
   SELECT kind, COUNT(*) AS n, SUM(count) AS items,
          SUM(CAST(NULLIF(detail,'') AS SIGNED)) AS copper
   FROM acore_characters.aetherion_econ_events
-  WHERE kind IN ('ah_post','ah_listed','ah_sold','ah_bought','ah_expired','mail_money','mail_item','craft','bank_deposit','bank_withdraw','mail_collect','gather_route')
+  WHERE kind IN ('ah_post','ah_listed','ah_sold','ah_bought','ah_expired','mail_money','mail_item','craft','bank_deposit','bank_withdraw','mail_collect','gather_route','vendor_sell','repair_paid')
     AND ts > UNIX_TIMESTAMP() - 86400
   GROUP BY kind
 `
@@ -96,6 +99,19 @@ const AH_LISTINGS = `
   ORDER BY ah.id DESC LIMIT 10
 `
 
+const WALLETS = `
+  SELECT COUNT(*) AS wallets, SUM(money) AS total
+  FROM acore_characters.aetherion_gold_now
+`
+
+// MySQL has no MEDIAN(); averaging the two middle ranks covers odd and even counts.
+const WALLET_MEDIAN = `
+  SELECT AVG(money) AS med FROM (
+    SELECT money, ROW_NUMBER() OVER (ORDER BY money) AS rn, COUNT(*) OVER () AS cnt
+    FROM acore_characters.aetherion_gold_now
+  ) x WHERE rn IN (FLOOR((cnt+1)/2), FLOOR((cnt+2)/2))
+`
+
 const AH_TOP = `
   SELECT e.kind, c.name, SUM(CAST(NULLIF(e.detail,'') AS SIGNED)) AS copper, COUNT(*) AS n
   FROM acore_characters.aetherion_econ_events e
@@ -107,11 +123,11 @@ const AH_TOP = `
 
 export default defineEventHandler(async () => {
   const [needs, starved, bands, history, incomePts, sellers, events, destroyed, market,
-         ahFlow, ahListings, ahTop] = await Promise.all([
+         ahFlow, ahListings, ahTop, wallets, walletMedian] = await Promise.all([
     q(NEEDS_SUMMARY), q(STARVED), q(GOLD_BANDS), q(GOLD_HISTORY),
     q(INCOME_POINTS), q(TOP_SELLERS),
     q(EVENTS_24H), q(RECENT_DESTROYED), q(MARKET),
-    q(AH_FLOW), q(AH_LISTINGS), q(AH_TOP),
+    q(AH_FLOW), q(AH_LISTINGS), q(AH_TOP), q(WALLETS), q(WALLET_MEDIAN),
   ])
 
   // Rate baseline: newest sample at least an hour old, so one late snapshot
@@ -135,14 +151,20 @@ export default defineEventHandler(async () => {
     armed: needs.length > 0 || bands.length > 0,
     needs: needs.map(r => ({
       type: r.need_type, n: Number(r.n), funded: Number(r.funded ?? 0),
-      total: Number(r.total ?? 0),
+      priced: Number(r.priced ?? 0), total: Number(r.total ?? 0),
     })),
     starved: starved.map(r => ({
-      guid: r.guid, name: r.name, level: Number(r.level),
+      guid: r.guid, name: r.name, level: Number(r.level), cls: Number(r.class),
       type: r.need_type, target: r.target,
       amount: Number(r.amount), free: Number(r.free_money),
       since: Number(r.since_ts) * 1000,
     })),
+    wallet: wallets[0]
+      ? {
+          wallets: Number(wallets[0].wallets), total: Number(wallets[0].total ?? 0),
+          median: Number(walletMedian[0]?.med ?? 0),
+        }
+      : null,
     goldBands: bands.map(r => ({ band: Number(r.band), n: Number(r.n), total: Number(r.total) })),
     goldHistory: history.map(r => ({ ts: Number(r.ts) * 1000, total: Number(r.total) })),
     income: {

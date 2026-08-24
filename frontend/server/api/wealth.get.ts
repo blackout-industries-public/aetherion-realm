@@ -33,14 +33,14 @@ const SUPPLY_POINTS = `
 // vendor_sell, the amount taken from a mailbox on mail_money - verified
 // against the NeedsLedger LogEvent call sites.
 const EARNERS = `
-  SELECT e.guid, c.name, c.level,
+  SELECT e.guid, c.name, c.level, c.class,
          SUM(CAST(NULLIF(e.detail,'') AS SIGNED)) AS earned,
          SUM(e.kind = 'vendor_sell') AS sells,
          SUM(e.kind = 'mail_money') AS collects
   FROM acore_characters.aetherion_econ_events e
   JOIN acore_characters.characters c ON c.guid = e.guid
   WHERE e.kind IN ('vendor_sell','mail_money') AND e.ts > UNIX_TIMESTAMP() - 86400
-  GROUP BY e.guid, c.name, c.level
+  GROUP BY e.guid, c.name, c.level, c.class
   ORDER BY earned DESC LIMIT 8
 `
 
@@ -79,8 +79,8 @@ export default defineEventHandler(async () => {
     },
     earners: earners.map(r => ({
       guid: Number(r.guid), name: r.name, level: Number(r.level),
-      earned: Number(r.earned ?? 0), sells: Number(r.sells ?? 0),
-      collects: Number(r.collects ?? 0),
+      cls: Number(r.class), earned: Number(r.earned ?? 0),
+      sells: Number(r.sells ?? 0), collects: Number(r.collects ?? 0),
     })),
     flows: {
       vendor: flowMap['vendor_sell'] ?? { n: 0, copper: 0 },

@@ -73,6 +73,38 @@ const ACTIVITY = `
   GROUP BY m.group_id, e.kind
 `
 
+// Best drop per inside party, straight from the recorder: detail is
+// "looted <name> (<rarity>)", so no item_template join is needed. The window is the
+// party's own dwell time, same clock as ACTIVITY above.
+const LOOT_RECENT = `
+  SELECT m.group_id, e.detail, e.ts
+  FROM acore_characters.aetherion_party_trips t
+  JOIN acore_characters.aetherion_party_members m ON m.group_id = t.group_id
+  JOIN aetherion_ai.bot_events e
+    ON e.guid = m.guid AND e.kind = 'loot'
+   AND e.ts > UNIX_TIMESTAMP() - (t.ticks * ?)
+  WHERE t.phase = 'inside'
+  ORDER BY e.ts DESC
+  LIMIT 400
+`
+
+// Realm-lifetime boss board: encounters ever downed per map, out of the seeded
+// dungeonencounter_dbc total. BIT_OR across every instance save is "ever", which is
+// what a lifetime board should read.
+const BOSS_BOARD = `
+  SELECT i.map, i.difficulty,
+         COALESCE(MIN(d.name), CONCAT('Map ', i.map)) AS dungeon,
+         BIT_COUNT(BIT_OR(i.completedEncounters)) AS downed,
+         enc.total AS total
+  FROM acore_characters.instance i
+  JOIN (SELECT MapID, Difficulty, COUNT(*) AS total
+        FROM acore_world.dungeonencounter_dbc GROUP BY MapID, Difficulty) enc
+    ON enc.MapID = i.map AND enc.Difficulty = i.difficulty
+  LEFT JOIN (SELECT map_id, MIN(comment) AS name
+             FROM acore_world.dungeon_access_template GROUP BY map_id) d ON d.map_id = i.map
+  GROUP BY i.map, i.difficulty, enc.total
+`
+
 // Clear rate per dungeon. Only maps with a few runs behind them, so one lucky party
 // does not read as a 100% clear rate.
 const CLEAR_RATE = `
@@ -189,7 +221,7 @@ export default defineEventHandler(async () => {
 
   const [statRows, tripRows, groupRows, memberRows, progressRows, activityRows,
          encounterRows, clearRows, demandRows, clockRows, shapeRows,
-         raidStateRows, raidEntryRows] = await Promise.all([
+         raidStateRows, raidEntryRows, lootRows, boardRows] = await Promise.all([
     q(STATS),
     q(TRIPS),
     q(GROUP_COUNT),
@@ -203,6 +235,8 @@ export default defineEventHandler(async () => {
     q(SHAPES),
     q(RAID_STATE),
     q(RAID_ENTRIES),
+    q(LOOT_RECENT, tickSeconds),
+    q(BOSS_BOARD),
   ])
   const stats = statRows[0]
   const trips = tripRows
@@ -238,6 +272,23 @@ export default defineEventHandler(async () => {
     acted.set(r.group_id, e)
   }
 
+  // The one drop worth naming on a card: highest rarity, latest on a tie (rows arrive
+  // newest first, so the first hit at a given rank wins).
+  const RARITY_RANK: Record<string, number> = {
+    poor: 0, common: 1, uncommon: 2, rare: 3, epic: 4, legendary: 5,
+  }
+  const bestLoot = new Map<number, { name: string; rarity: string }>()
+  const lootRank = new Map<number, number>()
+  for (const r of (lootRows ?? []) as any[]) {
+    const m = /^looted (.+) \((\w+)\)$/.exec(String(r.detail))
+    if (!m) continue
+    const rank = RARITY_RANK[m[2]!] ?? 1
+    if (rank > (lootRank.get(r.group_id) ?? -1)) {
+      lootRank.set(r.group_id, rank)
+      bestLoot.set(r.group_id, { name: m[1]!, rarity: m[2]! })
+    }
+  }
+
   const footRange = confNum(conf, 'AiPlayerbot.Party.FootRange', 1200)
   const maxParties = confNum(conf, 'AiPlayerbot.Party.MaxParties', 80)
 
@@ -266,6 +317,9 @@ export default defineEventHandler(async () => {
       members: byGroup.get(t.group_id) ?? [],
       // ticks resets to zero on zone-in, so for an inside group it is dwell time.
       dwellMins: t.phase === 'inside' ? Math.round((t.ticks * tickSeconds) / 60) : null,
+      // For a party still out of doors, ticks measure the whole trip so far.
+      tripMins: t.phase === 'inside' ? null : Math.round((t.ticks * tickSeconds) / 60),
+      loot: bestLoot.get(t.group_id) ?? null,
       bosses: bosses.get(t.group_id) ?? 0,
       encounters: encounters.get(t.group_id) ?? [],
       deaths: acted.get(t.group_id)?.death ?? 0,
@@ -365,6 +419,21 @@ export default defineEventHandler(async () => {
         entries: Number(r.entries), bots: Number(r.bots),
       })),
     },
+    bossBoard: (() => {
+      // Difficulty variants of one raid share a cleaned name; keep the deeper record so
+      // the board holds one honest row per place.
+      const byName = new Map<string, { name: string; downed: number; total: number; raid: boolean }>()
+      for (const r of (boardRows ?? []) as any[]) {
+        const name = String(r.dungeon).replace(/\s*-\s*\d+\s*man.*$/i, '').split(',').pop()!.trim()
+        const row = { name, downed: Number(r.downed), total: Number(r.total), raid: RAID_MAPS.includes(Number(r.map)) }
+        const prev = byName.get(name)
+        if (!prev || row.downed > prev.downed || (row.downed === prev.downed && row.total > prev.total)) {
+          byName.set(name, row)
+        }
+      }
+      return [...byName.values()].sort((a, b) =>
+        Number(a.raid) - Number(b.raid) || b.downed - a.downed || a.name.localeCompare(b.name))
+    })(),
     activeParties: active,
     maxParties,
     totalGroups: Number(groups?.n ?? 0),
