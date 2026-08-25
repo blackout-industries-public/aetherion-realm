@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protect assembler-owned groups from upstream teardown, and optionally drive them.
+"""Protect parties on a live run from upstream teardown, and optionally drive them.
 
 Two verified defects:
 1. LeaveOrDisbandGroup in ProcessBot(Player*) is reachable for grouped bots through
@@ -11,13 +11,21 @@ Two verified defects:
 
 The guard runs the revive cycle then stops before the destructive limbs (disband,
 Randomize re-gear, Refresh - which ungroups - and RandomTeleportForLevel).
+
+The gate at (2) tests Owns and the guard at (1) tests OnRun, deliberately. Owns is
+"the assembler built this group" and stays true while the group exists; OnRun is "a
+journey is underway" and expires with the trip's tick budget. So a party that has
+stopped progressing still passes the gate and then gets the full maintenance cycle,
+which is the only thing that ever reclaims its members - while a party mid-journey
+is left alone. patch_botrevive (2d2) makes the revive cycle itself non-destructive
+for the same live-run window.
 """
 import sys
 
 path = sys.argv[1]
 src = open(path).read()
 
-if "PartyAssembler::Owns" in src:
+if "PartyAssembler::DriveGroupedBots" in src:
     print("processbot patch already applied")
     sys.exit(0)
 
@@ -41,13 +49,18 @@ src = src.replace(GATE, GATE_NEW, 1)
 
 GUARD_ANCHOR = """    // leave group if leader is rndbot
     Group* group = bot->GetGroup();"""
-GUARD_NEW = """    // An assembler-owned party must not be dismantled mid-run: everything below is
+GUARD_NEW = """    // A party on a live run must not be dismantled mid-journey: everything below is
     // written for solo bots (disband, Randomize re-gear, Refresh - which ungroups -
-    // and a random teleport). The revive cycle above is all an owned member needs.
-    // This also closes the sticky-flag path through RandomBotUpdateAction that was
-    // disbanding owned parties roughly once per member per 17 hours.
+    // and a random teleport). This also closes the sticky-flag path through
+    // RandomBotUpdateAction that was disbanding parties roughly once per member per
+    // 17 hours. OnRun rather than Owns: an assembled group whose journey ended
+    // without a disband - a door timeout, a lost leader, a party the trip check
+    // refused - keeps its ownership entry for as long as the group exists, and
+    // shielding those would freeze their members out of the maintenance cycle for
+    // the rest of the uptime. A trip is bounded by its own tick budget, so the
+    // shield lifts by itself the moment a party stops progressing.
     if (Group* ownedGroup = bot->GetGroup())
-        if (PartyAssembler::Owns(ownedGroup->GetGUID().GetCounter()))
+        if (PartyAssembler::OnRun(ownedGroup->GetGUID().GetCounter()))
             return false;
 
     // leave group if leader is rndbot

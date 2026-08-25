@@ -13,12 +13,15 @@
 #define AETHERION_NEEDSLEDGER_H
 
 #include "Define.h"
+#include "ObjectGuid.h"
 
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+class Item;
 class Player;
 
 class NeedsLedger
@@ -69,6 +72,35 @@ public:
     // reagents back OUT of the Materials tab. Map-thread safe.
     static bool FindVaultReagent(uint32 guildId, uint32 itemEntry, uint8& tab, uint8& slot);
 
+    // E9: who gets an item when a bot empties its bags, decided item by item rather
+    // than errand by errand. Selling and banking were rival claims on the whole BOT,
+    // and selling was asked first, so the deepest bags on the realm listed four
+    // things per visit and never once fell far enough to reach the bank branch -
+    // which is how hundreds of bots could hold a bank errand while the vaults stayed
+    // empty. Two rules, in the operator's order: the bot's own solvency comes first,
+    // because a bot that cannot pay its repair bill has no business donating; after
+    // that the guild's stock decides, because a vault already deep in copper ore does
+    // not want a fifteenth stack and a vault short of it does.
+    //
+    // Fills 'bank' with the items that belong in the vault. Everything absent from it
+    // is the auction house's, exactly as before - including every item of an
+    // unguilded bot, whose behaviour this does not touch. Map-thread safe.
+    static void PlanDisposal(Player* bot, std::unordered_set<ObjectGuid>& bank);
+
+    // Copper this bot still cannot cover across every need it is short on. Mirrored
+    // for map threads beside the errand verdicts, from the same needs pass.
+    static uint64 Shortfall(uint32 guid);
+
+    // How deep the vault has to be in something before the next stack is better sold
+    // than stored, in stacks of that item - a stack of ore and a stack of gems are
+    // not the same number of items, so the threshold cannot be a raw count.
+    static uint32 VaultPlentyStacks();
+
+    // How much of one item the vault holds, summed across its slots. The stock
+    // question is "does the guild have plenty of this", which a slot list alone
+    // cannot answer. Map-thread safe.
+    static uint32 VaultStock(uint32 guildId, uint32 itemEntry);
+
     // E5.2: the mailbox errand's target - a real mailbox GameObject chosen on
     // the world thread. Near case hands back the spawn identity so the trip can
     // target the exact object; far case only needs the walk position.
@@ -111,6 +143,7 @@ private:
         uint8 tab;
         uint8 slot;
         uint32 entry;
+        uint32 count;
     };
     std::unordered_map<uint32, std::vector<VaultSlot>> _vault;   // guildid -> slots
     std::mutex _vaultMutex;

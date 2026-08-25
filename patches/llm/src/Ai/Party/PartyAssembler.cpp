@@ -42,6 +42,12 @@ namespace
     std::mutex sOwnedMx;
     std::unordered_set<uint32> sOwnedMirror;
     std::unordered_set<uint32> sDrivenGuids;
+    // Group low guid -> the history row this party is running for. Mirrored beside
+    // ownership so a map thread can attribute a removal to a run without a group
+    // lookup, and without the group id alone having to mean anything. Membership of
+    // this map is also what OnRun answers: a group is on a run exactly while it has a
+    // live trip, and every trip is bounded by its own tick budget.
+    std::unordered_map<uint32, uint32> sRunIdMirror;
     bool sDriveGrouped = false;
 
     // Defined further down among the telemetry helpers; declared here because trip
@@ -103,6 +109,12 @@ bool PartyAssembler::Owns(uint32 groupLowGuid)
     return sOwnedMirror.find(groupLowGuid) != sOwnedMirror.end();
 }
 
+bool PartyAssembler::OnRun(uint32 groupLowGuid)
+{
+    std::lock_guard<std::mutex> lock(sOwnedMx);
+    return sRunIdMirror.find(groupLowGuid) != sRunIdMirror.end();
+}
+
 bool PartyAssembler::DriveGroupedBots()
 {
     return sDriveGrouped;
@@ -158,10 +170,41 @@ void PartyAssembler::SyncOwnedMirror()
         }
     }
 
+    // Every live trip, not only the ones that got a history row: the run id is the
+    // payload, but presence is the answer OnRun gives, and a trip whose ledger write
+    // failed is still a party mid-journey.
+    std::unordered_map<uint32, uint32> runIds;
+    for (auto const& entry : _trips)
+        runIds.emplace(entry.first, entry.second.runId);
+
     std::lock_guard<std::mutex> lock(sOwnedMx);
     sOwnedMirror.clear();
     sOwnedMirror.insert(_assembled.begin(), _assembled.end());
     sDrivenGuids = std::move(driven);
+    sRunIdMirror = std::move(runIds);
+}
+
+void PartyAssembler::NoteRemoval(Player const* bot, char const* site, bool suppressed)
+{
+    Group const* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return;
+
+    uint32 const grp = group->GetGUID().GetCounter();
+    uint32 runId = 0;
+    {
+        std::lock_guard<std::mutex> lock(sOwnedMx);
+        if (sOwnedMirror.find(grp) == sOwnedMirror.end())
+            return;
+        if (auto const it = sRunIdMirror.find(grp); it != sRunIdMirror.end())
+            runId = it->second;
+    }
+
+    CharacterDatabase.Execute(
+        "INSERT INTO aetherion_member_loss (at, run_id, group_id, guid, name, site,"
+        " suppressed, map) VALUES (UNIX_TIMESTAMP(), {}, {}, {}, '{}', '{}', {}, {})",
+        runId, grp, bot->GetGUID().GetCounter(), Sql(bot->GetName()), Sql(site),
+        suppressed ? 1 : 0, bot->GetMapId());
 }
 
 PartyAssembler* PartyAssembler::instance()
@@ -662,6 +705,98 @@ bool PartyAssembler::EnterInstance(Group* group, Trip const& trip)
     return moved > 0;
 }
 
+void PartyAssembler::RecoverInside(Group* group, Player* leader, Trip& trip)
+{
+    std::unordered_set<uint32> now;
+    uint32 alive = 0, present = 0, fighting = 0;
+    for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+        if (Player* m = mi->GetSource())
+        {
+            now.insert(m->GetGUID().GetCounter());
+            if (!m->IsInWorld())
+                continue;
+            ++present;
+            if (m->IsAlive())
+                ++alive;
+            if (m->IsInCombat())
+                ++fighting;
+        }
+
+    // Anyone who was here last tick and is not here now. Recorded against this run's
+    // own id, which is the only identifier that survives group ids being reused.
+    // The roster only ever holds online members, so a member still in the group has
+    // logged out rather than left - a different departure worth telling apart.
+    for (uint32 const gone : trip.roster)
+        if (now.find(gone) == now.end())
+        {
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(gone);
+            Player* who = ObjectAccessor::FindConnectedPlayer(guid);
+            CharacterDatabase.Execute(
+                "INSERT INTO aetherion_member_loss (at, run_id, group_id, guid, name,"
+                " site, suppressed, map) VALUES (UNIX_TIMESTAMP(), {}, {}, {}, '{}',"
+                " '{}', 0, {})",
+                trip.runId, group->GetGUID().GetCounter(), gone,
+                who ? Sql(who->GetName()) : std::string("?"),
+                group->IsMember(guid) ? "roster_offline" : "roster_left",
+                who ? who->GetMapId() : 0);
+        }
+    trip.roster = std::move(now);
+
+    // Members that ended up off the dungeon map. Nothing else brings them back: the
+    // follow strategy cannot cross a map boundary, so a member teleported out - by a
+    // graveyard release, or by anything else that moves a bot for its own reasons -
+    // was simply gone for the rest of the run while still counting as a member.
+    auto const inside = _insides.find(trip.dungeonMap);
+    if (inside != _insides.end() && leader->GetMapId() == trip.dungeonMap)
+    {
+        uint32 recalled = 0;
+        for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+        {
+            Player* m = mi->GetSource();
+            if (!m || m == leader || !m->IsInWorld() || m->IsBeingTeleported())
+                continue;
+            if (m->GetMapId() == trip.dungeonMap)
+                continue;
+            m->TeleportTo(trip.dungeonMap, inside->second.x, inside->second.y,
+                          inside->second.z, 0.0f);
+            ++recalled;
+        }
+        if (recalled)
+            LOG_INFO("playerbots", "Party assembler: {} rejoin the party in {}",
+                     recalled, trip.name);
+    }
+
+    // A death that is not a wipe was nobody's job. The wipe watch only fires when the
+    // whole party is down, so a member killed by trash stayed a corpse for the rest of
+    // the run - and the random-bot manager's own revive cycle, which ungroups and
+    // teleports away, is what eventually collected them. Left to the wipe watch when
+    // nobody is standing: that path counts the wipe and reseats them at the door.
+    if (!alive || alive == present || fighting)
+        return;
+
+    uint32 raised = 0;
+    for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+    {
+        Player* m = mi->GetSource();
+        if (!m || !m->IsInWorld() || m->IsAlive())
+            continue;
+        m->ResurrectPlayer(0.5f);
+        m->SpawnCorpseBones();
+        if (PlayerbotAI* mAI = GET_PLAYERBOT_AI(m))
+        {
+            mAI->ResetStrategies(false);
+            // ResetStrategies restores the free-bot defaults, which is exactly the
+            // moment a revived member queues for a battleground and walks out.
+            mAI->ChangeStrategy(m == leader ? "-lfg,-bg" : "+follow,-lfg,-bg",
+                                BOT_STATE_NON_COMBAT);
+        }
+        ++raised;
+    }
+    if (raised)
+        LOG_INFO("playerbots", "Party assembler: {} back on their feet in {}",
+                 raised, trip.name);
+}
+
 uint32 PartyAssembler::SendGroupOutside(Group* group, uint32 dungeonMap)
 {
     auto const door = _entrances.find(dungeonMap);
@@ -898,6 +1033,11 @@ void PartyAssembler::AdvanceTrips()
                 if (m != leader && !mAI->HasStrategy("follow", BOT_STATE_NON_COMBAT))
                     mAI->ChangeStrategy("+follow", BOT_STATE_NON_COMBAT);
             }
+
+            // Deaths that are not wipes, and members that ended up somewhere else.
+            // Ordered before the wipe watch so its "nobody is alive" test sees the
+            // party this tick actually left the run with.
+            RecoverInside(group, leader, trip);
 
             // Wipe watch. A raid that has fully fallen does what a determined
             // guild does: steadies itself and pulls again - resurrected at the
@@ -1671,6 +1811,22 @@ void PartyAssembler::EnsureTelemetryTables()
         " level TINYINT UNSIGNED NOT NULL, role VARCHAR(8) NOT NULL,"
         " PRIMARY KEY (run_id, guid)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Diagnostic. Party attrition was being chased by matching departed bots against
+    // stored rosters, which cannot work: group ids are reused across restarts, so a
+    // removal matches a stale underway row as readily as the live one. This says who
+    // left which run, from which call site, at the moment it happened.
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS aetherion_member_loss ("
+        " id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        " at INT UNSIGNED NOT NULL, run_id INT UNSIGNED NOT NULL,"
+        " group_id INT UNSIGNED NOT NULL, guid INT UNSIGNED NOT NULL,"
+        " name VARCHAR(24) NOT NULL, site VARCHAR(24) NOT NULL,"
+        " suppressed TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+        " map INT UNSIGNED NOT NULL DEFAULT 0, KEY at (at), KEY run_id (run_id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    CharacterDatabase.Execute(
+        "DELETE FROM aetherion_member_loss WHERE at < UNIX_TIMESTAMP() - 3*86400");
 
     // Two weeks of history is the analysis window; members prune with runs.
     CharacterDatabase.Execute(

@@ -175,13 +175,31 @@ void BankDepositAction::CollectDepositItems(std::vector<Item*>& out, uint32 limi
     std::unordered_set<uint32> ownReagents;
     CollectOwnReagents(bot, ownReagents);
 
+    // E9: for a guilded bot the disposal split has already decided which items are
+    // the vault's, weighing the bot's own solvency first and then what the vault is
+    // actually short of. Honouring it here is what stops a bot walking to a banker
+    // and depositing the fifteenth stack of copper ore the guild did not need. An
+    // unguilded bot gets an empty plan and the original trade-goods rule below,
+    // which is exactly the behaviour it has today.
+    std::unordered_set<ObjectGuid> planned;
+    NeedsLedger::PlanDisposal(bot, planned);
+    bool const guilded = bot->GetGuildId() != 0 && !planned.empty();
+
+    auto const wanted = [&](Item* item)
+    {
+        if (!item)
+            return false;
+        return guilded ? planned.count(item->GetGUID()) != 0
+                       : Depositable(item, ownReagents);
+    };
+
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
     {
         if (out.size() >= limit)
             return;
 
         Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (item && Depositable(item, ownReagents))
+        if (wanted(item))
             out.push_back(item);
     }
 
@@ -197,7 +215,7 @@ void BankDepositAction::CollectDepositItems(std::vector<Item*>& out, uint32 limi
                 return;
 
             Item* item = bag->GetItemByPos(slot);
-            if (item && Depositable(item, ownReagents))
+            if (wanted(item))
                 out.push_back(item);
         }
     }
@@ -370,9 +388,18 @@ bool BankDepositAction::Execute(Event /*event*/)
     for (auto const& [item, tab] : guildMats)
     {
         // Logged before the swap: the Item* is the bot's bag-side object and
-        // does not survive the move.
-        NeedsLedger::LogEvent("guild_bank_deposit", bot->GetGUID().GetCounter(),
-                              item->GetEntry(), item->GetCount(), std::to_string(tab));
+        // does not survive the move. The detail carries why this item went to the
+        // vault rather than the auction house - what the guild already held against
+        // what counts as plenty - so the dashboard can show the reasoning and not
+        // only the outcome.
+        NeedsLedger::LogEvent(
+            "guild_bank_deposit", bot->GetGUID().GetCounter(), item->GetEntry(),
+            item->GetCount(),
+            "tab " + std::to_string(tab) + " short: held " +
+                std::to_string(NeedsLedger::VaultStock(bot->GetGuildId(), item->GetEntry())) +
+                " of " +
+                std::to_string(std::max<uint32>(1, item->GetTemplate()->GetMaxStackSize()) *
+                               NeedsLedger::VaultPlentyStacks()));
         // 255 = NULL_SLOT: the vault picks the slot, exactly as the module's
         // guild bank action does. A guild without that tab is a silent no-op.
         guild->SwapItemsWithInventory(bot, false, tab, 255,

@@ -50,12 +50,30 @@ public:
     // threads, so ownership is answered from a mutex-guarded mirror of _assembled
     // rather than the world-thread set itself.
     static bool Owns(uint32 groupLowGuid);
+
+    // Narrower than Owns, and the right test for anything destructive. Owns stays
+    // true for as long as the group exists, including for a party whose journey
+    // ended without it being disbanded - a door timeout, a lost leader, a refused
+    // entry. Shielding those from the maintenance cycle would freeze their members
+    // out of it for the rest of the uptime, which is how a stalled party stops being
+    // part of the living population. OnRun is true only while a journey is actually
+    // underway, and every journey is bounded by its own tick budget, so the shield
+    // expires on its own the moment a party stops progressing.
+    static bool OnRun(uint32 groupLowGuid);
     static bool DriveGroupedBots();
 
     // True for characters the assembler is actively steering along a journey: the trip
     // leader while travelling, the whole party while being summoned. Read from
     // AllowActive on hot paths, hence a guid set rather than a group lookup.
     static bool IsDriven(uint32 charLowGuid);
+
+    // Diagnostic, callable from any thread. Records that some call site was about to
+    // take a member out of an owned party, naming the site and whether the guard
+    // stopped it. Stamped where the removal is attempted rather than reconstructed
+    // afterwards from a roster: group ids are reused across restarts, so matching a
+    // departed bot against a stored roster names the wrong run about as often as the
+    // right one. No-op for anyone outside an owned party.
+    static void NoteRemoval(Player const* bot, char const* site, bool suppressed);
 
 private:
     bool AssembleOne();
@@ -203,6 +221,10 @@ private:
         // A trip into content the realm has outgrown, chasing achievements and old
         // legendaries rather than progression.
         bool collector{false};
+        // Who was in the party at the end of the previous tick. Diffed against the
+        // live roster so a member that disappears is named at the moment it happens,
+        // against this run's own id rather than a group id that gets reused.
+        std::unordered_set<uint32> roster;
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
@@ -280,6 +302,13 @@ private:
 
     void AdvanceTrips();
     bool EnterInstance(Group* group, Trip const& trip);
+
+    // Everything a party inside an instance needs to still be a party next tick:
+    // dead members put back on their feet once the fight is over, members that ended
+    // up off the dungeon map brought back, and departures recorded. Partial deaths
+    // were nobody's job - only a full wipe was handled - so a member that died to
+    // trash simply stayed dead until the random-bot manager collected it.
+    void RecoverInside(Group* group, Player* leader, Trip& trip);
 
     // Violet Hold and Halls of Reflection hold their content behind a conversation
     // no bot ever has. Asks the instance for it directly instead; true when the ask

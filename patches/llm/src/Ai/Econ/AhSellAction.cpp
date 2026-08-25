@@ -99,13 +99,20 @@ void AhSellAction::CollectAhItems(std::vector<Item*>& out, uint32 limit)
     auto keepForCrafting = [&](Item* item)
     { return ownReagents.count(item->GetEntry()) != 0; };
 
+    // E9: the part of the bag the guild vault is short of is not this action's to
+    // sell. Empty for an unguilded bot and for anything the vault already has plenty
+    // of, so the ordinary listing behaviour is untouched.
+    std::unordered_set<ObjectGuid> forVault;
+    NeedsLedger::PlanDisposal(bot, forVault);
+
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
     {
         if (out.size() >= limit)
             return;
 
         Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item || !AhSellable(item) || keepForCrafting(item))
+        if (!item || !AhSellable(item) || keepForCrafting(item) ||
+            forVault.count(item->GetGUID()))
             continue;
 
         if (context->GetValue<ItemUsage>("item usage", item->GetEntry())->Get() == ITEM_USAGE_AH)
@@ -124,7 +131,8 @@ void AhSellAction::CollectAhItems(std::vector<Item*>& out, uint32 limit)
                 return;
 
             Item* item = bag->GetItemByPos(slot);
-            if (!item || !AhSellable(item))
+            if (!item || !AhSellable(item) || keepForCrafting(item) ||
+                forVault.count(item->GetGUID()))
                 continue;
 
             if (context->GetValue<ItemUsage>("item usage", item->GetEntry())->Get() == ITEM_USAGE_AH)

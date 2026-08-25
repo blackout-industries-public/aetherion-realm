@@ -19,8 +19,10 @@ CONF=conf/playerbots.conf.dist
 # AiFactory was missing from this list, so its patch matched a already-modified file
 # and failed the second time it ran. The Economy BRD (E0.3) extended the list to
 # every file the chain touches, making the whole apply deterministic; ownership map:
-#   NewRpgAction.cpp        -> patch_questturnin (2c), future needs-preemption
-#   RandomPlayerbotMgr.cpp  -> patch_processbot (2d), patch_eventlock (2f), patch_racemode (2g)
+#   NewRpgAction.cpp        -> patch_questturnin (2c), patch_econ_idle (2c2),
+#                              patch_errandaim (2c3)
+#   RandomPlayerbotMgr.cpp  -> patch_processbot (2d), patch_botrevive (2d2),
+#                              patch_eventlock (2f), patch_racemode (2g)
 #   PlayerbotFactory.cpp    -> patch_racemode (2g), patch_econ (2h)
 #   DestroyItemAction.cpp   -> patch_econ (2h)
 NEWRPG=src/Ai/World/Rpg/Action/NewRpgAction.cpp
@@ -372,8 +374,16 @@ python3 "$HERE/patch_questturnin.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgActi
 #      directly follow questturnin: it anchors on that patch's replacement text.
 python3 "$HERE/patch_econ_idle.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
 
+# 2c3. The far leg of an errand arrives aimed instead of drawing an NPC at random
+# (see patch_errandaim.py header). Runs after 2c2, which adds the NeedsLedger include.
+python3 "$HERE/patch_errandaim.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
+
 # 2d. Owned-group protection + optional revive drive (see patch_processbot.py header).
 python3 "$HERE/patch_processbot.py" "$MODULE/src/Bot/RandomPlayerbotMgr.cpp"
+
+# 2d2. The revive cycle 2d deliberately lets through was itself removing members from
+# live runs (see patch_botrevive.py header). Runs after 2d, which adds the include.
+python3 "$HERE/patch_botrevive.py" "$MODULE/src/Bot/RandomPlayerbotMgr.cpp"
 
 # 2e. Steered travellers bypass the activity throttle (see patch_tripactive.py header).
 python3 "$HERE/patch_tripactive.py" "$MODULE/src/Bot/PlayerbotAI.cpp"
@@ -526,6 +536,7 @@ AiPlayerbot.Econ.Guild.TitheFloorGold = 40
 AiPlayerbot.Econ.Guild.TithePct = 10
 AiPlayerbot.Econ.Bank.Enabled = 0
 AiPlayerbot.Econ.Bank.MaxPerVisit = 6
+AiPlayerbot.Econ.Guild.PlentyStacks = 3
 AiPlayerbot.Econ.Ah.MinItemsForTrip = 3
 AiPlayerbot.Econ.Ah.Enabled = 0
 AiPlayerbot.Econ.Ah.MaxPerVisit = 4

@@ -121,6 +121,11 @@ namespace
     std::mutex sVerdictMx;
     std::unordered_map<uint32, Verdict> sVerdictMirror;
     std::unordered_map<uint32, Verdict> sVerdictBuild;
+    // What each bot still cannot pay for, mirrored beside the verdicts and under the
+    // same lock: the disposal split runs on map threads and the needs themselves are
+    // world-thread state. Absent means solvent.
+    std::unordered_map<uint32, uint64> sShortfallMirror;
+    std::unordered_map<uint32, uint64> sShortfallBuild;
 
     // Vendor spawn positions per map, from static spawn data at startup. The
     // far leg's whole cost is one linear scan per broke bot per pass.
@@ -159,6 +164,11 @@ namespace
     // obeys, so turning banking on turns on both the trip and the arrival.
     bool sBankEnabled = false;
     uint32 sAhMinItemsForTrip = 3;
+    // How deep the vault must already be in something before the next stack is worth
+    // more sold than stored, counted in stacks of that item. Zero turns the per-item
+    // split off entirely and restores the old whole-bot rivalry between the two
+    // errands. See PlanDisposal.
+    uint32 sVaultPlentyStacks = 3;
 
     // E7 focus trips: spell-focus GameObjects (anvil, forge, cooking fire) per
     // map, keyed by their SpellFocusObject id.
@@ -353,7 +363,12 @@ namespace
     // E4.2 trip trigger: how much of the bags is worth an auction-house
     // journey. Trade goods a bot's own recipes consume stay home; greens and
     // better travel regardless.
-    uint32 CountListable(Player* bot)
+    // 'spokenFor' holds the items the disposal split has already promised to the
+    // guild vault. They are still perfectly sellable - that is the whole reason the
+    // two errands used to fight over them - so the auction branch has to be told
+    // which ones are no longer its business, or it counts them and captures the bot
+    // exactly as before.
+    uint32 CountListable(Player* bot, std::unordered_set<ObjectGuid> const* spokenFor = nullptr)
     {
         std::unordered_set<uint32> keep;
         std::vector<CraftOption> options;
@@ -371,6 +386,8 @@ namespace
         {
             if (!item || item->IsSoulBound())
                 return;
+            if (spokenFor && spokenFor->count(item->GetGUID()))
+                return;
             ItemTemplate const* proto = item->GetTemplate();
             if (!proto->SellPrice || proto->Quality < ITEM_QUALITY_NORMAL)
                 return;
@@ -385,6 +402,17 @@ namespace
                 for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
                     consider(bag->GetItemByPos(slot));
         return n;
+    }
+
+    // One plan, two answers, so the auction branch and the bank branch can never
+    // disagree about the same bag. Cheap: a bag walk plus a vault lookup per item,
+    // and no recipe enumeration.
+    void SplitBag(Player* bot, uint32& listable, uint32& forVault)
+    {
+        std::unordered_set<ObjectGuid> bank;
+        NeedsLedger::PlanDisposal(bot, bank);
+        forVault = uint32(bank.size());
+        listable = CountListable(bot, &bank);
     }
 
     bool HasCollectibleMail(Player* bot)
@@ -465,6 +493,8 @@ void NeedsLedger::LoadConfig()
     sAhEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Ah.Enabled", false);
     sBankEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Bank.Enabled", false);
     sAhMinItemsForTrip = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Ah.MinItemsForTrip", 3);
+    sVaultPlentyStacks =
+        sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Guild.PlentyStacks", 3);
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
     sVendorFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FarMaxYards", 3000);
@@ -713,17 +743,132 @@ void NeedsLedger::RefreshVaultCache()
 {
     std::unordered_map<uint32, std::vector<VaultSlot>> fresh;
     if (QueryResult result = CharacterDatabase.Query(
-            "SELECT gbi.guildid, gbi.TabId, gbi.SlotId, ii.itemEntry "
+            "SELECT gbi.guildid, gbi.TabId, gbi.SlotId, ii.itemEntry, ii.count "
             "FROM guild_bank_item gbi JOIN item_instance ii ON ii.guid = gbi.item_guid"))
         do
         {
             Field* f = result->Fetch();
             fresh[f[0].Get<uint32>()].push_back(
-                VaultSlot{f[1].Get<uint8>(), f[2].Get<uint8>(), f[3].Get<uint32>()});
+                VaultSlot{f[1].Get<uint8>(), f[2].Get<uint8>(), f[3].Get<uint32>(),
+                          f[4].Get<uint32>()});
         } while (result->NextRow());
 
     std::lock_guard<std::mutex> lock(_vaultMutex);
     _vault.swap(fresh);
+}
+
+uint32 NeedsLedger::VaultStock(uint32 guildId, uint32 itemEntry)
+{
+    NeedsLedger* self = instance();
+    std::lock_guard<std::mutex> lock(self->_vaultMutex);
+    auto const it = self->_vault.find(guildId);
+    if (it == self->_vault.end())
+        return 0;
+    uint32 held = 0;
+    for (VaultSlot const& vs : it->second)
+        if (vs.entry == itemEntry)
+            held += vs.count;
+    return held;
+}
+
+uint32 NeedsLedger::VaultPlentyStacks()
+{
+    return sVaultPlentyStacks;
+}
+
+uint64 NeedsLedger::Shortfall(uint32 guid)
+{
+    std::lock_guard<std::mutex> lock(sVerdictMx);
+    auto const it = sShortfallMirror.find(guid);
+    return it != sShortfallMirror.end() ? it->second : 0;
+}
+
+void NeedsLedger::PlanDisposal(Player* bot, std::unordered_set<ObjectGuid>& bank)
+{
+    bank.clear();
+    uint32 const guildId = bot ? bot->GetGuildId() : 0;
+    // No guild, no shared inventory to stock, so nothing changes for these bots.
+    if (!guildId || !sVaultPlentyStacks)
+        return;
+
+    // Solvency first. What the bot still cannot pay for is covered out of the bags
+    // before any of them are set aside, so a bot with an unpaid repair bill sells
+    // rather than donates. Vendor price is the yardstick: it understates an auction
+    // and never overstates it, so the bot errs towards holding one stack too many
+    // back for itself rather than one too few.
+    uint64 quota = Shortfall(bot->GetGUID().GetCounter());
+
+    // One lock for the whole bag rather than one per item: this runs on map threads
+    // for a large share of the fleet, and the vault view is a shared structure the
+    // world thread swaps out every five minutes.
+    std::unordered_map<uint32, uint32> stock;
+    {
+        NeedsLedger* self = instance();
+        std::lock_guard<std::mutex> lock(self->_vaultMutex);
+        auto const it = self->_vault.find(guildId);
+        if (it != self->_vault.end())
+            for (VaultSlot const& vs : it->second)
+                stock[vs.entry] += vs.count;
+    }
+
+    // A crafter's working stock is not surplus. Both the selling and the banking
+    // paths already refuse to part with reagents the bot's own recipes consume, and
+    // the split has to refuse for the same reason or it would hand the guild the
+    // very items that make the bot useful to it.
+    std::unordered_set<uint32> ownReagents;
+    {
+        std::vector<CraftOption> options;
+        CraftPlanner::Enumerate(bot, options, 0);
+        for (CraftOption const& opt : options)
+        {
+            for (auto const& reagent : opt.reagents)
+                ownReagents.insert(reagent.first);
+            for (uint32 tool : opt.tools)
+                ownReagents.insert(tool);
+        }
+    }
+
+    auto const wantedTab = [](ItemTemplate const* proto)
+    {
+        // The seeded vault layout: Materials, Consumables, Gear. Anything with no
+        // tab to live in is not the guild's business and stays on the sell side.
+        if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_CONSUMABLE)
+            return true;
+        return (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR) &&
+               proto->Quality >= ITEM_QUALITY_UNCOMMON;
+    };
+
+    auto const consider = [&](Item* item)
+    {
+        if (!item || item->IsSoulBound() || !item->CanBeTraded() || item->IsNotEmptyBag())
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto)
+            return;
+        if (quota)
+        {
+            uint64 const worth = uint64(proto->SellPrice) * item->GetCount();
+            quota = worth >= quota ? 0 : quota - worth;
+            return;
+        }
+        if (!wantedTab(proto) || ownReagents.count(proto->ItemId))
+            return;
+        // Plenty is counted in stacks, not items: three stacks of ore and three
+        // stacks of gems are very different numbers, and a threshold that ignored
+        // that would fill the vault with whatever happens to stack highest.
+        uint32 const stack = std::max<uint32>(1, proto->GetMaxStackSize());
+        auto const held = stock.find(proto->ItemId);
+        if (held != stock.end() && held->second >= stack * sVaultPlentyStacks)
+            return;
+        bank.insert(item->GetGUID());
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                consider(bag->GetItemByPos(slot));
 }
 
 bool NeedsLedger::FindVaultReagent(uint32 guildId, uint32 itemEntry, uint8& tab, uint8& slot)
@@ -984,9 +1129,19 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     {
         // Verdict stored inside the lambda; nothing further here.
     }
-    // E4.2: a bag worth listing sends the bot to the auction house on purpose
-    // instead of waiting for wander luck.
-    else if (sPreemptEnabled && sAhEnabled && CountListable(bot) >= sAhMinItemsForTrip)
+    // E4.2/E9: a bag worth listing sends the bot to the auction house on purpose
+    // instead of waiting for wander luck - but only the part of the bag that is
+    // actually the auction house's. The two errands used to bid for the whole bot,
+    // and this one was asked first, so a farmer with thirty stacks listed four per
+    // visit and never once fell below the threshold; it could not reach the bank
+    // branch at all. Now the split is decided per item first (see PlanDisposal) and
+    // each branch counts only its own share.
+    else if (sPreemptEnabled && sAhEnabled && [&]
+             {
+                 uint32 listable = 0, forVault = 0;
+                 SplitBag(bot, listable, forVault);
+                 return listable >= sAhMinItemsForTrip;
+             }())
     {
         auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
         if (it != sAuctioneerSpawns.end())
@@ -1014,9 +1169,10 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // E6.3b: strategic materials in the bags send the bot to a banker on purpose.
     // The personal deposit, the guild-tab share and the gold tithe all ride this one
     // visit, which is exactly why guild vaults sat empty - the plumbing was correct
-    // and nothing ever decided to walk to it. Placed below the auction-house trip so
-    // selling for gold still wins the beat, and above bag pressure because banking
-    // relieves the same pressure without throwing the materials away.
+    // and nothing ever decided to walk to it. Still below the auction-house trip, so
+    // selling wins the beat for a bag that is stock; a bag holding something the
+    // vault is short of no longer reaches that branch at all, because the split
+    // above has already taken those items out of its count.
     else if (sPreemptEnabled && sBankEnabled &&
              (BankDepositAction::CountDepositable(bot, 1) ||
               BankDepositAction::HasVaultedReagent(bot)))
@@ -1180,6 +1336,18 @@ void NeedsLedger::ComputeNeeds(Player* bot)
                 std::min<uint32>(100, PERSONA_DUTY[persona] * sDutyScale / 100));
     }
 
+    // What this bot still cannot pay for, summed across its unfunded needs. The
+    // disposal split spends this out of the bags before it sets anything aside for
+    // the guild, so a broke bot sells and a solvent one can afford to stock a vault.
+    {
+        uint64 shortfall = 0;
+        for (Need const& n : needs)
+            if (n.amount > 0 && n.freeMoney < n.amount)
+                shortfall += n.amount - n.freeMoney;
+        if (shortfall)
+            sShortfallBuild[guid] = shortfall;
+    }
+
     // Drop first-seen entries for needs that no longer exist, so a re-arising
     // need gets a fresh clock.
     for (auto it = seen.begin(); it != seen.end();)
@@ -1287,6 +1455,7 @@ void NeedsLedger::WriteTelemetry()
     {
         std::lock_guard<std::mutex> lock(sVerdictMx);
         sVerdictMirror.swap(sVerdictBuild);
+        sShortfallMirror.swap(sShortfallBuild);
 
         static char const* KINDS[] = {"none",  "vendor", "mailbox", "trainer",
                                       "ah",    "focus",  "gather",  "bank"};
@@ -1314,6 +1483,7 @@ void NeedsLedger::WriteTelemetry()
                 " since_ts) VALUES " + errandSql.str());
     }
     sVerdictBuild.clear();
+    sShortfallBuild.clear();
 
     // Persona census: who the population IS, alongside what it wants. The
     // duty percent rides in amount so the dashboard can show appetite too.
