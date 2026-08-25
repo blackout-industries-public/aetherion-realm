@@ -41,10 +41,16 @@ const KIND = ['achievement', 'quest', 'item'] as const
 const eraOf = (map: number) =>
   map === 269 || map === 560 ? 'tbc' : map >= 600 ? 'wrath' : map >= 500 ? 'tbc' : 'classic'
 
-const tidy = (s: string) =>
+const strip = (s: string) =>
   String(s ?? '').replace(/\s*-\s*\d+\s*man.*$/i, '')
+    .replace(/\s*-\s*(?:normal|heroic).*$/i, '')
     .replace(/\s*\((?:DM|WC|ZG|BWL|AQ\d+)\)\s*$/i, '')
-    .split('/')[0]!.split(',').pop()!.trim()
+    .split('/')[0]!.trim()
+
+const tidy = (s: string) => strip(s).split(',').pop()!.trim()
+
+// A raid is named by its first segment; only wings hide behind the comma.
+const raidName = (s: string) => strip(s).split(',')[0]!.trim()
 
 export default defineEventHandler(async () => {
   const NAMES = await instanceNames()
@@ -169,20 +175,27 @@ export default defineEventHandler(async () => {
   const visitsBy = new Map<number, any>(frontier.map(r => [Number(r.map), r]))
   const eras = ERAS.map(e => ({
     ...e,
-    gates: [...gates.values()]
+    gates: Object.values([...gates.values()]
       .filter(g => g.era === e.key)
-      .map(g => ({
-        kind: g.kind, name: g.name, heroic: g.heroic, legacy: g.legacy,
-        opens: [...g.opens].sort(),
-        holders: g.holders, inProgress: g.inProgress,
-      }))
+      .reduce((acc: Record<string, any>, g) => {
+        const opens = [...g.opens].sort()
+        const key = `${g.name}|${opens.join()}`
+        const row = acc[key] ?? {
+          kind: g.kind, name: g.name, heroic: g.heroic, legacy: g.legacy,
+          opens, holders: 0, inProgress: 0,
+        }
+        row.holders += g.holders
+        row.inProgress += g.inProgress
+        acc[key] = row
+        return acc
+      }, {}))
       .sort((a, b) => Number(a.legacy) - Number(b.legacy) ||
                       b.holders - a.holders || a.name.localeCompare(b.name)),
     raids: (OLD_RAIDS[e.key] ?? []).map(map => {
       const r = visitsBy.get(map)
       return {
         map,
-        name: NAMES[map] ? tidy(NAMES[map]!) : `Map ${map}`,
+        name: NAMES[map] ? raidName(NAMES[map]!) : `Map ${map}`,
         visits: Number(r?.visits ?? 0),
         killed: Number(r?.killed ?? 0),
         bosses: Number(r?.bosses ?? 0),
