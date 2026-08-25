@@ -114,6 +114,12 @@ private:
     std::unordered_map<uint32, Entrance> _insides;     // instance map id -> inside spot
     std::unordered_map<uint32, std::vector<Entrance>> _spawns;  // instance map id -> packs
     std::unordered_map<uint32, std::vector<Entrance>> _bosses;  // instance map id -> bosses
+    // Dwell-clock multiplier per map, derived from how far the farthest boss stands
+    // from the arrival point. A party closes roughly twenty yards a tick once it is
+    // fighting its way in, so a five-hundred-yard wing spends its whole budget
+    // walking and never reaches anything worth killing.
+    std::unordered_map<uint32, uint32> _travelMult;
+    uint32 TravelMultFor(uint32 mapId) const;
     std::unordered_map<uint32, uint32> _mapMinLevel;  // instance map id -> level floor
     // Gear floors per (map << 8 | difficulty), from dungeon_access_template.
     // Consumed by the soft gearing math, never as a member-by-member veto.

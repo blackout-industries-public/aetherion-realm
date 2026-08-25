@@ -341,8 +341,45 @@ void PartyAssembler::LoadBossPositions()
                                         f[3].Get<float>()});
     } while (result->NextRow());
 
-    LOG_INFO("playerbots", "Party assembler: loaded boss positions for {} instance maps",
-             _bosses.size());
+    // How long the place actually takes to cross. Measured on this realm: a party
+    // closes about twenty yards of ground per tick once it is fighting its way in -
+    // the same rate in a dungeon that finishes as in one that never does. Azjol-Nerub
+    // works because its bosses are 190 yards from the door; the Forge of Souls has
+    // never once been finished because its two stand at 500 and 810, which is more
+    // walking than the whole dwell budget buys. So the clock is scaled by the ground
+    // rather than by a list of map ids: any wing that is long gets the time its
+    // length demands, including ones nobody has complained about yet.
+    for (auto const& entry : _bosses)
+    {
+        auto const inside = _insides.find(entry.first);
+        if (inside == _insides.end())
+            continue;
+
+        float farthest = 0.0f;
+        for (Entrance const& boss : entry.second)
+        {
+            float const dx = boss.x - inside->second.x;
+            float const dy = boss.y - inside->second.y;
+            farthest = std::max(farthest, std::sqrt(dx * dx + dy * dy));
+        }
+
+        // One extra budget per 400 yards of reach, capped so a mistake in the data
+        // cannot hand a single party the whole evening.
+        uint32 const mult = std::min<uint32>(4, 1 + uint32(farthest / 400.0f));
+        if (mult > 1)
+            _travelMult[entry.first] = mult;
+    }
+
+    LOG_INFO("playerbots",
+             "Party assembler: loaded boss positions for {} instance maps, {} of them "
+             "long enough to need a wider clock",
+             _bosses.size(), _travelMult.size());
+}
+
+uint32 PartyAssembler::TravelMultFor(uint32 mapId) const
+{
+    auto const it = _travelMult.find(mapId);
+    return it == _travelMult.end() ? 1u : it->second;
 }
 
 void PartyAssembler::LoadInsides()
@@ -711,6 +748,9 @@ void PartyAssembler::AdvanceTrips()
             // A long venue is long for a five-man too, so the two are compared rather
             // than combined - a raid in a long venue is still one evening, not two.
             mult = std::max(mult, VenueClockMult(trip.dungeonMap));
+            // And the ground itself has a vote: a wing whose bosses stand hundreds of
+            // yards past the door needs that walk paid for before any of it counts.
+            mult = std::max(mult, TravelMultFor(trip.dungeonMap));
         }
         if (trip.adopted)
             mult = std::max<uint32>(mult, 6);
