@@ -58,10 +58,19 @@ namespace
     uint8 constexpr PERSONA_FARMER = 1;
     uint8 constexpr PERSONA_MERCHANT = 2;
     uint8 constexpr PERSONA_WARLORD = 3;
-    char const* PERSONA_NAMES[] = {"adventurer", "farmer", "merchant", "warlord"};
+    // The collector goes back for what the world has already moved past: old
+    // raids for the achievements and the legendaries nobody drops any more.
+    // Carved out of the adventurer share rather than added on top, so the
+    // population still sums to itself and current content keeps its numbers.
+    uint8 constexpr PERSONA_COLLECTOR = 4;
+    char const* PERSONA_NAMES[] = {"adventurer", "farmer", "merchant", "warlord",
+                                   "collector"};
     // Idle-beat errand appetite per persona. Measured before this existed:
     // every errand claimed every beat, and party formation fell 86% in a day.
-    uint8 constexpr PERSONA_DUTY[] = {22, 65, 50, 10};
+    // A collector runs errands about as often as an adventurer - its
+    // distinctiveness is where it goes, not how much time it spends shopping.
+    uint8 constexpr PERSONA_DUTY[] = {22, 65, 50, 10, 20};
+    uint8 constexpr PERSONA_LAST = PERSONA_COLLECTOR;
     uint32 sDutyScale = 100;
     // World-thread only: written during the pass, read by WriteTelemetry.
     std::unordered_map<uint32, uint8> sPersona;
@@ -77,13 +86,18 @@ namespace
                             skilled(SKILL_LEATHERWORKING) || skilled(SKILL_TAILORING) ||
                             skilled(SKILL_JEWELCRAFTING) || skilled(SKILL_INSCRIPTION);
         uint32 const h = (bot->GetGUID().GetCounter() * 2654435761u) % 100u;
+        // Collectors come out of the top of each band - the same hash, so a bot
+        // keeps its disposition for life across restarts, and roughly one in
+        // eight of the realm ends up chasing old content.
         if (gathers && crafts)
-            return h < 70 ? PERSONA_FARMER : PERSONA_ADVENTURER;
+            return h < 70 ? PERSONA_FARMER : (h < 88 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
         if (gathers)
-            return h < 50 ? PERSONA_FARMER : (h < 75 ? PERSONA_WARLORD : PERSONA_ADVENTURER);
+            return h < 50 ? PERSONA_FARMER
+                          : (h < 75 ? PERSONA_WARLORD
+                                    : (h < 90 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR));
         if (crafts)
-            return h < 60 ? PERSONA_MERCHANT : PERSONA_ADVENTURER;
-        return h < 45 ? PERSONA_WARLORD : PERSONA_ADVENTURER;
+            return h < 60 ? PERSONA_MERCHANT : (h < 87 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
+        return h < 45 ? PERSONA_WARLORD : (h < 85 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
     }
 
     struct Verdict
@@ -563,6 +577,11 @@ bool NeedsLedger::ProtectTradeGoods() { return sProtectTradeGoods; }
 bool NeedsLedger::PaidRepairs() { return sPaidRepairs; }
 bool NeedsLedger::PaidTraining() { return sPaidTraining; }
 bool NeedsLedger::CraftEnabled() { return sCraftEnabled; }
+
+bool NeedsLedger::IsCollector(Player* bot)
+{
+    return bot && ArchetypeOf(bot) == PERSONA_COLLECTOR;
+}
 
 void NeedsLedger::RegisterAuctionScript()
 {
@@ -1261,9 +1280,9 @@ void NeedsLedger::WriteTelemetry()
             if (batched++)
                 personaSql << ",";
             personaSql << "(" << pair.first << ",'persona','"
-                       << PERSONA_NAMES[pair.second <= 3 ? pair.second : 0] << "',"
+                       << PERSONA_NAMES[pair.second <= PERSONA_LAST ? pair.second : 0] << "',"
                        << uint32(std::min<uint32>(
-                              100, PERSONA_DUTY[pair.second <= 3 ? pair.second : 0] *
+                              100, PERSONA_DUTY[pair.second <= PERSONA_LAST ? pair.second : 0] *
                                        sDutyScale / 100))
                        << ",0,UNIX_TIMESTAMP())";
             if (batched >= 400)

@@ -471,6 +471,10 @@ AiPlayerbot.Party.WipeRetries = 3
 # How many assemblies in a row may be refused for want of a tank or a healer before
 # one is allowed to set out short. Stops a thin level bracket forming nothing at all.
 AiPlayerbot.Party.ShortAbortLimit = 3
+# How often a collector-disposition leader takes the party back into classic or TBC
+# content instead of the current tier. The persona share of the population is the
+# real ceiling on this; zero turns old-content trips off entirely.
+AiPlayerbot.Party.CollectorPct = 60
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
 

@@ -53,6 +53,12 @@ public:
     static bool PaidTraining();
     static bool CraftEnabled();
 
+    // Disposition, asked rather than stored: it is derived from the bot's own
+    // professions plus a hash of its guid, so it is stable for life and costs
+    // nothing to look up. The party assembler asks this to decide who goes back
+    // for old content. Safe from any thread - it only reads the bot's skills.
+    static bool IsCollector(Player* bot);
+
     // E8.2: what the guild vault holds, refreshed from guild_bank_item on the
     // world thread every few minutes. Crafters use it to pull missing
     // reagents back OUT of the Materials tab. Map-thread safe.

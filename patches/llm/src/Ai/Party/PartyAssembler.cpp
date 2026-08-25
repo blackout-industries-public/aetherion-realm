@@ -9,6 +9,7 @@
 #include "InstanceScript.h"
 #include "LFGMgr.h"
 #include "Formations.h"
+#include "NeedsLedger.h"   // persona: who goes back for old content
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
 #include "Opcodes.h"
@@ -66,6 +67,10 @@ namespace
     // again. Long enough for any real pull to finish, short enough that a party
     // deadlocked in a fight it cannot win still gets moved along.
     constexpr uint32 kCombatHoldTicks = 8;
+
+    // Old content is only worth going back for once a character has outgrown it by
+    // enough that the trip is a collection rather than a progression run.
+    constexpr uint8 kCollectorMinLevel = 70;
 
     // Venues that run long for their party size. Violet Hold is a five-man on paper,
     // but its twelve waves take as long as a raid wing does, so the ordinary dwell
@@ -180,6 +185,7 @@ void PartyAssembler::LoadConfig()
     _musterTimeoutMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterTimeoutMin", 12);
     _wipeRetries = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.WipeRetries", 3);
     _shortAbortLimit = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ShortAbortLimit", 3);
+    _collectorPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.CollectorPct", 60);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
     _travelToDungeon = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.TravelToDungeon", true);
     sDriveGrouped = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.DriveGroupedBots", false);
@@ -1570,6 +1576,7 @@ void PartyAssembler::EnsureTelemetryTables()
         " bosses_downed TINYINT UNSIGNED NOT NULL DEFAULT 0,"
         " wipes TINYINT UNSIGNED NOT NULL DEFAULT 0,"
         " attunement VARCHAR(48) NOT NULL DEFAULT '',"
+        " flavor VARCHAR(16) NOT NULL DEFAULT '',"
         " KEY idx_started (started_at), KEY idx_map (map)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
@@ -1587,6 +1594,13 @@ void PartyAssembler::EnsureTelemetryTables()
         CharacterDatabase.DirectExecute(
             "ALTER TABLE aetherion_run_history"
             " ADD COLUMN attunement VARCHAR(48) NOT NULL DEFAULT ''");
+
+    // What kind of run this was. Empty means ordinary progression; 'collector' is a
+    // trip back into content the realm has outgrown.
+    if (!CharacterDatabase.Query("SHOW COLUMNS FROM aetherion_run_history LIKE 'flavor'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN flavor VARCHAR(16) NOT NULL DEFAULT ''");
 
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_run_members ("
@@ -1838,6 +1852,133 @@ bool PartyAssembler::HasRaidTarget(Player const* leader, uint8& lowestFloor) con
         found = true;
     }
     return found;
+}
+
+bool PartyAssembler::SendPartyToOldContent(Group* group, Player* leader)
+{
+    if (_entrances.empty())
+        return false;
+
+    // The door refuses members one at a time, so the whole party has to clear it.
+    uint8 level = leader->GetLevel();
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        if (Player* member = itr->GetSource())
+            level = std::min<uint8>(level, member->GetLevel());
+    if (level < kCollectorMinLevel)
+        return false;
+
+    uint32 const size = group->GetMembersCount();
+
+    struct Option
+    {
+        Entrance where;
+        std::string name;
+        uint32 mapId;
+        bool raid;
+    };
+    std::vector<Option> options;
+
+    for (auto const& entry : _entrances)
+    {
+        uint32 const mapId = entry.first;
+        Entrance const& door = entry.second;
+
+        MapEntry const* map = sMapStore.LookupEntry(mapId);
+        if (!map || !map->IsDungeon())
+            continue;
+
+        // What counts as old is decided by which expansion built the place, not by
+        // a level gap. A Wrath dungeon whose floor happens to sit twenty levels down
+        // is still this realm's current content, and Karazhan at floor sixty-eight
+        // still is not.
+        if (map->Expansion() >= EXPANSION_WRATH_OF_THE_LICH_KING)
+            continue;
+
+        // Same continent, for the same reason every other destination must be: the
+        // leader walks to the door and nothing paths across an ocean.
+        if (door.map != leader->GetMapId())
+            continue;
+
+        // Being massively over-geared is the entire point, so gear never vetoes
+        // here. The level floor and the access rows still do - an unattuned party
+        // would simply be turned away at the portal.
+        auto const floorIt = _mapMinLevel.find(mapId);
+        if (floorIt != _mapMinLevel.end() && level < floorIt->second)
+            continue;
+
+        bool const raid = map->IsRaid();
+        Difficulty const diff =
+            raid ? Difficulty(RAID_DIFFICULTY_10MAN_NORMAL) : Difficulty(DUNGEON_DIFFICULTY_NORMAL);
+
+        if (raid)
+        {
+            // Old raids carry a large player cap, which is what lets five modern
+            // characters walk into a forty-man instance at all. A map whose cap is
+            // genuinely smaller than this group would shed members at the portal.
+            MapDifficulty const* md = GetMapDifficultyData(mapId, RAID_DIFFICULTY_10MAN_NORMAL);
+            if (!md || (md->maxPlayers && md->maxPlayers < size))
+                continue;
+        }
+
+        bool everyone = true;
+        if (DungeonProgressionRequirements const* ar =
+                sObjectMgr->GetAccessRequirement(mapId, diff))
+            for (GroupReference* itr = group->GetFirstMember(); everyone && itr != nullptr;
+                 itr = itr->next())
+                if (Player* member = itr->GetSource())
+                    everyone = member->Satisfy(ar, mapId);
+        if (!everyone)
+            continue;
+
+        options.push_back({door, map->name[0] ? map->name[0] : "somewhere long forgotten",
+                           mapId, raid});
+    }
+
+    if (options.empty())
+        return false;
+
+    // Nearest few, then a random pick among them - the same shape the ordinary
+    // destination choice uses, so collectors spread across what is reachable
+    // instead of all filing into the same doorway.
+    std::sort(options.begin(), options.end(), [leader](Option const& a, Option const& b)
+              { return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where); });
+    Option const& chosen =
+        options[urand(0, std::min<size_t>(options.size(), _nearestChoices) - 1)];
+
+    // A raid map will not admit a party group at all, whatever its level. Converting
+    // costs nothing for a five-man and is what makes Molten Core reachable.
+    if (chosen.raid && !group->isRaidGroup())
+    {
+        group->ConvertToRaid();
+        group->SetRaidDifficulty(RAID_DIFFICULTY_10MAN_NORMAL);
+    }
+    else if (!chosen.raid)
+    {
+        group->SetDungeonDifficulty(DUNGEON_DIFFICULTY_NORMAL);
+    }
+
+    float const away = PlanarDistance(leader, chosen.where);
+    Departure const start = BeginTravel(group, leader, chosen.where);
+
+    LOG_INFO("playerbots",
+             "Party assembler: {} takes a party of {} back to {} ({:.0f} yards, {}) - "
+             "collecting what the realm left behind",
+             leader->GetName(), size, chosen.name, away, TravelName(start.how));
+
+    Trip& trip = _trips[group->GetGUID().GetCounter()] =
+        Trip{chosen.mapId, chosen.where, chosen.name, Phase::Travelling, start.how,
+             start.place, start.actor, 0};
+    trip.collector = true;
+    trip.runId = RecordRunStart(group, leader, chosen.name, chosen.mapId, chosen.raid,
+                                uint8(chosen.raid ? RAID_DIFFICULTY_10MAN_NORMAL
+                                                  : DUNGEON_DIFFICULTY_NORMAL),
+                                start.how, uint32(away));
+    if (trip.runId)
+        CharacterDatabase.Execute(
+            "UPDATE aetherion_run_history SET flavor = 'collector' WHERE id = {}", trip.runId);
+
+    ++_statTrips;
+    return true;
 }
 
 bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
@@ -2412,8 +2553,19 @@ bool PartyAssembler::AssembleOne()
     // dungeon at their level.
     bool travelling = false;
     if (_travelToDungeon)
-        travelling = wantRaid ? SendPartyToRaid(group, leader)
-                              : SendPartyToDungeon(group, leader);
+    {
+        // A collector goes back for what the realm has moved past. Tried first and
+        // allowed to fail: on a continent with no old doorway within reach the party
+        // just runs the current tier like everybody else, so this can never strand
+        // a group or starve progression - the persona share is the ceiling.
+        if (_collectorPct && NeedsLedger::IsCollector(leader) &&
+            urand(1, 100) <= _collectorPct)
+            travelling = SendPartyToOldContent(group, leader);
+
+        if (!travelling)
+            travelling = wantRaid ? SendPartyToRaid(group, leader)
+                                  : SendPartyToDungeon(group, leader);
+    }
 
     // The dungeon finder is the fallback for a party with no reachable dungeon at its
     // level. It is never a fallback for a raid: WotLK has no raid finder.

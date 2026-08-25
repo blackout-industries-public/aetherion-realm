@@ -89,6 +89,11 @@ private:
     // than swinging entirely to one.
     bool SendPartyToRaid(Group* group, Player* leader);
 
+    // The collector's journey: back to content the realm has long outgrown, for the
+    // achievements and the legendaries that only drop there. Same trip machinery,
+    // same ledger, same clocks - only the destination is chosen differently.
+    bool SendPartyToOldContent(Group* group, Player* leader);
+
     // Checked before a raid is committed to. A ten-man that forms with nowhere to
     // go cannot be converted back, so it would just stand in place forever.
     // lowestFloor reports the smallest min-level among the reachable raids, so
@@ -189,6 +194,9 @@ private:
         // Consecutive ticks the party has spent fighting. A fight nobody can win
         // must not hold the run still forever.
         uint32 combatTicks{0};
+        // A trip into content the realm has outgrown, chasing achievements and old
+        // legendaries rather than progression.
+        bool collector{false};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
@@ -327,6 +335,10 @@ private:
     // stop forming parties altogether, so the run of refusals is what releases one.
     uint32 _shortAborts[2]{0, 0};
     uint32 _shortAbortLimit{3};
+    // How often a collector-led party actually goes back for old content rather
+    // than running the current tier like everyone else. The persona share is the
+    // real cap on this; the percentage only decides how single-minded they are.
+    uint32 _collectorPct{60};
     // Set when the last assembly was refused purely over party shape. That is a bad
     // hand rather than an empty pool, so the tick is allowed to deal another.
     bool _refusedShape{false};
