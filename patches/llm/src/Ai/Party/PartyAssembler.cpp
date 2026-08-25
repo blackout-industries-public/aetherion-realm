@@ -57,6 +57,26 @@ namespace
     constexpr uint32 kHorShowTrash = 11;         // ACTION_SHOW_TRASH
     // A venue that will not take the ask is asked a few times and then left alone.
     constexpr uint32 kVenueNudges = 4;
+
+    // Venues that run long for their party size. Violet Hold is a five-man on paper,
+    // but its twelve waves take as long as a raid wing does, so the ordinary dwell
+    // clock expired with the party still mid-assault and nothing to show for it.
+    struct VenueClock
+    {
+        uint32 map;
+        uint32 mult;
+    };
+    constexpr VenueClock kVenueClocks[] = {
+        { kMapVioletHold, 2 },
+    };
+
+    uint32 VenueClockMult(uint32 mapId)
+    {
+        for (VenueClock const& venue : kVenueClocks)
+            if (venue.map == mapId)
+                return venue.mult;
+        return 1;
+    }
 }
 
 bool PartyAssembler::Owns(uint32 groupLowGuid)
@@ -305,6 +325,14 @@ void PartyAssembler::LoadInsides()
                                                   f[2].Get<float>(), f[3].Get<float>()});
     } while (result->NextRow());
 
+    // Violet Hold's areatrigger lands you in Lieutenant Sinclari's antechamber, on the
+    // wrong side of the prison door: the party stood there while the assault it had
+    // just started ran without it. The instance's own late-join teleport - the one
+    // Sinclari's "send me in now" option uses - puts players in the chamber itself.
+    // Hard-coded rather than corrected in the table: the trigger position is right for
+    // a player walking in through the door, it is only wrong as a destination.
+    _insides[kMapVioletHold] = Entrance{kMapVioletHold, 1830.53f, 803.94f, 44.34f};
+
     LOG_INFO("playerbots", "Party assembler: loaded {} instance arrival points", _insides.size());
 }
 
@@ -410,8 +438,14 @@ void PartyAssembler::AdvanceTrips()
         // 148 runs ending at an average of 0.4 bosses was measuring. The two
         // multipliers never stack: whichever venue is the more patient one wins.
         uint32 mult = 1;
-        if (trip.phase == Phase::Inside && group && group->isRaidGroup())
-            mult = _insideTicksRaidMult;
+        if (trip.phase == Phase::Inside)
+        {
+            if (group && group->isRaidGroup())
+                mult = _insideTicksRaidMult;
+            // A long venue is long for a five-man too, so the two are compared rather
+            // than combined - a raid in a long venue is still one evening, not two.
+            mult = std::max(mult, VenueClockMult(trip.dungeonMap));
+        }
         if (trip.adopted)
             mult = std::max<uint32>(mult, 6);
         uint32 const budget =
@@ -507,6 +541,24 @@ void PartyAssembler::AdvanceTrips()
 
         if (trip.phase == Phase::Inside)
         {
+            // The ledger's entry stamp, written once the leader is actually standing
+            // in the place. It used to be written the moment the teleports were
+            // issued, which is not the same thing: the core turns a party away at the
+            // door when a member fails an access requirement, and the run was still
+            // recorded as having entered. That is how Halls of Reflection - which no
+            // character on this realm can enter at all - read as a wing that got in
+            // ten times and killed nothing. A run that never arrives now ends with
+            // entered_at still zero, which says exactly what happened.
+            if (!trip.arrived && leader->GetMapId() == trip.dungeonMap)
+            {
+                trip.arrived = true;
+                ++_statEntered;
+                if (trip.runId)
+                    CharacterDatabase.Execute(
+                        "UPDATE aetherion_run_history SET entered_at = UNIX_TIMESTAMP()"
+                        " WHERE id = {}", trip.runId);
+            }
+
             // Party discipline, re-asserted every tick. Death recovery calls
             // ResetStrategies, which restores the free-bot default set - battleground
             // queue, dungeon finder, wander - and the single strip done at formation
@@ -720,13 +772,10 @@ void PartyAssembler::AdvanceTrips()
                     it = _trips.erase(it);
                     continue;
                 }
+                // Entry is recorded on arrival, not here: EnterInstance reports how
+                // many teleports it issued, not how many landed.
                 trip.phase = Phase::Inside;
                 trip.ticks = 0;
-                ++_statEntered;
-                if (trip.runId)
-                    CharacterDatabase.Execute(
-                        "UPDATE aetherion_run_history SET entered_at = UNIX_TIMESTAMP()"
-                        " WHERE id = {}", trip.runId);
             }
         }
 

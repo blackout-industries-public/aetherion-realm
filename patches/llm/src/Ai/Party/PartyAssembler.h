@@ -176,6 +176,9 @@ private:
         // so a venue that refuses stops being asked instead of being asked forever.
         uint32 nudges{0};
         bool started{false};
+        // Set the first tick the leader is confirmed standing on the dungeon map,
+        // which is a different thing from having been sent there.
+        bool arrived{false};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
