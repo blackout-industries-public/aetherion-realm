@@ -460,6 +460,9 @@ AiPlayerbot.Party.RaidHeroicPct = 15
 AiPlayerbot.Party.MusterEveryMin = 45
 AiPlayerbot.Party.MusterTimeoutMin = 12
 AiPlayerbot.Party.WipeRetries = 3
+# How many assemblies in a row may be refused for want of a tank or a healer before
+# one is allowed to set out short. Stops a thin level bracket forming nothing at all.
+AiPlayerbot.Party.ShortAbortLimit = 3
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
 

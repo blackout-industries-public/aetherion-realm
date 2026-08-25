@@ -107,6 +107,7 @@ set_conf "$PB" "AiPlayerbot.Party.MusterTimeoutMin" "${PARTY_MUSTER_TIMEOUT_MIN:
 # Wipe determination: full-party falls a run absorbs (revived at the door,
 # fresh clock) before the group calls it. 0 = first wipe ends progress.
 set_conf "$PB" "AiPlayerbot.Party.WipeRetries" "${PARTY_WIPE_RETRIES:-3}"
+set_conf "$PB" "AiPlayerbot.Party.ShortAbortLimit" "${PARTY_SHORT_ABORT_LIMIT:-3}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"
 set_conf "$PB" "AiPlayerbot.Party.TravelToDungeon" "${PARTY_TRAVEL:-1}"
 

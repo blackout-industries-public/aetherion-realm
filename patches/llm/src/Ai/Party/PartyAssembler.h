@@ -316,6 +316,14 @@ private:
     // How many full wipes a run absorbs before the group calls it. Zero
     // restores the old behavior: first wipe quietly burns the clock out.
     uint32 _wipeRetries{3};
+    // Consecutive assemblies refused for want of a tank or a healer, indexed by size
+    // class (party, raid). Without a ceiling a bracket that truly holds neither would
+    // stop forming parties altogether, so the run of refusals is what releases one.
+    uint32 _shortAborts[2]{0, 0};
+    uint32 _shortAbortLimit{3};
+    // Set when the last assembly was refused purely over party shape. That is a bad
+    // hand rather than an empty pool, so the tick is allowed to deal another.
+    bool _refusedShape{false};
     uint32 _musterCooldownTicks{0};
     uint32 _musterAgeTicks{0};
     int32 _musterTeam{-1};
