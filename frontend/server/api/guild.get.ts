@@ -79,12 +79,63 @@ const PROGRESS = `
 `
 
 
+// What the vault holds right now. Tabs are counted because a guild with no tab
+// cannot receive items at all, which is the difference between an empty vault
+// and a broken one.
+const VAULT = `
+  SELECT g.guildid AS id,
+         g.BankMoney AS bankCopper,
+         COALESCE(bi.items, 0) AS items,
+         COALESCE(bt.tabs, 0)  AS tabs
+  FROM acore_characters.guild g
+  LEFT JOIN (
+    SELECT guildid, COUNT(*) AS items FROM acore_characters.guild_bank_item GROUP BY guildid
+  ) bi ON bi.guildid = g.guildid
+  LEFT JOIN (
+    SELECT guildid, COUNT(*) AS tabs FROM acore_characters.guild_bank_tab GROUP BY guildid
+  ) bt ON bt.guildid = g.guildid
+`
+
+// A day of vault movement, attributed through the depositor's guild membership.
+// Tithes and repairs carry copper; deposits and withdrawals carry item counts.
+const VAULT_FLOW = `
+  SELECT gm.guildid AS id,
+         SUM(e.kind = 'guild_tithe')                                              AS tithes,
+         SUM(IF(e.kind = 'guild_tithe', e.count, 0))                              AS titheCopper,
+         SUM(IF(e.kind = 'guild_bank_deposit', e.count, 0))                       AS deposited,
+         SUM(IF(e.kind = 'guild_bank_withdraw', e.count, 0))                      AS withdrawn,
+         SUM(e.kind = 'guild_repair')                                             AS repairs,
+         SUM(IF(e.kind = 'guild_repair', CAST(NULLIF(e.detail,'') AS SIGNED), 0)) AS repairCopper
+  FROM acore_characters.aetherion_econ_events e
+  JOIN acore_characters.guild_member gm ON gm.guid = e.guid
+  WHERE e.kind IN ('guild_tithe','guild_bank_deposit','guild_bank_withdraw','guild_repair')
+    AND e.ts > UNIX_TIMESTAMP() - 86400
+  GROUP BY gm.guildid
+`
+
+// The movements themselves, newest first: a vault nobody can watch working reads
+// as decoration.
+const VAULT_RECENT = `
+  SELECT e.ts, e.kind, e.count, e.detail,
+         c.name AS actor, g.name AS guild, it.name AS item, it.Quality AS quality
+  FROM acore_characters.aetherion_econ_events e
+  JOIN acore_characters.characters c ON c.guid = e.guid
+  JOIN acore_characters.guild_member gm ON gm.guid = e.guid
+  JOIN acore_characters.guild g ON g.guildid = gm.guildid
+  LEFT JOIN acore_world.item_template it ON it.entry = e.item
+  WHERE e.kind IN ('guild_tithe','guild_bank_deposit','guild_bank_withdraw','guild_repair')
+  ORDER BY e.ts DESC
+  LIMIT 14
+`
+
+const TAB_NAMES = ['Materials', 'Consumables', 'Gear']
+
 const tidy = (s: string) =>
   String(s ?? '').replace(/\s*-\s*\d+\s*man.*$/i, '').split(',').pop()!.trim()
 
 export default defineEventHandler(async () => {
-  const [standings, pulse, progress] = await Promise.all([
-    q(STANDINGS), q(PULSE), q(PROGRESS),
+  const [standings, pulse, progress, vault, vaultFlow, vaultRecent] = await Promise.all([
+    q(STANDINGS), q(PULSE), q(PROGRESS), q(VAULT), q(VAULT_FLOW), q(VAULT_RECENT),
   ])
 
   const pulseById = new Map<number, any>()
@@ -96,6 +147,11 @@ export default defineEventHandler(async () => {
     list.push({ boss: r.boss, instance: tidy(r.instance) })
     bossesById.set(r.id, list)
   }
+
+  const vaultById = new Map<number, any>()
+  for (const r of vault) vaultById.set(r.id, r)
+  const flowById = new Map<number, any>()
+  for (const r of vaultFlow) flowById.set(r.id, r)
 
   const guilds = standings.map(g => {
     const p = pulseById.get(g.id)
@@ -122,6 +178,21 @@ export default defineEventHandler(async () => {
           }
         : { events: 0, active: 0, levels: 0, loot: 0, deaths: 0, instances: 0 },
       bosses: bossesById.get(g.id) ?? [],
+      vault: (() => {
+        const v = vaultById.get(g.id)
+        const f = flowById.get(g.id)
+        return {
+          gold: Math.round(Number(v?.bankCopper ?? 0) / 10000),
+          items: Number(v?.items ?? 0),
+          tabs: Number(v?.tabs ?? 0),
+          tithes: Number(f?.tithes ?? 0),
+          titheGold: Math.round(Number(f?.titheCopper ?? 0) / 10000),
+          deposited: Number(f?.deposited ?? 0),
+          withdrawn: Number(f?.withdrawn ?? 0),
+          repairs: Number(f?.repairs ?? 0),
+          repairGold: Math.round(Number(f?.repairCopper ?? 0) / 10000),
+        }
+      })(),
     }
   })
 
@@ -135,6 +206,39 @@ export default defineEventHandler(async () => {
       atCap: guilds.reduce((n, g) => n + g.atCap, 0),
       activeLastHour: guilds.filter(g => g.activity.events > 0).length,
       withBosses: guilds.filter(g => g.bosses.length > 0).length,
+    },
+    // The shared purse: what every vault holds, and a day of movement through it.
+    vault: {
+      gold: guilds.reduce((n, g) => n + g.vault.gold, 0),
+      items: guilds.reduce((n, g) => n + g.vault.items, 0),
+      stocked: guilds.filter(g => g.vault.items > 0).length,
+      withTabs: guilds.filter(g => g.vault.tabs > 0).length,
+      day: {
+        tithes: guilds.reduce((n, g) => n + g.vault.tithes, 0),
+        titheGold: guilds.reduce((n, g) => n + g.vault.titheGold, 0),
+        deposited: guilds.reduce((n, g) => n + g.vault.deposited, 0),
+        withdrawn: guilds.reduce((n, g) => n + g.vault.withdrawn, 0),
+        repairs: guilds.reduce((n, g) => n + g.vault.repairs, 0),
+        repairGold: guilds.reduce((n, g) => n + g.vault.repairGold, 0),
+      },
+      recent: vaultRecent.map(r => ({
+        at: Number(r.ts),
+        kind: String(r.kind).replace('guild_', ''),
+        actor: r.actor,
+        guild: r.guild,
+        item: r.item ?? null,
+        quality: Number(r.quality ?? 0),
+        count: Number(r.count ?? 0),
+        // Deposits stamp the destination tab in detail; repairs stamp the bill.
+        tab: r.kind === 'guild_bank_deposit' || r.kind === 'guild_bank_withdraw'
+          ? TAB_NAMES[Number(r.detail)] ?? null
+          : null,
+        gold: r.kind === 'guild_tithe'
+          ? Math.round(Number(r.count ?? 0) / 10000)
+          : r.kind === 'guild_repair'
+            ? Math.round(Number(r.detail ?? 0) / 10000)
+            : 0,
+      })),
     },
     guilds,
   }

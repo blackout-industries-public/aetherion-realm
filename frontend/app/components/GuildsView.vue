@@ -77,6 +77,35 @@ const factionSplit = computed(() => {
   return out
 })
 
+// Item quality is data: the game's own rarity ladder, never the palette's.
+const QUALITY = ['oklch(0.62 0 0)', 'oklch(0.86 0.01 100)', 'oklch(0.72 0.17 145)',
+  'oklch(0.68 0.13 250)', 'oklch(0.66 0.18 300)', 'oklch(0.74 0.16 60)'] as const
+
+const vault = computed(() => props.guild?.vault ?? null)
+
+// Movements read as sentences because a vault is a story of who gave and who took.
+const movements = computed(() => (vault.value?.recent ?? []).map((m: any) => {
+  const who = m.actor as string
+  const verb = m.kind === 'tithe' ? 'tithed'
+    : m.kind === 'bank_deposit' ? 'stocked'
+      : m.kind === 'bank_withdraw' ? 'drew'
+        : 'repaired on'
+  const what = m.kind === 'tithe' || m.kind === 'repair'
+    ? `${fmt.int(m.gold)}g`
+    : `${m.count}× ${m.item ?? 'goods'}`
+  return {
+    key: `${m.at}-${who}-${what}`,
+    who,
+    verb,
+    what,
+    color: m.kind === 'tithe' ? T.green
+      : m.kind === 'repair' ? T.red
+        : QUALITY[Math.min(m.quality, 5)] ?? V.text,
+    where: m.tab ? `${m.guild} · ${m.tab}` : m.guild,
+    at: m.at * 1000,
+  }
+}))
+
 const plur = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 const lastHour = (a: any) => {
@@ -124,6 +153,67 @@ const lastHour = (a: any) => {
             <div :style="{ display: 'flex', justifyContent: 'space-between', marginTop: '5px', fontSize: '12px', color: V.muted }">
               <span>Alliance {{ fmt.int(factionSplit.alliance) }}</span>
               <span>Horde {{ fmt.int(factionSplit.horde) }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="vault" :style="panel">
+          <header :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '10px 12px 6px' }">
+            <span :style="cap">Shared vaults</span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">last 24h</span>
+          </header>
+          <div :style="{ padding: '0 12px 12px' }">
+            <div :style="{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }">
+              <div v-for="s in [
+                { v: `${fmt.int(vault.gold)}g`, l: 'held in vaults' },
+                { v: fmt.int(vault.items), l: 'items banked' },
+              ]" :key="s.l">
+                <div :style="{ fontFamily: FONT.mono, fontSize: '19px', color: V.textHi }">{{ s.v }}</div>
+                <div :style="{ fontSize: '11.5px', color: V.muted }">{{ s.l }}</div>
+              </div>
+            </div>
+
+            <!-- In and out on one axis: a vault only means something as a flow. -->
+            <div :style="{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '5px' }">
+              <div
+                v-for="f in [
+                  { l: 'tithed in', v: `${fmt.int(vault.day.titheGold)}g`, n: vault.day.tithes, c: T.green },
+                  { l: 'stocked', v: `${fmt.int(vault.day.deposited)} items`, n: vault.day.deposited, c: V.accent },
+                  { l: 'drawn out', v: `${fmt.int(vault.day.withdrawn)} items`, n: vault.day.withdrawn, c: V.text },
+                  { l: 'repairs paid', v: `${fmt.int(vault.day.repairGold)}g`, n: vault.day.repairs, c: T.red },
+                ]"
+                :key="f.l"
+                :style="{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '9px', alignItems: 'baseline' }"
+              >
+                <span :style="{ fontSize: '12.5px', color: f.n ? V.body : V.faint }">{{ f.l }}</span>
+                <span :style="{ fontFamily: FONT.mono, fontSize: '11.5px', color: f.n ? f.c : V.faint }">{{ f.n ? f.v : '—' }}</span>
+              </div>
+            </div>
+
+            <p :style="{ margin: '11px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.5 }">
+              {{ vault.stocked }} of {{ vault.withTabs }} provisioned vaults hold goods.
+            </p>
+          </div>
+        </section>
+
+        <section v-if="movements.length" :style="panel">
+          <header :style="{ padding: '10px 12px 6px' }"><span :style="cap">Vault movement</span></header>
+          <div :style="{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: '7px' }">
+            <div v-for="m in movements" :key="m.key">
+              <div :style="{ fontSize: '12.5px', color: V.body, lineHeight: 1.4 }">
+                <button
+                  class="nm"
+                  :style="{
+                    appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    fontFamily: FONT.body, fontSize: '12.5px', color: V.textHi,
+                  }"
+                  @click="emit('select', m.who)"
+                >{{ m.who }}</button>
+                {{ ' ' }}{{ m.verb }}{{ ' ' }}<span :style="{ color: m.color }">{{ m.what }}</span>
+              </div>
+              <div :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">
+                {{ m.where }} · {{ fmt.ago(m.at) }} ago
+              </div>
             </div>
           </div>
         </section>
@@ -246,6 +336,20 @@ const lastHour = (a: any) => {
             <div :style="{ minWidth: '200px' }">
               <div :style="capMini">LAST HOUR</div>
               <div :style="{ fontSize: '13px', color: V.body, lineHeight: 1.7 }">{{ lastHour(g.activity) }}</div>
+            </div>
+
+            <div v-if="g.vault" :style="{ minWidth: '190px' }">
+              <div :style="capMini">VAULT</div>
+              <div :style="{ fontSize: '13px', color: V.body, lineHeight: 1.7 }">
+                <div>{{ fmt.int(g.vault.gold) }}g · {{ g.vault.items || 'no' }} item{{ g.vault.items === 1 ? '' : 's' }}</div>
+                <div v-if="g.vault.tithes || g.vault.deposited">
+                  today: {{ g.vault.tithes ? `${fmt.int(g.vault.titheGold)}g tithed` : '' }}{{ g.vault.tithes && g.vault.deposited ? ' · ' : '' }}{{ g.vault.deposited ? `${g.vault.deposited} stocked` : '' }}
+                </div>
+                <div v-if="g.vault.withdrawn || g.vault.repairs" :style="{ color: V.muted }">
+                  drawn: {{ g.vault.withdrawn ? `${g.vault.withdrawn} item${g.vault.withdrawn === 1 ? '' : 's'}` : '' }}{{ g.vault.withdrawn && g.vault.repairs ? ' · ' : '' }}{{ g.vault.repairs ? `${fmt.int(g.vault.repairGold)}g repairs` : '' }}
+                </div>
+                <div v-if="!g.vault.tabs" :style="{ color: T.red }">no bank tab</div>
+              </div>
             </div>
 
             <div v-if="g.bosses?.length" :style="{ minWidth: '180px' }">
