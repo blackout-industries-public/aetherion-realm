@@ -128,6 +128,48 @@ uint32 BankDepositAction::CountDepositable(Player* bot, uint32 limit)
     return found;
 }
 
+bool BankDepositAction::HasVaultedReagent(Player* bot)
+{
+    if (!bot)
+        return false;
+
+    // Cheap gate first, for the same reason the deposit count has one: an empty
+    // vault cannot supply anything, and asking the planner is the expensive half.
+    auto scanVault = [bot](auto&& predicate)
+    {
+        for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (predicate(item))
+                    return true;
+        for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    if (Item* item = bag->GetItemByPos(slot))
+                        if (predicate(item))
+                            return true;
+        return false;
+    };
+
+    if (!scanVault([](Item*) { return true; }))
+        return false;
+
+    std::unordered_set<uint32> wanted;
+    std::vector<CraftOption> options;
+    CraftPlanner::Enumerate(bot, options, 0);
+    for (CraftOption const& opt : options)
+    {
+        for (std::pair<uint32, uint32> const& missing : opt.missing)
+            wanted.insert(missing.first);
+        for (uint32 tool : opt.tools)
+            if (!bot->GetItemCount(tool, false))
+                wanted.insert(tool);
+    }
+    if (wanted.empty())
+        return false;
+
+    return scanVault([&wanted](Item* item) { return wanted.count(item->GetEntry()) != 0; });
+}
+
 void BankDepositAction::CollectDepositItems(std::vector<Item*>& out, uint32 limit)
 {
     std::unordered_set<uint32> ownReagents;

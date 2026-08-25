@@ -39,6 +39,13 @@ public:
     // at the other end is a bot that walks across a city and does nothing.
     static uint32 CountDepositable(Player* bot, uint32 limit);
 
+    // True when the bot's own vault holds a reagent or tool one of its recipes is
+    // short of. No cache is needed for this: a logged-in character carries its bank
+    // contents in the same item slots the withdrawal pass already reads, so the
+    // question can be asked anywhere - which is the whole point, since the answer is
+    // what decides to walk to a banker in the first place.
+    static bool HasVaultedReagent(Player* bot);
+
 private:
     // Bounded collector so the isUseful probe (limit 1) stays cheap while
     // Execute reuses the same filter with the per-visit cap.

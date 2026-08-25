@@ -1017,7 +1017,9 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // and nothing ever decided to walk to it. Placed below the auction-house trip so
     // selling for gold still wins the beat, and above bag pressure because banking
     // relieves the same pressure without throwing the materials away.
-    else if (sPreemptEnabled && sBankEnabled && BankDepositAction::CountDepositable(bot, 1))
+    else if (sPreemptEnabled && sBankEnabled &&
+             (BankDepositAction::CountDepositable(bot, 1) ||
+              BankDepositAction::HasVaultedReagent(bot)))
     {
         auto it = sBankerSpawns.find(uint16(bot->GetMapId()));
         if (it != sBankerSpawns.end())
