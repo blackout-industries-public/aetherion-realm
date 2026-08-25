@@ -72,6 +72,62 @@ bool Depositable(Item* item, std::unordered_set<uint32> const& ownReagents)
 }
 }  // namespace
 
+uint32 BankDepositAction::CountDepositable(Player* bot, uint32 limit)
+{
+    if (!bot || !limit)
+        return 0;
+
+    // Cheap gate first. CollectOwnReagents enumerates every recipe the bot knows,
+    // and this runs for most of the realm on every needs pass; a bot carrying no
+    // trade goods at all can be answered by a bag walk alone and never pay for it.
+    bool anyTradeGoods = false;
+    auto isTradeGood = [](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        return proto && proto->Class == ITEM_CLASS_TRADE_GOODS;
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; !anyTradeGoods && slot < INVENTORY_SLOT_ITEM_END;
+         ++slot)
+        anyTradeGoods = isTradeGood(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START;
+         !anyTradeGoods && bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+        if (!bag)
+            continue;
+        for (uint32 slot = 0; !anyTradeGoods && slot < bag->GetBagSize(); ++slot)
+            anyTradeGoods = isTradeGood(bag->GetItemByPos(slot));
+    }
+    if (!anyTradeGoods)
+        return 0;
+
+    std::unordered_set<uint32> ownReagents;
+    CollectOwnReagents(bot, ownReagents);
+
+    uint32 found = 0;
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (item && Depositable(item, ownReagents) && ++found >= limit)
+            return found;
+    }
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+        if (!bag)
+            continue;
+
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+        {
+            Item* item = bag->GetItemByPos(slot);
+            if (item && Depositable(item, ownReagents) && ++found >= limit)
+                return found;
+        }
+    }
+    return found;
+}
+
 void BankDepositAction::CollectDepositItems(std::vector<Item*>& out, uint32 limit)
 {
     std::unordered_set<uint32> ownReagents;

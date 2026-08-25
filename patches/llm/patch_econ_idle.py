@@ -183,6 +183,45 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                     return true;
                 }
             }
+            // E6.3b bank trip: the same two legs the auction-house errand uses,
+            // because a banker is a creature and not a GameObject. Arrival is
+            // already handled - the WanderNpc reach block below runs "bank deposit"
+            // on any banker it lands on, which is also where the guild-tab share
+            // and the gold tithe ride along.
+            if (econVerdict == NeedsLedger::VERDICT_BANK)
+            {
+                GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();
+                ObjectGuid banker;
+                float bestB = FLT_MAX;
+                for (ObjectGuid const& guid : possible)
+                {
+                    Creature* c = ObjectAccessor::GetCreature(*bot, guid);
+                    if (!c || !c->HasNpcFlag(UNIT_NPC_FLAG_BANKER))
+                        continue;
+                    float d = bot->GetDistance(c);
+                    if (d < bestB)
+                    {
+                        bestB = d;
+                        banker = guid;
+                    }
+                }
+                if (banker)
+                {
+                    info.ChangeToWanderNpc();
+                    if (auto* d = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                    {
+                        d->npcOrGo = banker;
+                        d->lastReach = 0;
+                    }
+                    return true;
+                }
+                float kx, ky, kz;
+                if (NeedsLedger::FarVendor(bot->GetGUID().GetCounter(), bot->GetMapId(), kx, ky, kz))
+                {
+                    info.ChangeToGoCamp(WorldPosition(bot->GetMapId(), kx, ky, kz));
+                    return true;
+                }
+            }
             // E7.5 gather trip: same GO-target legs as mailbox and focus. A
             // despawned node still gets the far leg - the camp's lingering
             // wander hands harvesting to the reactive loot chain, which also

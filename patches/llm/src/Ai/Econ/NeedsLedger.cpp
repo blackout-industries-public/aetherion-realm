@@ -2,6 +2,7 @@
 
 #include "AuctionHouseMgr.h"
 #include "Bag.h"
+#include "BankDepositAction.h"
 #include "CharacterCache.h"
 #include "CraftPlanner.h"
 #include "Config.h"
@@ -149,7 +150,14 @@ namespace
 
     // E4.2: auctioneer spawns per map, and the trip trigger threshold.
     std::unordered_map<uint16, std::vector<std::array<float, 3>>> sAuctioneerSpawns;
+    // Bankers stand in the same city blocks as the auctioneers above, and are found
+    // the same way: position only, because the action at the other end locates the
+    // actual creature through the map once the bot has walked into range.
+    std::unordered_map<uint16, std::vector<std::array<float, 3>>> sBankerSpawns;
     bool sAhEnabled = false;
+    // E6.3b: the banker errand rides the same switch the deposit action already
+    // obeys, so turning banking on turns on both the trip and the arrival.
+    bool sBankEnabled = false;
     uint32 sAhMinItemsForTrip = 3;
 
     // E7 focus trips: spell-focus GameObjects (anvil, forge, cooking fire) per
@@ -455,6 +463,7 @@ void NeedsLedger::LoadConfig()
     sPaidTraining = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.PaidTraining", false);
     sCraftEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Craft.Enabled", false);
     sAhEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Ah.Enabled", false);
+    sBankEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Bank.Enabled", false);
     sAhMinItemsForTrip = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Ah.MinItemsForTrip", 3);
     sVendorFreeSlotsPct = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.FreeSlotsPct", 20);
     sVendorBrokeMinValue = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Vendor.BrokeMinValue", 500);
@@ -659,6 +668,8 @@ void NeedsLedger::BuildTrainerCache()
             CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(data.id);
             if (proto && (proto->npcflag & UNIT_NPC_FLAG_AUCTIONEER))
                 sAuctioneerSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
+            if (proto && (proto->npcflag & UNIT_NPC_FLAG_BANKER))
+                sBankerSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
         }
     }
 
@@ -1000,6 +1011,37 @@ void NeedsLedger::ComputeNeeds(Player* bot)
                 sVerdictBuild[guid] = v;
         }
     }
+    // E6.3b: strategic materials in the bags send the bot to a banker on purpose.
+    // The personal deposit, the guild-tab share and the gold tithe all ride this one
+    // visit, which is exactly why guild vaults sat empty - the plumbing was correct
+    // and nothing ever decided to walk to it. Placed below the auction-house trip so
+    // selling for gold still wins the beat, and above bag pressure because banking
+    // relieves the same pressure without throwing the materials away.
+    else if (sPreemptEnabled && sBankEnabled && BankDepositAction::CountDepositable(bot, 1))
+    {
+        auto it = sBankerSpawns.find(uint16(bot->GetMapId()));
+        if (it != sBankerSpawns.end())
+        {
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+            Verdict v{VERDICT_BANK, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+            for (auto const& p : it->second)
+            {
+                float const dx = p[0] - bx, dy = p[1] - by;
+                float const d2 = dx * dx + dy * dy;
+                if (d2 < best)
+                {
+                    best = d2;
+                    v.hasFar = true;
+                    v.x = p[0];
+                    v.y = p[1];
+                    v.z = p[2];
+                }
+            }
+            if (v.hasFar)
+                sVerdictBuild[guid] = v;
+        }
+    }
     // E2.1 bag pressure, E2.5 broke-with-sellables. The build map swaps into
     // the map-thread mirror when the pass completes. The whole test lives in
     // the condition: a config-only else-if would consume the chain for every
@@ -1244,7 +1286,8 @@ void NeedsLedger::WriteTelemetry()
         std::lock_guard<std::mutex> lock(sVerdictMx);
         sVerdictMirror.swap(sVerdictBuild);
 
-        static char const* KINDS[] = {"none", "vendor", "mailbox", "trainer", "ah", "focus", "gather"};
+        static char const* KINDS[] = {"none",  "vendor", "mailbox", "trainer",
+                                      "ah",    "focus",  "gather",  "bank"};
         std::ostringstream errandSql;
         uint32 batched = 0;
         for (auto const& pair : sVerdictMirror)
@@ -1252,7 +1295,7 @@ void NeedsLedger::WriteTelemetry()
             if (batched++)
                 errandSql << ",";
             errandSql << "(" << pair.first << ",'errand','"
-                      << KINDS[pair.second.kind <= 6 ? pair.second.kind : 0] << "',0,0,"
+                      << KINDS[pair.second.kind < std::size(KINDS) ? pair.second.kind : 0] << "',0,0,"
                       << "UNIX_TIMESTAMP())";
             if (batched >= 400)
             {

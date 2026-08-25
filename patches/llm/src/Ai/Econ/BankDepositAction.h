@@ -21,6 +21,7 @@
 #include <vector>
 
 class Item;
+class Player;
 class PlayerbotAI;
 
 class BankDepositAction : public Action
@@ -30,6 +31,13 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override;
+
+    // How many bagged items this action would actually bank, capped at the caller's
+    // limit so a mere "is there anything?" probe stays cheap. Public because the
+    // errand that decides to walk a bot to a banker and the action that runs when it
+    // arrives have to agree: a trip decided on a different test than the one waiting
+    // at the other end is a bot that walks across a city and does nothing.
+    static uint32 CountDepositable(Player* bot, uint32 limit);
 
 private:
     // Bounded collector so the isUseful probe (limit 1) stays cheap while

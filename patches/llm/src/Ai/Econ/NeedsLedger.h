@@ -45,6 +45,11 @@ public:
     static uint8 constexpr VERDICT_AH = 4;
     static uint8 constexpr VERDICT_FOCUS = 5;
     static uint8 constexpr VERDICT_GATHER = 6;
+    // E6.3b: a deliberate trip to a banker. Without one, banking only happened when
+    // a bot chanced to stand beside a banker for some other reason - measured across
+    // the realm's whole history at 683 personal deposits, four withdrawals, and 8 of
+    // 60 guild vaults holding anything at all.
+    static uint8 constexpr VERDICT_BANK = 7;
     static uint8 UrgentVerdict(uint32 guid);
     // Persona duty roll for one idle beat: the held verdict kind when the
     // bot's disposition claims the beat, VERDICT_NONE otherwise (or when no
