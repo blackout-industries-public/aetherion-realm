@@ -2677,7 +2677,16 @@ void PartyAssembler::Tick(uint32 diff)
             // need 25 compatible bots on a single map, which essentially never
             // happens, the muster is the only road to a 25-man. The realm was
             // starving its own raids every time it restarted.
-            int32 const ready = FactionWithFullBench();
+            // Paced, though. Measured on the first cut of this: with a bench several
+            // hundred deep the test passes every tick, and the assembler raised a
+            // twenty-five every forty-five seconds - which is not "raids are possible
+            // again", it is raids crowding out everything else. MusterTimeoutMin is
+            // the shorter of the two existing knobs and means "how long one muster may
+            // take", so one muster per that window is the coherent pace; a thin bench
+            // still waits out the full MusterEveryMin.
+            int32 const ready = _musterCooldownTicks >= _musterTimeoutMin * ticksPerMin
+                                    ? FactionWithFullBench()
+                                    : -1;
             if (ready >= 0)
             {
                 _musterCooldownTicks = 0;
