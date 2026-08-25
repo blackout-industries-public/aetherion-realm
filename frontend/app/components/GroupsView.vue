@@ -372,7 +372,7 @@ const lede = computed(() => {
       <QuestPanels :quests="quests" @select="emit('select', $event)" />
     </div>
 
-    <ProgressionPanel />
+    <ProgressionPanel @select="emit('select', $event)" />
   </section>
 </template>
 

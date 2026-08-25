@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { T, FONT, V, fmt, spell, titled } from '../theme'
 
+const emit = defineEmits<{ select: [string] }>()
+
 const { data: prog, refresh } = await useFetch<any>('/api/progression')
 
 let timer: ReturnType<typeof setInterval> | undefined
@@ -22,6 +24,7 @@ const old = computed(() => prog.value?.old ?? null)
 const eras = computed(() => prog.value?.eras ?? [])
 const earning = computed(() => prog.value?.earning ?? [])
 const legendaries = computed(() => prog.value?.legendaries ?? [])
+const collectors = computed(() => prog.value?.collectors ?? null)
 
 // The old world is a frontier, not a scoreboard: the sentence has to work when
 // the answer is "almost none of it".
@@ -103,7 +106,7 @@ const KIND_NOTE: Record<string, string> = {
       </section>
     </div>
 
-    <div :style="{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', alignItems: 'start' }">
+    <div :style="{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '14px', alignItems: 'start' }">
       <section :style="panel">
         <header :style="{ padding: '10px 12px 6px' }"><span :style="cap">Being earned now</span></header>
         <div :style="{ padding: '0 12px 12px' }">
@@ -119,6 +122,40 @@ const KIND_NOTE: Record<string, string> = {
           </div>
           <p v-if="!earning.length" :style="{ margin: 0, fontSize: '12.5px', color: V.muted, lineHeight: 1.5 }">
             No party is working on an attunement.
+          </p>
+        </div>
+      </section>
+
+      <section :style="panel">
+        <header :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '10px 12px 6px' }">
+          <span :style="cap">Collectors</span>
+          <span v-if="collectors?.bots" :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">
+            {{ fmt.int(collectors.bots) }} bots
+          </span>
+        </header>
+        <div :style="{ padding: '0 12px 12px' }">
+          <div
+            v-for="r in collectors?.recent ?? []"
+            :key="r.at + r.leader"
+            :style="{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '9px', alignItems: 'baseline', padding: '2px 0' }"
+          >
+            <span :style="{ minWidth: 0 }">
+              <button
+                class="nm"
+                :style="{
+                  appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  fontFamily: FONT.body, fontSize: '12.5px', color: V.textHi,
+                }"
+                @click="emit('select', r.leader)"
+              >{{ r.leader }}</button>
+              <span :style="{ fontSize: '12.5px', color: V.body }"> · {{ r.dungeon }}</span>
+            </span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: r.live ? T.green : V.faint, whiteSpace: 'nowrap' }">
+              {{ r.size }}-strong · {{ r.live ? 'out now' : `${r.bosses} down` }}
+            </span>
+          </div>
+          <p v-if="!(collectors?.recent ?? []).length" :style="{ margin: 0, fontSize: '12.5px', color: V.muted, lineHeight: 1.5 }">
+            {{ collectors?.bots ? `${fmt.int(collectors.bots)} bots have the collector's disposition. None have set out yet.` : 'No collectors on the realm.' }}
           </p>
         </div>
       </section>
@@ -144,3 +181,7 @@ const KIND_NOTE: Record<string, string> = {
     </div>
   </div>
 </template>
+
+<style scoped>
+.nm:hover { text-decoration: underline }
+</style>

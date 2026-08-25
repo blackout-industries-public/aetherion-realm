@@ -104,7 +104,8 @@ export default defineEventHandler(async () => {
   for (const g of RAID_GATES) for (const quest of g.quests) alias.set(quest, g.quests[0]!)
 
   const inList = (s: Set<number>) => [...s].join(',') || '0'
-  const [questNames, itemNames, rewarded, active, held, earned, frontier, earning, legendary] =
+  const [questNames, itemNames, rewarded, active, held, earned, frontier, earning,
+         collectorCount, collectorRuns, legendary] =
     await Promise.all([
       q(`SELECT ID AS id, LogTitle AS name FROM acore_world.quest_template WHERE ID IN (${inList(questIds)})`),
       q(`SELECT entry AS id, name FROM acore_world.item_template WHERE entry IN (${inList(itemIds)})`),
@@ -134,6 +135,14 @@ export default defineEventHandler(async () => {
                 SUM(ended_at = 0) AS underway
          FROM acore_characters.aetherion_run_history
          WHERE attunement <> '' GROUP BY attunement ORDER BY runs DESC`),
+      // The collectors themselves: how many bots have the disposition, and what
+      // their expeditions into old content have done.
+      q(`SELECT COUNT(*) AS n FROM acore_characters.aetherion_needs
+         WHERE need_type = 'persona' AND target = 'collector'`),
+      q(`SELECT dungeon, leader, size, bosses_downed AS bosses, outcome,
+                ended_at = 0 AS live, started_at
+         FROM acore_characters.aetherion_run_history
+         WHERE flavor = 'collector' ORDER BY started_at DESC LIMIT 8`),
       // Legendaries in existence on the realm - the collector's scoreboard.
       q(`SELECT it.name, COUNT(DISTINCT ii.owner_guid) AS owners
          FROM acore_characters.item_instance ii
@@ -216,6 +225,17 @@ export default defineEventHandler(async () => {
       visited: raids.filter(r => r.visits > 0).length,
       bosses: raids.reduce((n, r) => n + r.bosses, 0),
       killed: raids.reduce((n, r) => n + r.killed, 0),
+    },
+    collectors: {
+      bots: Number(collectorCount[0]?.n ?? 0),
+      runs: collectorRuns.length,
+      live: collectorRuns.filter(r => Number(r.live)).length,
+      bosses: collectorRuns.reduce((n, r) => n + Number(r.bosses ?? 0), 0),
+      recent: collectorRuns.map(r => ({
+        dungeon: r.dungeon, leader: r.leader, size: Number(r.size),
+        bosses: Number(r.bosses ?? 0), outcome: r.outcome,
+        live: !!Number(r.live), at: Number(r.started_at) * 1000,
+      })),
     },
     earning: earning.map(r => ({
       name: r.name, runs: Number(r.runs), underway: Number(r.underway ?? 0),
