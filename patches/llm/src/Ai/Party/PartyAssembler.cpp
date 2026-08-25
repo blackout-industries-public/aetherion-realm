@@ -72,6 +72,10 @@ namespace
     // enough that the trip is a collection rather than a progression run.
     constexpr uint8 kCollectorMinLevel = 70;
 
+    // What a twenty-five needs on the bench. The muster's own answer uses the same
+    // number, so asking it early is asking exactly the question the wait exists for.
+    constexpr uint32 kMusterBench = 25;
+
     // Venues that run long for their party size. Violet Hold is a five-man on paper,
     // but its twelve waves take as long as a raid wing does, so the ordinary dwell
     // clock expired with the party still mid-assault and nothing to show for it.
@@ -108,6 +112,24 @@ bool PartyAssembler::IsDriven(uint32 charLowGuid)
 {
     std::lock_guard<std::mutex> lock(sOwnedMx);
     return sDrivenGuids.find(charLowGuid) != sDrivenGuids.end();
+}
+
+int32 PartyAssembler::FactionWithFullBench() const
+{
+    uint32 counts[2] = {0, 0};
+    for (Player* bot : Candidates())
+        if (bot->GetLevel() >= 80)
+            ++counts[bot->GetTeamId() == TEAM_HORDE ? 1 : 0];
+
+    bool const alliance = counts[TEAM_ALLIANCE] >= kMusterBench;
+    bool const horde = counts[TEAM_HORDE] >= kMusterBench;
+    if (!alliance && !horde)
+        return -1;
+    // Both sides ready is a good problem: take the deeper bench, so the raid that
+    // forms is the one least likely to strip the pool the five-mans draw from.
+    if (alliance && horde)
+        return counts[TEAM_HORDE] > counts[TEAM_ALLIANCE] ? TEAM_HORDE : TEAM_ALLIANCE;
+    return alliance ? TEAM_ALLIANCE : TEAM_HORDE;
 }
 
 void PartyAssembler::SyncOwnedMirror()
@@ -1629,8 +1651,34 @@ void PartyAssembler::EnsureTelemetryTables()
         " arrived INT UNSIGNED NOT NULL, entered INT UNSIGNED NOT NULL,"
         " active INT UNSIGNED NOT NULL, entrances INT UNSIGNED NOT NULL,"
         " arrival_points INT UNSIGNED NOT NULL, raid_maps INT UNSIGNED NOT NULL,"
-        " updated_at INT UNSIGNED NOT NULL"
+        " updated_at INT UNSIGNED NOT NULL,"
+        " last_muster_at INT UNSIGNED NOT NULL DEFAULT 0"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // The muster clock counted ticks of continuous uptime, so every restart put it
+    // back to zero and a deploy cadence shorter than MusterEveryMin meant it never
+    // finished. Kept on disk instead, and seeded from the wall time since the last
+    // muster, so a restart costs the realm nothing.
+    if (!CharacterDatabase.Query(
+            "SHOW COLUMNS FROM aetherion_assembler LIKE 'last_muster_at'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_assembler"
+            " ADD COLUMN last_muster_at INT UNSIGNED NOT NULL DEFAULT 0");
+
+    if (QueryResult since = CharacterDatabase.Query(
+            "SELECT GREATEST(0, UNIX_TIMESTAMP() - last_muster_at) FROM aetherion_assembler"
+            " WHERE id = 1 AND last_muster_at > 0"))
+    {
+        uint32 const secondsPerTick = std::max<uint32>(1, _intervalMs / 1000);
+        uint32 const elapsed = (*since)[0].Get<uint32>() / secondsPerTick;
+        uint32 const ticksPerMin = std::max<uint32>(1, 60000u / std::max<uint32>(1, _intervalMs));
+        // Never more than a full cooldown: a realm that has been down for a week
+        // should start its first muster promptly, not owe itself a hundred of them.
+        _musterCooldownTicks = std::min(elapsed, _musterEveryMin * ticksPerMin);
+        LOG_INFO("playerbots",
+                 "Party assembler: muster clock resumes {} ticks in, of {}",
+                 _musterCooldownTicks, _musterEveryMin * ticksPerMin);
+    }
 }
 
 void PartyAssembler::WriteTelemetry()
@@ -1727,9 +1775,16 @@ void PartyAssembler::WriteTelemetry()
     }
 
     CharacterDatabase.Execute(
-        "REPLACE INTO aetherion_assembler (id, formed, raids, trips, stalls, arrived, "
+        // Upsert rather than REPLACE: REPLACE deletes the row first, which would take
+        // the muster clock with it every tick.
+        "INSERT INTO aetherion_assembler (id, formed, raids, trips, stalls, arrived, "
         "entered, active, entrances, arrival_points, raid_maps, updated_at) "
-        "VALUES (1, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, UNIX_TIMESTAMP())",
+        "VALUES (1, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, UNIX_TIMESTAMP()) "
+        "ON DUPLICATE KEY UPDATE formed=VALUES(formed), raids=VALUES(raids), "
+        "trips=VALUES(trips), stalls=VALUES(stalls), arrived=VALUES(arrived), "
+        "entered=VALUES(entered), active=VALUES(active), entrances=VALUES(entrances), "
+        "arrival_points=VALUES(arrival_points), raid_maps=VALUES(raid_maps), "
+        "updated_at=VALUES(updated_at)",
         _statFormed, _statRaids, _statTrips, _statStalls, _statArrived, _statEntered,
         uint32(_assembled.size()), uint32(_entrances.size()), uint32(_insides.size()),
         _raidMapCount);
@@ -2613,11 +2668,37 @@ void PartyAssembler::Tick(uint32 diff)
         uint32 const ticksPerMin = std::max<uint32>(1, 60000u / std::max<uint32>(1, _intervalMs));
         if (_musterTeam < 0)
         {
-            if (++_musterCooldownTicks >= _musterEveryMin * ticksPerMin)
+            // A bench that can already seat a twenty-five has nothing to wait for.
+            // The cooldown exists to GROW a thin bench by holding capped bots back
+            // from ordinary formation; when the bench is already deep the wait buys
+            // nothing and costs everything, because the counter only advances on
+            // continuous uptime. A deploy cadence shorter than MusterEveryMin meant
+            // the muster was never once called - and since ordinary formation would
+            // need 25 compatible bots on a single map, which essentially never
+            // happens, the muster is the only road to a 25-man. The realm was
+            // starving its own raids every time it restarted.
+            int32 const ready = FactionWithFullBench();
+            if (ready >= 0)
+            {
+                _musterCooldownTicks = 0;
+                _musterAgeTicks = 0;
+                _musterTeam = ready;
+                CharacterDatabase.Execute(
+                    "UPDATE aetherion_assembler SET last_muster_at = UNIX_TIMESTAMP()"
+                    " WHERE id = 1");
+                LOG_INFO("playerbots",
+                         "Party assembler: the {} bench already seats a raid - the muster "
+                         "is called at once",
+                         _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
+            }
+            else if (++_musterCooldownTicks >= _musterEveryMin * ticksPerMin)
             {
                 _musterCooldownTicks = 0;
                 _musterAgeTicks = 0;
                 _musterTeam = urand(0, 1) ? TEAM_ALLIANCE : TEAM_HORDE;
+                CharacterDatabase.Execute(
+                    "UPDATE aetherion_assembler SET last_muster_at = UNIX_TIMESTAMP()"
+                    " WHERE id = 1");
                 LOG_INFO("playerbots", "Party assembler: the {} muster their capped ranks",
                          _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
             }

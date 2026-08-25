@@ -232,6 +232,11 @@ private:
     // Refreshes the cross-thread ownership mirror from _assembled.
     void SyncOwnedMirror();
 
+    // Which faction, if either, already has enough ungrouped level-capped bots on the
+    // bench to seat a twenty-five right this moment. Returns a TeamId, or -1 when
+    // neither does. Same test the muster answer uses, asked before the wait.
+    int32 FactionWithFullBench() const;
+
     // Doors that ask for a quest, and where that quest is earned. Read from
     // dungeon_access_requirements at startup rather than listed here, so the chain
     // is whatever the world says it is. Only normal difficulty: the heroic rows are
