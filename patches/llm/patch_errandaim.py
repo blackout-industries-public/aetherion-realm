@@ -26,7 +26,18 @@ nothing matches, so ordinary camping is unchanged.
 
 errand_aim events record every arrival and whether anything matched, so the funnel
 - verdict, arrival, deposit - can be read instead of inferred.
+
+That funnel then showed half of all banker arrivals (83 of 165) doing nothing, and
+concentrated: three bots accounted for 57 of them, one alone for 37. A bot that has
+merely lost its bag between trigger and arrival does not do that thirty-seven times.
+The candidate list an aim is drawn from rules out openly HOSTILE npcs only, while
+GetNPCIfCanInteractWith - which the deposit must pass on arrival - also turns away
+merely UNFRIENDLY ones, so a bot aimed at such a banker was refused at the counter
+every single visit, forever. The aim now applies the same reputation test the
+arrival will, and the arrival telemetry tells the two failures apart instead of
+reporting both as "nothing to bank".
 """
+
 import sys
 
 path = sys.argv[1]
@@ -36,7 +47,9 @@ if "errand_aim" in src:
     print("errand aim patch already applied")
     sys.exit(0)
 
-assert '#include "NeedsLedger.h"' in src, "NeedsLedger include (patch_econ_idle runs first)"
+assert '#include "NeedsLedger.h"' in src, (
+    "NeedsLedger include (patch_econ_idle runs first)"
+)
 
 ANCHOR = """            // GO_CAMP -> WANDER_NPC
             if (bot->GetExactDist(originalPos) < 10.0f)
@@ -87,6 +100,14 @@ NEW = """            // GO_CAMP -> WANDER_NPC
                         Creature* c = ObjectAccessor::GetCreature(*bot, guid);
                         if (!c || !c->HasNpcFlag(NPCFlags(wantFlag)))
                             continue;
+                        // The candidate list only rules out openly hostile NPCs, but
+                        // GetNPCIfCanInteractWith - which every one of these errands
+                        // has to pass on arrival - also turns away merely unfriendly
+                        // ones. Aiming at those produced bots that walked to the same
+                        // banker over and over and were refused at the counter every
+                        // time; one had done it thirty-seven times.
+                        if (c->GetReactionTo(bot) <= REP_UNFRIENDLY)
+                            continue;
                         float const away = bot->GetDistance(c);
                         if (away < bestAim)
                         {
@@ -119,10 +140,21 @@ REACH = """                if (c->HasNpcFlag(UNIT_NPC_FLAG_BANKER))
 """
 REACH_NEW = """                if (c->HasNpcFlag(UNIT_NPC_FLAG_BANKER))
                 {
+                    // Two very different failures were being reported as one. The
+                    // action re-resolves the banker through GetNPCIfCanInteractWith,
+                    // which is stricter than the reach test that got us here - closer
+                    // range, and no merely-unfriendly NPCs - so "the bot had nothing
+                    // to do" and "the bot was never able to talk to this NPC at all"
+                    // both logged as nothing to bank. The second is a wasted walk and
+                    // has to be countable on its own.
+                    bool const usable =
+                        bot->GetNPCIfCanInteractWith(c->GetGUID(), UNIT_NPC_FLAG_BANKER) != nullptr;
                     bool const banked = botAI->DoSpecificAction("bank deposit", Event(), true);
                     NeedsLedger::LogEvent("errand_reach", bot->GetGUID().GetCounter(),
                                           UNIT_NPC_FLAG_BANKER, banked ? 1 : 0,
-                                          banked ? "deposited" : "nothing to bank");
+                                          banked ? "deposited"
+                                                 : usable ? "nothing to bank"
+                                                          : "banker not interactable");
                 }
 """
 assert src.count(REACH) == 1, "banker reach anchor (patch_econ_idle runs first)"

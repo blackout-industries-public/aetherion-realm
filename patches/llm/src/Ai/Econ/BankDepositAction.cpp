@@ -183,12 +183,16 @@ void BankDepositAction::CollectDepositItems(std::vector<Item*>& out, uint32 limi
     // which is exactly the behaviour it has today.
     std::unordered_set<ObjectGuid> planned;
     NeedsLedger::PlanDisposal(bot, planned);
-    bool const guilded = bot->GetGuildId() != 0 && !planned.empty();
+    bool const guilded = bot->GetGuildId() != 0;
 
     auto const wanted = [&](Item* item)
     {
         if (!item)
             return false;
+        // For a guilded bot the plan is the whole answer, including when it is empty.
+        // Falling back to the old trade-goods rule there put items into the personal
+        // vault that the split had deliberately reserved for selling - the bot's own
+        // unpaid bills - which is the opposite of what the plan decided.
         return guilded ? planned.count(item->GetGUID()) != 0
                        : Depositable(item, ownReagents);
     };
@@ -228,7 +232,14 @@ bool BankDepositAction::isUseful()
 
     std::vector<Item*> probe;
     CollectDepositItems(probe, 1);
-    return !probe.empty();
+    if (!probe.empty())
+        return true;
+
+    // A visit to fetch a reagent back out is a real errand and the ledger issues one
+    // for it, but this gate only ever asked whether there was something to PUT IN.
+    // The engine refuses a useless action before Execute runs, so those bots walked
+    // to a banker and were turned away at the door by the very action they came for.
+    return HasVaultedReagent(bot);
 }
 
 bool BankDepositAction::Execute(Event /*event*/)
@@ -449,5 +460,8 @@ bool BankDepositAction::Execute(Event /*event*/)
         ++queued;
     }
 
-    return queued > 0;
+    // Counting only deposits made a withdrawal-only visit report failure even though
+    // its packets were queued, which is both a lie to the caller and the reason the
+    // arrival telemetry called a successful fetch "nothing to bank".
+    return queued > 0 || !withdrawals.empty();
 }

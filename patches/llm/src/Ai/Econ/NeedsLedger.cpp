@@ -404,17 +404,6 @@ namespace
         return n;
     }
 
-    // One plan, two answers, so the auction branch and the bank branch can never
-    // disagree about the same bag. Cheap: a bag walk plus a vault lookup per item,
-    // and no recipe enumeration.
-    void SplitBag(Player* bot, uint32& listable, uint32& forVault)
-    {
-        std::unordered_set<ObjectGuid> bank;
-        NeedsLedger::PlanDisposal(bot, bank);
-        forVault = uint32(bank.size());
-        listable = CountListable(bot, &bank);
-    }
-
     bool HasCollectibleMail(Player* bot)
     {
         time_t const now = time(nullptr);
@@ -798,6 +787,32 @@ void NeedsLedger::PlanDisposal(Player* bot, std::unordered_set<ObjectGuid>& bank
     // back for itself rather than one too few.
     uint64 quota = Shortfall(bot->GetGUID().GetCounter());
 
+    // Cheap gate first, for the same reason CountDepositable has one: this now runs
+    // realm-wide on every needs pass, and the two expensive halves below are a recipe
+    // enumeration and a lock on a structure the world thread swaps. A bot carrying
+    // nothing a vault has a tab for can be answered by a bag walk alone.
+    bool anyCandidate = false;
+    auto const couldMatter = [](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto)
+            return false;
+        if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_CONSUMABLE)
+            return true;
+        return (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR) &&
+               proto->Quality >= ITEM_QUALITY_UNCOMMON;
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; !anyCandidate && slot < INVENTORY_SLOT_ITEM_END;
+         ++slot)
+        anyCandidate = couldMatter(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START;
+         !anyCandidate && bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot))
+            for (uint32 slot = 0; !anyCandidate && slot < bag->GetBagSize(); ++slot)
+                anyCandidate = couldMatter(bag->GetItemByPos(slot));
+    if (!anyCandidate)
+        return;
+
     // One lock for the whole bag rather than one per item: this runs on map threads
     // for a large share of the fleet, and the vault view is a shared structure the
     // world thread swaps out every five minutes.
@@ -1021,6 +1036,25 @@ void NeedsLedger::ComputeNeeds(Player* bot)
         }
     }
 
+    // The disposal split, asked once per bot and shared by both branches that care.
+    // Computing it separately inside each let the errand that starts the walk and the
+    // action waiting at the other end disagree about the same bag: a bot could satisfy
+    // "has something depositable" and then correctly plan to bank nothing, and only
+    // find that out after walking up to three thousand yards. Memoised rather than
+    // computed up front because most bots are claimed by an earlier branch and never
+    // need it, and PlanDisposal enumerates recipes.
+    std::unordered_set<ObjectGuid> forVault;
+    uint32 listableShare = 0;
+    bool splitDone = false;
+    auto const split = [&]
+    {
+        if (splitDone)
+            return;
+        splitDone = true;
+        PlanDisposal(bot, forVault);
+        listableShare = CountListable(bot, &forVault);
+    };
+
     // Urgent-errand verdicts. Mailbox first: uncollected proceeds are the
     // cheapest money a bot can get, and collection unblocks everything else.
     if (sPreemptEnabled && sMailboxVisits && HasCollectibleMail(bot))
@@ -1136,12 +1170,7 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // visit and never once fell below the threshold; it could not reach the bank
     // branch at all. Now the split is decided per item first (see PlanDisposal) and
     // each branch counts only its own share.
-    else if (sPreemptEnabled && sAhEnabled && [&]
-             {
-                 uint32 listable = 0, forVault = 0;
-                 SplitBag(bot, listable, forVault);
-                 return listable >= sAhMinItemsForTrip;
-             }())
+    else if (sPreemptEnabled && sAhEnabled && (split(), listableShare >= sAhMinItemsForTrip))
     {
         auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
         if (it != sAuctioneerSpawns.end())
@@ -1173,8 +1202,15 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // selling wins the beat for a bag that is stock; a bag holding something the
     // vault is short of no longer reaches that branch at all, because the split
     // above has already taken those items out of its count.
+    // The trigger asks exactly what the arrival will ask. Asking a different question
+    // here - "is anything depositable" while the action decides per item, solvency
+    // first - is how a bot earned a bank errand, walked to a banker and had nothing to
+    // do when it got there. A guilded bot goes when the split set something aside; an
+    // unguilded one has no split, so its personal-bank rule stands unchanged. Either
+    // may also go to fetch a reagent out of its own vault.
     else if (sPreemptEnabled && sBankEnabled &&
-             (BankDepositAction::CountDepositable(bot, 1) ||
+             ((split(), !forVault.empty()) ||
+              (!bot->GetGuildId() && BankDepositAction::CountDepositable(bot, 1)) ||
               BankDepositAction::HasVaultedReagent(bot)))
     {
         auto it = sBankerSpawns.find(uint16(bot->GetMapId()));
