@@ -46,9 +46,12 @@ CHANNEL_PRIORITY = {
     "ambient": Priority.AMBIENT,
 }
 
-# Used whenever inference is unavailable, too slow, or produced nothing usable.
-# A bot that shrugs is in character; a bot that goes silent looks broken.
-FALLBACKS = ["one sec", "busy right now", "hm?", "cant talk, mid pull", "yeah?"]
+# Spoken whenever inference is unavailable, too slow, or produced nothing usable.
+# A bot that shrugs is in character; a bot that goes silent looks broken. But
+# these must be true ANYWHERE, because the bot saying one has no idea what it is
+# doing: "cant talk, mid pull" shipped here and was said by a bot standing in
+# Dalaran. Vagueness is honest; invented context reads as nonsense.
+FALLBACKS = ["hm?", "one sec", "yeah?", "sorry, what?", "hm, say again?"]
 
 identity = IdentityStore()
 memory = Memory()
