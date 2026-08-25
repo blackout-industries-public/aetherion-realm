@@ -117,16 +117,16 @@ export default defineEventHandler(async () => {
          WHERE itemEntry IN (${inList(itemIds)}) GROUP BY itemEntry`),
       q(`SELECT achievement AS id, COUNT(DISTINCT guid) AS n FROM acore_characters.character_achievement
          WHERE achievement IN (${inList(achIds)}) GROUP BY achievement`),
-      // Every old raid: how often it has been entered at all, and how many of its
-      // encounters have ever been beaten there.
-      q(`SELECT t.map_id AS map, MIN(t.comment) AS label, COUNT(DISTINCT i.id) AS visits,
-                COUNT(DISTINCT IF(i.completedEncounters & (1 << de.Bit), de.ID, NULL)) AS killed,
+      // Every old raid, from OUR durable ledger rather than the core's `instance`
+      // table - that one is live state, pruned on reset, so a cleared raid
+      // silently reverts to untouched. Depth of the best clear is the honest
+      // frontier measure; summing runs would double-count repeat kills.
+      q(`SELECT t.map_id AS map, MIN(t.comment) AS label,
+                COUNT(h.id) AS visits, COALESCE(MAX(h.bosses_downed), 0) AS killed,
                 (SELECT COUNT(*) FROM acore_world.dungeonencounter_dbc d2
                   WHERE d2.MapID = t.map_id AND d2.Difficulty = 0) AS bosses
          FROM acore_world.dungeon_access_template t
-         LEFT JOIN acore_characters.instance i ON i.map = t.map_id
-         LEFT JOIN acore_world.dungeonencounter_dbc de
-           ON de.MapID = i.map AND de.Difficulty = i.difficulty
+         LEFT JOIN acore_characters.aetherion_run_history h ON h.map = t.map_id
          WHERE t.difficulty = 0
            AND t.map_id IN (${[...Object.values(OLD_RAIDS)].flat().join(',')})
          GROUP BY t.map_id`),
@@ -225,6 +225,7 @@ export default defineEventHandler(async () => {
       visited: raids.filter(r => r.visits > 0).length,
       bosses: raids.reduce((n, r) => n + r.bosses, 0),
       killed: raids.reduce((n, r) => n + r.killed, 0),
+      visits: raids.reduce((n, r) => n + r.visits, 0),
     },
     collectors: {
       bots: Number(collectorCount[0]?.n ?? 0),

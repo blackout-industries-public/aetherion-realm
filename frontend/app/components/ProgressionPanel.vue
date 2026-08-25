@@ -31,9 +31,14 @@ const collectors = computed(() => prog.value?.collectors ?? null)
 const lede = computed(() => {
   const o = old.value
   if (!o) return ''
-  if (!o.killed) return `None of the ${fmt.int(o.bosses)} bosses in the old world have been beaten here.`
-  return `${titled(spell(o.killed))} of ${fmt.int(o.bosses)} old-world bosses have been beaten, ` +
-    `across ${spell(o.visited)} of ${spell(o.raids)} raids ever entered.`
+  if (!o.visits) return `No party has walked into any of the ${spell(o.raids)} old-world raids yet.`
+  if (!o.killed) {
+    return `${titled(spell(o.visits))} expedition${o.visits === 1 ? '' : 's'} into the old world, ` +
+      `and none of its ${fmt.int(o.bosses)} bosses down yet.`
+  }
+  return `${titled(spell(o.killed))} of ${fmt.int(o.bosses)} old-world bosses beaten, ` +
+    `over ${spell(o.visits)} expedition${o.visits === 1 ? '' : 's'} into ${spell(o.visited)} ` +
+    `of ${spell(o.raids)} raids.`
 })
 
 const KIND_NOTE: Record<string, string> = {
@@ -84,7 +89,10 @@ const KIND_NOTE: Record<string, string> = {
           </div>
 
           <div v-if="era.raids.length">
-            <div :style="capMini">OLD RAIDS</div>
+            <div :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }">
+              <span :style="capMini">OLD RAIDS</span>
+              <span :style="{ fontFamily: FONT.mono, fontSize: '9px', color: V.faint2, marginBottom: '6px' }">deepest clear</span>
+            </div>
             <div
               v-for="r in era.raids"
               :key="r.map"
@@ -98,7 +106,7 @@ const KIND_NOTE: Record<string, string> = {
                 />
               </span>
               <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: r.killed ? V.text : V.faint, whiteSpace: 'nowrap' }">
-                {{ r.killed }}/{{ r.bosses }}<span v-if="r.visits" :style="{ color: V.faint }"> · {{ r.visits }} in</span>
+                {{ r.killed }}/{{ r.bosses }}<span v-if="r.visits" :style="{ color: V.faint }"> · {{ r.visits }} run{{ r.visits === 1 ? '' : 's' }}</span>
               </span>
             </div>
           </div>
