@@ -20,6 +20,7 @@
 
 #include "Position.h"
 
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -179,6 +180,9 @@ private:
         // Set the first tick the leader is confirmed standing on the dungeon map,
         // which is a different thing from having been sent there.
         bool arrived{false};
+        // The attunement this run is for, if it is one: the quest the party carries
+        // in its log so the bosses it kills count towards a door it cannot yet open.
+        uint32 earnQuest{0};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
@@ -213,6 +217,41 @@ private:
 
     // Refreshes the cross-thread ownership mirror from _assembled.
     void SyncOwnedMirror();
+
+    // Doors that ask for a quest, and where that quest is earned. Read from
+    // dungeon_access_requirements at startup rather than listed here, so the chain
+    // is whatever the world says it is. Only normal difficulty: the heroic rows are
+    // keys and achievements, which the existing Satisfy check already handles.
+    struct QuestGate
+    {
+        uint32 quest{0};      // what the door asks for
+        uint32 earnedOn{0};   // the instance whose bosses complete it
+    };
+    void LoadQuestGates();
+    // Indexed by TeamId, so a chain that forks by faction stays one table.
+    using TeamGates = std::array<QuestGate, 2>;
+    std::unordered_map<uint32, TeamGates> _questGates;      // gated map -> what it asks
+    std::unordered_map<uint32, std::array<uint32, 2>> _teaches;  // map -> quest it completes
+    // Doors asking for something with no run behind it - an achievement, a key, or a
+    // quest earned out in the world. Named once at load, then simply never chosen.
+    std::unordered_set<uint32> _unearnable;
+
+    // The heart of attunement: walks back along the gate chain to the deepest
+    // dungeon this party may actually enter, and reports the quest they should be
+    // carrying while they run it. Returns 0 when nothing in the chain is reachable.
+    // Judged by the least-progressed member, not the leader: the door is checked
+    // member by member, so a party that splits on the doorstep has not arrived.
+    uint32 ResolveGate(Group* group, Player const* leader, uint32 wantMap,
+                       uint32& earnQuest) const;
+    // Entrance and name for a map the redirect landed on, which was never in the
+    // candidate list the party chose from.
+    bool DungeonInfo(Player const* leader, uint32 mapId, Entrance& where,
+                     std::string& name) const;
+    // Puts the attunement quest into every member's log, and takes the reward for
+    // everyone who has finished it. Both are server-side: the turn-in NPCs stand
+    // inside the instance the party is about to leave.
+    uint32 OfferGateQuest(Group* group, uint32 questId) const;
+    uint32 SettleGateQuest(Group* group, uint32 questId) const;
 
     void AdvanceTrips();
     bool EnterInstance(Group* group, Trip const& trip);

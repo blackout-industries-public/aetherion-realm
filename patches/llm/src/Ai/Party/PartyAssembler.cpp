@@ -43,6 +43,10 @@ namespace
     std::unordered_set<uint32> sDrivenGuids;
     bool sDriveGrouped = false;
 
+    // Defined further down among the telemetry helpers; declared here because trip
+    // setup writes a history field long before that point in the file.
+    std::string Sql(std::string value);
+
     // The instance-script vocabulary of the two venues that have to be asked before
     // they will start. These are the script enums from the core's own headers -
     // VioletHold/violet_hold.h and FrozenHalls/HallsOfReflection/halls_of_reflection.h -
@@ -180,6 +184,8 @@ void PartyAssembler::LoadConfig()
         LoadInsides();
         LoadInstanceSpawns();
         LoadBossPositions();
+        // After the doors: a gate is only worth redirecting to if we know the way in.
+        LoadQuestGates();
         EnsureTelemetryTables();
     }
     _timer = 0;
@@ -334,6 +340,232 @@ void PartyAssembler::LoadInsides()
     _insides[kMapVioletHold] = Entrance{kMapVioletHold, 1830.53f, 803.94f, 44.34f};
 
     LOG_INFO("playerbots", "Party assembler: loaded {} instance arrival points", _insides.size());
+}
+
+void PartyAssembler::LoadQuestGates()
+{
+    _questGates.clear();
+    _teaches.clear();
+    _unearnable.clear();
+
+    // Where a gating quest is earned is not written down anywhere as such, so it is
+    // derived: quest_poi says which map a quest's objectives are on, and for a
+    // dungeon attunement that map is the dungeon you have to run. Deriving it beats
+    // listing the chains here - the world data is the authority, and a realm that
+    // edits its access rows gets the matching behaviour for free.
+    QueryResult result = WorldDatabase.Query(
+        "SELECT dat.map_id, dar.requirement_type, dar.requirement_id, dar.faction, "
+        "       COALESCE((SELECT MIN(p.MapID) FROM quest_poi p "
+        "                  WHERE p.QuestID = dar.requirement_id), 0) "
+        "FROM dungeon_access_requirements dar "
+        "JOIN dungeon_access_template dat ON dat.id = dar.dungeon_access_id "
+        "WHERE dat.difficulty = 0");
+    if (!result)
+        return;
+
+    do
+    {
+        Field* f = result->Fetch();
+        uint32 const gatedMap = f[0].Get<uint32>();
+        uint32 const type = f[1].Get<uint8>();
+        uint32 const requirement = f[2].Get<uint32>();
+        uint32 const faction = f[3].Get<uint8>();
+        uint32 const earnedOn = f[4].Get<uint32>();
+
+        // 0 is an achievement and 2 is an item; neither has a run behind it that a
+        // party could be pointed at, so the destination is simply never offered.
+        if (type != 1)
+        {
+            _unearnable.insert(gatedMap);
+            continue;
+        }
+
+        // The quest has to be finished inside an instance this object knows a door
+        // to. Chains that finish out in the world - the Caverns of Time attunements
+        // run through Tanaris, not through a dungeon - have no run to redirect to.
+        if (!earnedOn || earnedOn == gatedMap || !_entrances.count(earnedOn))
+        {
+            _unearnable.insert(gatedMap);
+            continue;
+        }
+
+        // Faction 2 on the row means the door asks the same of both sides.
+        for (uint32 team = 0; team < 2; ++team)
+        {
+            if (faction < 2 && faction != team)
+                continue;
+            _questGates[gatedMap][team] = QuestGate{requirement, earnedOn};
+            _teaches[earnedOn][team] = requirement;
+        }
+        // A door that also has an earnable route is not unearnable after all; the
+        // rows arrive in no particular order, so this is settled per row.
+        _unearnable.erase(gatedMap);
+    } while (result->NextRow());
+
+    for (uint32 const mapId : _unearnable)
+        LOG_INFO("playerbots",
+                 "Party assembler: map {} asks for something no party can go and earn "
+                 "- it will not be chosen",
+                 mapId);
+
+    LOG_INFO("playerbots", "Party assembler: {} attunement gates, {} dungeons teach one",
+             uint32(_questGates.size()), uint32(_teaches.size()));
+}
+
+uint32 PartyAssembler::ResolveGate(Group* group, Player const* leader, uint32 wantMap,
+                                   uint32& earnQuest) const
+{
+    earnQuest = 0;
+    uint32 const team = leader->GetTeamId() == TEAM_HORDE ? 1u : 0u;
+    uint32 map = wantMap;
+
+    // The access check runs member by member, so one member short of the quest
+    // splits the party on the doorstep rather than turning the whole group back.
+    // The run they need is therefore the one the least-progressed of them needs.
+    auto const everyoneHolds = [group](uint32 questId)
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member->IsInWorld() && !member->GetQuestRewardStatus(questId))
+                    return false;
+        return true;
+    };
+
+    // For a door with no run behind it - a heroic key, an achievement, a chain that
+    // finishes out in the world - there is nothing to redirect to, so the question is
+    // simply whether they may walk in. Asked of the core's own check rather than
+    // assumed: a party that does happen to satisfy it should not be turned away here.
+    auto const everyoneSatisfies = [group](uint32 mapId)
+    {
+        DungeonProgressionRequirements const* ar =
+            sObjectMgr->GetAccessRequirement(mapId, DUNGEON_DIFFICULTY_NORMAL);
+        if (!ar)
+            return true;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member->IsInWorld() && !member->Satisfy(ar, mapId))
+                    return false;
+        return true;
+    };
+
+    // Follow the chain back towards the shallow end. Bounded rather than looped
+    // until it settles: a cycle in the access rows would otherwise spin here.
+    for (uint32 hop = 0; hop < 4; ++hop)
+    {
+        auto const gate = _questGates.find(map);
+        if (gate == _questGates.end())
+        {
+            if (_unearnable.count(map) && !everyoneSatisfies(map))
+                return 0;
+            break;
+        }
+        uint32 const needs = gate->second[team].quest;
+        if (!needs || everyoneHolds(needs))
+            break;   // the door is already open to all of them
+        uint32 const earnedOn = gate->second[team].earnedOn;
+        if (!earnedOn || earnedOn == map)
+            return 0;
+        map = earnedOn;
+    }
+
+    // Whatever they ended up running, they carry the quest it teaches if the door it
+    // opens is still shut to them. That is what makes an ordinary Forge of Souls run
+    // also the first step towards the Halls, without anybody planning it.
+    if (auto const teaches = _teaches.find(map); teaches != _teaches.end())
+    {
+        uint32 const quest = teaches->second[team];
+        if (quest && !everyoneHolds(quest))
+            earnQuest = quest;
+    }
+    return map;
+}
+
+bool PartyAssembler::DungeonInfo(Player const* leader, uint32 mapId, Entrance& where,
+                                 std::string& name) const
+{
+    auto const door = _entrances.find(mapId);
+    if (door == _entrances.end())
+        return false;
+    // Same continent rule as the ordinary pick: the party walks to its door, and
+    // nothing walks across an ocean.
+    if (door->second.map != leader->GetMapId())
+        return false;
+
+    where = door->second;
+    name = "a dungeon";
+    for (uint32 i = 0; i < sLFGDungeonStore.GetNumRows(); ++i)
+    {
+        LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(i);
+        if (!dungeon || dungeon->TypeID != LFG_TYPE_DUNGEON || dungeon->MapID != mapId)
+            continue;
+        if (dungeon->MinLevel && leader->GetLevel() < dungeon->MinLevel)
+            return false;
+        if (dungeon->Name[0])
+            name = dungeon->Name[0];
+        return true;
+    }
+    return false;
+}
+
+uint32 PartyAssembler::OfferGateQuest(Group* group, uint32 questId) const
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+        return 0;
+
+    uint32 offered = 0;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        // A human picks up their own quests; putting one in their log uninvited is
+        // not this object's business.
+        if (!member || !member->IsInWorld() || !GET_PLAYERBOT_AI(member))
+            continue;
+        // Already carrying it, already finished it, or no room in the log for it.
+        if (member->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+            continue;
+        if (member->GetQuestRewardStatus(questId))
+            continue;
+        if (!member->CanAddQuest(quest, false))
+            continue;
+
+        // No questgiver, deliberately: the NPC who hands this out stands in a hub
+        // the party will never walk through, and the prerequisite step before it is
+        // an outdoor chain no bot runs. AddQuest reads the argument for one thing
+        // only - copying a timer from another player on a shared timed quest - so a
+        // null one is exactly right here.
+        member->AddQuest(quest, nullptr);
+        ++offered;
+    }
+    return offered;
+}
+
+uint32 PartyAssembler::SettleGateQuest(Group* group, uint32 questId) const
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+        return 0;
+
+    uint32 settled = 0;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsInWorld() || !GET_PLAYERBOT_AI(member))
+            continue;
+        if (member->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            continue;
+        if (!member->CanRewardQuest(quest, false))
+            continue;
+
+        // The bot stands in for the questgiver. Not a null one: the reward-mail and
+        // reward-spell branches dereference that argument without checking. Handing
+        // it the player is what the core itself does when it rewards a tracking
+        // quest, and a player guid never resolves to a creature, so the branch that
+        // would have an NPC cast the reward spell simply does not fire.
+        member->RewardQuest(quest, 0, member, false);
+        ++settled;
+    }
+    return settled;
 }
 
 bool PartyAssembler::EnterInstance(Group* group, Trip const& trip)
@@ -677,6 +909,22 @@ void PartyAssembler::AdvanceTrips()
                 continue;
             }
 
+            // Attunement is taken the moment it is finished, not at the end of the
+            // run: the quest completes as the last boss falls, and a party that
+            // times out twenty minutes later still walks away with the next door
+            // open. Server-side because the NPC who takes it stands inside this
+            // instance and the module's turn-in only fires within talking distance.
+            if (trip.earnQuest)
+                if (uint32 const earned = SettleGateQuest(group, trip.earnQuest))
+                {
+                    Quest const* gate = sObjectMgr->GetQuestTemplate(trip.earnQuest);
+                    LOG_INFO("playerbots",
+                             "Party assembler: {} of {}'s party earned {} in {}",
+                             earned, leader->GetName(),
+                             gate ? gate->GetTitle() : std::to_string(trip.earnQuest),
+                             trip.name);
+                }
+
             // Two venues hold their content behind an opening request. Attempted over
             // several ticks rather than once: the party may still be landing on the
             // first, and an attempt the instance refuses costs nothing.
@@ -910,11 +1158,38 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     std::sort(options.begin(), options.end(), [leader](Option const& a, Option const& b) {
         return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where);
     });
-    Option const& chosen =
+    Option chosen =
         options[urand(0, std::min<size_t>(options.size(), _nearestChoices) - 1)];
 
     if (!GET_PLAYERBOT_AI(leader))
         return false;
+
+    // Attunement. A door that asks for a quest nobody in the party holds is not a
+    // destination to quietly drop - it is a destination with a run in front of it.
+    // Walk the chain back to the deepest step they can actually enter, go there
+    // instead, and carry the quest that opens the next door. Over successive runs a
+    // party works its way forward: Forge of Souls, then the Pit, then the Halls.
+    uint32 earnQuest = 0;
+    uint32 const runMap = ResolveGate(group, leader, chosen.dungeonMap, earnQuest);
+    if (!runMap)
+        return false;   // nothing in this chain is open to them; another pick next tick
+
+    if (runMap != chosen.dungeonMap)
+    {
+        Entrance where;
+        std::string name;
+        if (!DungeonInfo(leader, runMap, where, name))
+            return false;
+
+        Quest const* gate = sObjectMgr->GetQuestTemplate(earnQuest);
+        LOG_INFO("playerbots",
+                 "Party assembler: {} lack {} for {} - running {} to earn it",
+                 leader->GetName(),
+                 gate ? gate->GetTitle() : std::to_string(earnQuest),
+                 chosen.name, name);
+
+        chosen = Option{where, name, runMap};
+    }
 
     // Heroic mode for the walked-in party: the map must carry the mode, then
     // the gear-scaled roll decides. Access rows still hard-gate the non-gear
@@ -954,6 +1229,26 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
              start.place, start.actor, 0};
     trip.runId = RecordRunStart(group, leader, chosen.name, chosen.dungeonMap, false,
                                 uint8(dungeonDiff), how, uint32(away));
+
+    // The quest goes in the log before they set off, so every boss they kill on the
+    // way through counts. Nothing else about the run changes: it is an ordinary trip
+    // that happens to open a door on its way past.
+    if (earnQuest)
+    {
+        trip.earnQuest = earnQuest;
+        uint32 const carrying = OfferGateQuest(group, earnQuest);
+        Quest const* gate = sObjectMgr->GetQuestTemplate(earnQuest);
+        if (carrying)
+            LOG_INFO("playerbots",
+                     "Party assembler: {} of {}'s party carry {} into {}",
+                     carrying, leader->GetName(),
+                     gate ? gate->GetTitle() : std::to_string(earnQuest), chosen.name);
+        if (trip.runId && gate)
+            CharacterDatabase.Execute(
+                "UPDATE aetherion_run_history SET attunement = '{}' WHERE id = {}",
+                Sql(gate->GetTitle()), trip.runId);
+    }
+
     ++_statTrips;
     return true;
 }
@@ -1233,6 +1528,7 @@ void PartyAssembler::EnsureTelemetryTables()
         " outcome VARCHAR(16) NOT NULL DEFAULT 'underway',"
         " bosses_downed TINYINT UNSIGNED NOT NULL DEFAULT 0,"
         " wipes TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+        " attunement VARCHAR(48) NOT NULL DEFAULT '',"
         " KEY idx_started (started_at), KEY idx_map (map)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
@@ -1242,6 +1538,14 @@ void PartyAssembler::EnsureTelemetryTables()
         CharacterDatabase.DirectExecute(
             "ALTER TABLE aetherion_run_history"
             " ADD COLUMN wipes TINYINT UNSIGNED NOT NULL DEFAULT 0");
+
+    // Which attunement a run was for, so the history reads as the chain it is rather
+    // than as a party inexplicably running the Forge of Souls for the fifth time.
+    if (!CharacterDatabase.Query(
+            "SHOW COLUMNS FROM aetherion_run_history LIKE 'attunement'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN attunement VARCHAR(48) NOT NULL DEFAULT ''");
 
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_run_members ("
