@@ -6,6 +6,7 @@
 #include "GroupMgr.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "InstanceScript.h"
 #include "LFGMgr.h"
 #include "Formations.h"
 #include "NewRpgInfo.h"
@@ -41,6 +42,21 @@ namespace
     std::unordered_set<uint32> sOwnedMirror;
     std::unordered_set<uint32> sDrivenGuids;
     bool sDriveGrouped = false;
+
+    // The instance-script vocabulary of the two venues that have to be asked before
+    // they will start. These are the script enums from the core's own headers -
+    // VioletHold/violet_hold.h and FrozenHalls/HallsOfReflection/halls_of_reflection.h -
+    // which sit outside the module's include path, so they are restated rather than
+    // guessed. Each is checked against those headers whenever the core is bumped.
+    constexpr uint32 kMapVioletHold = 608;
+    constexpr uint32 kMapHallsOfReflection = 668;
+    constexpr uint32 kVhEncounterStatus = 30;    // DATA_ENCOUNTER_STATUS
+    constexpr int32 kVhStartInstance = 1;        // ACTION_START_INSTANCE
+    constexpr uint32 kHorIntro = 4;              // DATA_INTRO
+    constexpr uint32 kHorWaveNumber = 8;         // DATA_WAVE_NUMBER
+    constexpr uint32 kHorShowTrash = 11;         // ACTION_SHOW_TRASH
+    // A venue that will not take the ask is asked a few times and then left alone.
+    constexpr uint32 kVenueNudges = 4;
 }
 
 bool PartyAssembler::Owns(uint32 groupLowGuid)
@@ -114,6 +130,11 @@ void PartyAssembler::LoadConfig()
     _gatherRange = sConfigMgr->GetOption<float>("AiPlayerbot.Party.GatherRange", 400.0f);
     _stallTicks = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.StallTicks", 2);
     _insideTicks = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.InsideTicks", 20);
+    _insideTicksRaidMult =
+        sConfigMgr->GetOption<int32>("AiPlayerbot.Party.InsideTicksRaidMult", 3);
+    // Zero would hand every raid a budget of nothing and expire it on arrival.
+    if (!_insideTicksRaidMult)
+        _insideTicksRaidMult = 1;
     _sweepPerTick = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.SweepPerTick", 25);
     _huntRange = sConfigMgr->GetOption<float>("AiPlayerbot.Party.HuntRange", 8.0f);
     _nearestChoices = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.NearestChoices", 4);
@@ -384,9 +405,17 @@ void PartyAssembler::AdvanceTrips()
         // is how long it runs the place, not how long it is allowed to travel.
         // Humans run dungeons at human pace: an adopted run gets six times the
         // dwell clock a bot-only sweep needs.
-        uint32 budget = trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks;
+        // A raid is a whole evening rather than a wing sweep, so one uniform dwell
+        // clock shows it the door several bosses short of the end - which is what
+        // 148 runs ending at an average of 0.4 bosses was measuring. The two
+        // multipliers never stack: whichever venue is the more patient one wins.
+        uint32 mult = 1;
+        if (trip.phase == Phase::Inside && group && group->isRaidGroup())
+            mult = _insideTicksRaidMult;
         if (trip.adopted)
-            budget *= 6;
+            mult = std::max<uint32>(mult, 6);
+        uint32 const budget =
+            (trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks) * mult;
         if (!group || ++trip.ticks > budget)
         {
             // The ledger's verdict on this journey: a run that got inside
@@ -478,6 +507,40 @@ void PartyAssembler::AdvanceTrips()
 
         if (trip.phase == Phase::Inside)
         {
+            // Party discipline, re-asserted every tick. Death recovery calls
+            // ResetStrategies, which restores the free-bot default set - battleground
+            // queue, dungeon finder, wander - and the single strip done at formation
+            // is long gone by the time anyone dies. Revived members drifted off into
+            // battleground queues, the group sagged below two members, and the core
+            // disbanded it out from under the run: 67 of 234 recorded runs ended that
+            // way, at an average of 0.09 bosses. Re-stripping heals whatever polluted
+            // them, whether or not this object knows the source. Asked first rather
+            // than applied blindly: adding a strategy rebuilds the engine's whole
+            // trigger list, which is worth paying for the handful of members that
+            // actually drifted and not for the several hundred that did not.
+            for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+            {
+                Player* m = mi->GetSource();
+                if (!m)
+                    continue;
+                PlayerbotAI* mAI = GET_PLAYERBOT_AI(m);
+                if (!mAI)
+                    continue;
+
+                // The queues come off everyone. A leader that walks into a
+                // battleground ends the run exactly as surely as a member that does.
+                if (mAI->HasStrategy("lfg", BOT_STATE_NON_COMBAT) ||
+                    mAI->HasStrategy("bg", BOT_STATE_NON_COMBAT))
+                    mAI->ChangeStrategy("-lfg,-bg", BOT_STATE_NON_COMBAT);
+
+                // Following is for the party only. The leader is steered by
+                // destination rather than by a master, and a follow strategy would
+                // have it chase a master it does not have instead of walking to the
+                // boss the steering below just pointed it at.
+                if (m != leader && !mAI->HasStrategy("follow", BOT_STATE_NON_COMBAT))
+                    mAI->ChangeStrategy("+follow", BOT_STATE_NON_COMBAT);
+            }
+
             // Wipe watch. A raid that has fully fallen does what a determined
             // guild does: steadies itself and pulls again - resurrected at the
             // instance door with a fresh clock - until repeated wipes break
@@ -537,7 +600,18 @@ void PartyAssembler::AdvanceTrips()
                             m->ResurrectPlayer(0.5f);
                             m->SpawnCorpseBones();
                             if (PlayerbotAI* mAI = GET_PLAYERBOT_AI(m))
+                            {
                                 mAI->ResetStrategies(false);
+                                // Re-strip on the spot rather than leaving the freshly
+                                // restored defaults a whole tick to act on: this is the
+                                // exact moment a revived member would queue for a
+                                // battleground and walk out of the instance. Same rule
+                                // as the discipline pass above - the leader keeps its
+                                // destination steering instead of a master to follow.
+                                mAI->ChangeStrategy(m == leader ? "-lfg,-bg"
+                                                                : "+follow,-lfg,-bg",
+                                                    BOT_STATE_NON_COMBAT);
+                            }
                         }
                 // Reseat everyone at the inside arrival point and restart the
                 // dwell clock - determination buys a whole fresh attempt.
@@ -549,6 +623,23 @@ void PartyAssembler::AdvanceTrips()
                          leader->GetName(), trip.name, trip.wipes);
                 ++it;
                 continue;
+            }
+
+            // Two venues hold their content behind an opening request. Attempted over
+            // several ticks rather than once: the party may still be landing on the
+            // first, and an attempt the instance refuses costs nothing.
+            if (!trip.started && trip.nudges < kVenueNudges &&
+                (trip.dungeonMap == kMapVioletHold ||
+                 trip.dungeonMap == kMapHallsOfReflection))
+            {
+                ++trip.nudges;
+                if (StartVenueEvent(leader, trip))
+                {
+                    trip.started = true;
+                    LOG_INFO("playerbots",
+                             "Party assembler: {} asks for the event to start in {}",
+                             leader->GetName(), trip.name);
+                }
             }
 
             // Bosses first; trash only where no boss position is known. Held as a
@@ -641,6 +732,58 @@ void PartyAssembler::AdvanceTrips()
 
         ++it;
     }
+}
+
+// Two Northrend instances keep every one of their bosses behind a conversation.
+// Violet Hold's assault begins only when someone tells Lieutenant Sinclari to get
+// his people to safety; the Halls of Reflection waves begin only after the Jaina or
+// Sylvanas intro. Nobody holds those conversations, which is why 27 recorded Violet
+// Hold runs and 10 Halls runs killed nothing at all between them.
+//
+// The conversation itself is out of reach. Halls offers its gossip options only to a
+// player who has finished the Battered Hilt quest chain - no character on this realm
+// has, bot or otherwise - so there is no option to select, however the request is
+// delivered. So the trip asks the instance script for the same thing the gossip
+// handler would ask it for, one step further down.
+//
+// Safe from here: MapMgr::Update joins its worker threads before the world script
+// hook that drives this runs, so no map is mid-update while the call lands - the same
+// reason the teleports and resurrections above are safe on this thread.
+bool PartyAssembler::StartVenueEvent(Player* leader, Trip const& trip)
+{
+    // Only meaningful once the leader is actually standing in the place.
+    if (leader->GetMapId() != trip.dungeonMap)
+        return false;
+
+    InstanceScript* instance = leader->GetInstanceScript();
+    if (!instance)
+        return false;
+
+    if (trip.dungeonMap == kMapVioletHold)
+    {
+        // The instance refuses the action unless the assault has not begun, so this
+        // check only keeps the log honest about what was asked and answered.
+        if (instance->GetData(kVhEncounterStatus) != NOT_STARTED)
+            return false;
+        instance->DoAction(kVhStartInstance);
+        return true;
+    }
+
+    if (trip.dungeonMap == kMapHallsOfReflection)
+    {
+        // Setting the intro done a second time would advance the wave counter again
+        // and skip a wave, so a hall already under way is left alone.
+        if (instance->GetData(kHorWaveNumber) != 0)
+            return false;
+        // Both halves, in the order the intro performs them: the spirits standing in
+        // each wave are drawn first, then the first wave is released. Releasing
+        // without drawing leaves the hall empty and the run stuck.
+        instance->SetData(kHorShowTrash, 1);
+        instance->SetData(kHorIntro, DONE);
+        return true;
+    }
+
+    return false;
 }
 
 float PartyAssembler::PartyAvgIlvl(Group* group)
@@ -771,6 +914,12 @@ void PartyAssembler::ReleaseAdopted(Group* group)
     if (!group)
         return;
 
+    // The ownership shield goes with the steering. The group belongs to the player,
+    // so an entry left behind would keep the module's ordinary behaviour off it for
+    // the rest of the uptime. The cross-thread mirror is rebuilt from this set at the
+    // end of the tick, exactly as it is for every other change to it.
+    _assembled.erase(group->GetGUID().GetCounter());
+
     // Hand the bots back to the human: master restored, strategies rebuilt,
     // following the player again. With no human left they simply go free.
     Player* human = nullptr;
@@ -873,6 +1022,16 @@ bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
     trip.runId = RecordRunStart(group, leader, trip.name, mapId, group->isRaidGroup(),
                                 uint8(requester->GetDifficulty(map->IsRaid())),
                                 Travel::Foot, 0);
+
+    // Register the adopted group as owned, the same way a formed one is. Without it
+    // the module's teardown paths - which stand down only for groups Owns() answers
+    // for - dismantle the run from underneath: every bot member's "leave the group
+    // when a random bot leads it" check fires the moment the crown is passed.
+    // AssembleOne can leave the mirror to the end of the tick it runs inside;
+    // adoption arrives from the intent drain instead, so it publishes its own.
+    _assembled.insert(group->GetGUID().GetCounter());
+    SyncOwnedMirror();
+
     ++_statTrips;
     LOG_INFO("playerbots",
              "Party assembler: {} takes point in {} - adopted run for {} (run {})",

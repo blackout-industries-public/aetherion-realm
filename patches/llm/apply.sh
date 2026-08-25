@@ -445,6 +445,9 @@ AiPlayerbot.Party.MaxTripTicks = 40
 AiPlayerbot.Party.StallTicks = 2
 AiPlayerbot.Party.DriveGroupedBots = 0
 AiPlayerbot.Party.InsideTicks = 20
+# A raid is a whole evening; the same dwell clock a five-man needs expires several
+# bosses short of the end of one. Adopted runs keep their own, larger multiplier.
+AiPlayerbot.Party.InsideTicksRaidMult = 3
 AiPlayerbot.Party.SweepPerTick = 25
 AiPlayerbot.Party.HuntRange = 8
 AiPlayerbot.Party.NearestChoices = 4

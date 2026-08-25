@@ -172,6 +172,10 @@ private:
         // assembler steers and keeps the ledger, but the group is not its to
         // teleport out or disband when the run ends - the player owns it.
         bool adopted{false};
+        // Venues whose content does not begin until somebody asks for it. Counted
+        // so a venue that refuses stops being asked instead of being asked forever.
+        uint32 nudges{0};
+        bool started{false};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
@@ -210,6 +214,11 @@ private:
     void AdvanceTrips();
     bool EnterInstance(Group* group, Trip const& trip);
 
+    // Violet Hold and Halls of Reflection hold their content behind a conversation
+    // no bot ever has. Asks the instance for it directly instead; true when the ask
+    // landed. World thread only, like everything else AdvanceTrips does.
+    bool StartVenueEvent(Player* leader, Trip const& trip);
+
     bool _enabled{false};
     uint32 _intervalMs{60000};
     uint32 _targetSize{5};
@@ -236,6 +245,9 @@ private:
     // A party that has had its run is released so its bots return to the pool.
     // Without this the assembler fills its quota once and never forms another.
     uint32 _insideTicks{20};
+    // A raid is a whole evening, not a wing sweep. One dwell clock for both means
+    // raids are shown the door several bosses short of the end.
+    uint32 _insideTicksRaidMult{3};
     // Bounded per tick so a backlog drains steadily instead of teleporting hundreds of
     // characters in a single world update.
     uint32 _sweepPerTick{25};
