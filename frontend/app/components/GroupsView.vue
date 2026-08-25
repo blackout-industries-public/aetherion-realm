@@ -5,6 +5,7 @@ import UiPanel from './UiPanel.vue'
 import UiEncounters from './UiEncounters.vue'
 import UiSkull from './UiSkull.vue'
 import QuestPanels from './QuestPanels.vue'
+import ProgressionPanel from './ProgressionPanel.vue'
 import { CLASS_COLOR } from '../data'
 
 type Encounter = { name: string; killed: boolean }
@@ -370,6 +371,8 @@ const lede = computed(() => {
     >
       <QuestPanels :quests="quests" @select="emit('select', $event)" />
     </div>
+
+    <ProgressionPanel />
   </section>
 </template>
 
