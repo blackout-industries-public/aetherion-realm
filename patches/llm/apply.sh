@@ -36,9 +36,13 @@ GREETACT=src/Ai/Base/Actions/GreetAction.cpp
 EMOTEACT=src/Ai/Base/Actions/EmoteAction.cpp
 REPAIRACT=src/Ai/Base/Actions/RepairAllAction.cpp
 AUTOMAINT=src/Ai/Base/Actions/AutoMaintenanceOnLevelupAction.cpp
+#   NewRpgBaseAction.{h,cpp} -> patch_rpgcombat (2k)
+RPGBASEH=src/Ai/World/Rpg/Action/NewRpgBaseAction.h
+RPGBASECPP=src/Ai/World/Rpg/Action/NewRpgBaseAction.cpp
 git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
     "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
-    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT" "$EMOTEACT"
+    "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT" "$EMOTEACT" \
+    "$RPGBASEH" "$RPGBASECPP"
 
 mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
@@ -392,6 +396,10 @@ python3 "$HERE/patch_econ_repair.py" "$MODULE"
 # 2j. Paid training (Economy BRD E3.2): levelup/refresh free-teaching gated.
 #     Inert unless AiPlayerbot.Econ.PaidTraining = 1.
 python3 "$HERE/patch_econ_train.py" "$MODULE"
+
+# 2k. RPG movement holds while in combat (see patch_rpgcombat.py header). Without it
+#     a steered party leader strolls out of every fight and takes the party with it.
+python3 "$HERE/patch_rpgcombat.py" "$MODULE"
 
 # 3. Config defaults. Everything off or conservative unless deliberately raised.
 cat >> "$MODULE/$CONF" <<'CONFEOF'

@@ -62,6 +62,11 @@ namespace
     // A venue that will not take the ask is asked a few times and then left alone.
     constexpr uint32 kVenueNudges = 4;
 
+    // How many ticks of continuous fighting the steering waits out before it insists
+    // again. Long enough for any real pull to finish, short enough that a party
+    // deadlocked in a fight it cannot win still gets moved along.
+    constexpr uint32 kCombatHoldTicks = 8;
+
     // Venues that run long for their party size. Violet Hold is a five-man on paper,
     // but its twelve waves take as long as a raid wing does, so the ordinary dwell
     // clock expired with the party still mid-assault and nothing to show for it.
@@ -979,9 +984,44 @@ void PartyAssembler::AdvanceTrips()
                     }
                 }
 
-                if (best)
-                    GET_PLAYERBOT_AI(leader)->rpgInfo.ChangeToGoGrind(
-                        WorldPosition(trip.dungeonMap, best->x, best->y, best->z));
+                // Nobody is re-tasked mid-fight. The mover has no combat guard of its
+                // own beyond the one this patch chain adds, and a leader sent to the
+                // next pack while the current one is still swinging walks the whole
+                // party out of the fight - members follow the leader, the pack resets,
+                // and the run nets a couple of dozen yards per tick against a wing
+                // five hundred yards long. Held rather than cancelled: the
+                // destination stands, so the walk resumes the moment the fight ends.
+                bool fighting = leader->IsInCombat();
+                for (GroupReference* mi = group->GetFirstMember(); !fighting && mi != nullptr;
+                     mi = mi->next())
+                    if (Player* m = mi->GetSource())
+                        if (m->IsInWorld() && m->IsInCombat())
+                            fighting = true;
+
+                if (fighting && trip.combatTicks < kCombatHoldTicks)
+                {
+                    ++trip.combatTicks;
+                }
+                else if (best)
+                {
+                    // A fight that never ends - one member kiting, or a pack that
+                    // cannot be reached - would otherwise hold the party still until
+                    // the clock runs out, so past the hold the steering resumes.
+                    trip.combatTicks = 0;
+
+                    // Only when it actually changed. Re-issuing the same destination
+                    // restarts the mover's no-progress clock, which is what decides
+                    // whether it should fall back to a teleport.
+                    if (std::fabs(best->x - trip.aimX) > 1.0f ||
+                        std::fabs(best->y - trip.aimY) > 1.0f ||
+                        GET_PLAYERBOT_AI(leader)->rpgInfo.GetStatus() != RPG_GO_GRIND)
+                    {
+                        trip.aimX = best->x;
+                        trip.aimY = best->y;
+                        GET_PLAYERBOT_AI(leader)->rpgInfo.ChangeToGoGrind(
+                            WorldPosition(trip.dungeonMap, best->x, best->y, best->z));
+                    }
+                }
             }
             ++it;
             continue;

@@ -183,6 +183,12 @@ private:
         // The attunement this run is for, if it is one: the quest the party carries
         // in its log so the bosses it kills count towards a door it cannot yet open.
         uint32 earnQuest{0};
+        // Where the leader was last pointed, so an unchanged destination is not
+        // re-issued every tick - re-issuing restarts the mover's stuck clock.
+        float aimX{0.0f}, aimY{0.0f};
+        // Consecutive ticks the party has spent fighting. A fight nobody can win
+        // must not hold the run still forever.
+        uint32 combatTicks{0};
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
