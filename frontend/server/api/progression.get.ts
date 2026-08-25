@@ -78,7 +78,10 @@ export default defineEventHandler(async () => {
     const key = `${kind}:${r.id}`
     const g = gates.get(key) ?? {
       era: eraOf(Number(r.map)), kind, id: Number(r.id),
-      name: tidy(r.note || r.label || ''), opens: new Set<string>(),
+      name: Number(r.type) === 0
+        ? String(r.label || r.note || '').trim()
+        : tidy(r.note || r.label || ''),
+      opens: new Set<string>(),
       holders: 0, inProgress: 0, heroic: Number(r.difficulty) > 0, legacy: false,
     }
     g.opens.add(NAMES[Number(r.map)] ? tidy(NAMES[Number(r.map)]!) : `Map ${r.map}`)
@@ -115,7 +118,7 @@ export default defineEventHandler(async () => {
          WHERE achievement IN (${inList(achIds)}) GROUP BY achievement`),
       // Every old raid: how often it has been entered at all, and how many of its
       // encounters have ever been beaten there.
-      q(`SELECT t.map_id AS map, COUNT(DISTINCT i.id) AS visits,
+      q(`SELECT t.map_id AS map, MIN(t.comment) AS label, COUNT(DISTINCT i.id) AS visits,
                 COUNT(DISTINCT IF(i.completedEncounters & (1 << de.Bit), de.ID, NULL)) AS killed,
                 (SELECT COUNT(*) FROM acore_world.dungeonencounter_dbc d2
                   WHERE d2.MapID = t.map_id AND d2.Difficulty = 0) AS bosses
@@ -195,7 +198,7 @@ export default defineEventHandler(async () => {
       const r = visitsBy.get(map)
       return {
         map,
-        name: NAMES[map] ? raidName(NAMES[map]!) : `Map ${map}`,
+        name: r?.label ? raidName(r.label) : NAMES[map] ? raidName(NAMES[map]!) : `Map ${map}`,
         visits: Number(r?.visits ?? 0),
         killed: Number(r?.killed ?? 0),
         bosses: Number(r?.bosses ?? 0),
