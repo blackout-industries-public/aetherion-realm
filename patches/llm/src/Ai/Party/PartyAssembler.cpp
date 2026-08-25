@@ -1894,10 +1894,13 @@ bool PartyAssembler::SendPartyToOldContent(Group* group, Player* leader)
         if (map->Expansion() >= EXPANSION_WRATH_OF_THE_LICH_KING)
             continue;
 
-        // Same continent, for the same reason every other destination must be: the
-        // leader walks to the door and nothing paths across an ocean.
-        if (door.map != leader->GetMapId())
-            continue;
+        // Deliberately not restricted to the leader's own continent, unlike every
+        // other destination. Old content is almost all in the Eastern Kingdoms and
+        // Kalimdor while a level-eighty realm lives in Northrend, so the same-continent
+        // rule would silently rule out every candidate and the persona would never
+        // once act. Crossing is already solved: BeginTravel hearths or portals the
+        // party to a capital on the destination's continent whenever the door is on
+        // another map, and only the last stretch is walked.
 
         // Being massively over-geared is the entire point, so gear never vetoes
         // here. The level floor and the access rows still do - an unattuned party
@@ -1937,13 +1940,13 @@ bool PartyAssembler::SendPartyToOldContent(Group* group, Player* leader)
     if (options.empty())
         return false;
 
-    // Nearest few, then a random pick among them - the same shape the ordinary
-    // destination choice uses, so collectors spread across what is reachable
-    // instead of all filing into the same doorway.
-    std::sort(options.begin(), options.end(), [leader](Option const& a, Option const& b)
-              { return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where); });
-    Option const& chosen =
-        options[urand(0, std::min<size_t>(options.size(), _nearestChoices) - 1)];
+    // A free pick across the whole list rather than the nearest few. Distance does
+    // not order these the way it orders a local dungeon run: the party hearths to
+    // the destination's continent either way, so the yards between here and there
+    // say nothing about which ruin is worth visiting, and picking widely is what
+    // spreads collectors across old content instead of queueing them all at one
+    // door.
+    Option const& chosen = options[urand(0, options.size() - 1)];
 
     // A raid map will not admit a party group at all, whatever its level. Converting
     // costs nothing for a five-man and is what makes Molten Core reachable.
