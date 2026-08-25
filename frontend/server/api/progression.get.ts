@@ -105,7 +105,7 @@ export default defineEventHandler(async () => {
 
   const inList = (s: Set<number>) => [...s].join(',') || '0'
   const [questNames, itemNames, rewarded, active, held, earned, frontier, earning,
-         collectorCount, collectorRuns, legendary] =
+         liveKills, collectorCount, collectorRuns, legendary] =
     await Promise.all([
       q(`SELECT ID AS id, LogTitle AS name FROM acore_world.quest_template WHERE ID IN (${inList(questIds)})`),
       q(`SELECT entry AS id, name FROM acore_world.item_template WHERE entry IN (${inList(itemIds)})`),
@@ -130,6 +130,13 @@ export default defineEventHandler(async () => {
          WHERE t.difficulty = 0
            AND t.map_id IN (${[...Object.values(OLD_RAIDS)].flat().join(',')})
          GROUP BY t.map_id`),
+      q(`SELECT i.map AS map,
+                COUNT(DISTINCT IF(i.completedEncounters & (1 << de.Bit), de.ID, NULL)) AS killed
+         FROM acore_characters.instance i
+         JOIN acore_world.dungeonencounter_dbc de
+           ON de.MapID = i.map AND de.Difficulty = i.difficulty
+         WHERE i.map IN (${[...Object.values(OLD_RAIDS)].flat().join(',')})
+         GROUP BY i.map`),
       // Attunement runs the assembler is undertaking right now.
       q(`SELECT attunement AS name, COUNT(*) AS runs,
                 SUM(ended_at = 0) AS underway
@@ -185,6 +192,7 @@ export default defineEventHandler(async () => {
   }
 
   const visitsBy = new Map<number, any>(frontier.map(r => [Number(r.map), r]))
+  const liveBy = new Map<number, number>(liveKills.map(r => [Number(r.map), Number(r.killed ?? 0)]))
   const eras = ERAS.map(e => ({
     ...e,
     gates: Object.values([...gates.values()]
@@ -209,7 +217,7 @@ export default defineEventHandler(async () => {
         map,
         name: r?.label ? raidName(r.label) : NAMES[map] ? raidName(NAMES[map]!) : `Map ${map}`,
         visits: Number(r?.visits ?? 0),
-        killed: Number(r?.killed ?? 0),
+        killed: Math.max(Number(r?.killed ?? 0), liveBy.get(map) ?? 0),
         bosses: Number(r?.bosses ?? 0),
       }
     }).sort((a, b) => b.killed - a.killed || a.name.localeCompare(b.name)),
