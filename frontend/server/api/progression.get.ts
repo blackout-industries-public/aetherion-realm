@@ -8,6 +8,9 @@ import { instanceNames } from '../utils/places'
 // quest ids can be named here. Everything else - names, boss counts, who holds
 // what - is read from the world and character tables.
 
+// Blizzard removed these requirements in 3.0, so on a Wrath realm they are
+// history rather than a door: shown because the progression story starts here,
+// flagged so nobody reads a zero as a blocked party.
 const RAID_GATES = [
   { era: 'classic', map: 409, quests: [7848, 7487] },
   { era: 'classic', map: 249, quests: [6502] },
@@ -39,15 +42,16 @@ const eraOf = (map: number) =>
   map === 269 || map === 560 ? 'tbc' : map >= 600 ? 'wrath' : map >= 500 ? 'tbc' : 'classic'
 
 const tidy = (s: string) =>
-  String(s ?? '').replace(/\s*-\s*\d+\s*man.*$/i, '').replace(/\s*\((?:DM|WC|ZG|BWL|AQ\d+)\)\s*$/i, '')
-    .split(',').pop()!.trim()
+  String(s ?? '').replace(/\s*-\s*\d+\s*man.*$/i, '')
+    .replace(/\s*\((?:DM|WC|ZG|BWL|AQ\d+)\)\s*$/i, '')
+    .split('/')[0]!.split(',').pop()!.trim()
 
 export default defineEventHandler(async () => {
   const NAMES = await instanceNames()
 
   const dbGates = await q(`
     SELECT r.requirement_type AS type, r.requirement_id AS id, r.faction,
-           t.map_id AS map, t.difficulty, r.requirement_note AS note
+           t.map_id AS map, t.difficulty, r.requirement_note AS note, r.comment AS label
     FROM acore_world.dungeon_access_requirements r
     JOIN acore_world.dungeon_access_template t ON t.id = r.dungeon_access_id
   `)
@@ -56,7 +60,7 @@ export default defineEventHandler(async () => {
   // same dungeon is gated on both difficulties, so they collapse by requirement.
   type Gate = {
     era: string; kind: string; id: number; name: string; opens: Set<string>
-    holders: number; inProgress: number; heroic: boolean
+    holders: number; inProgress: number; heroic: boolean; legacy: boolean
   }
   const gates = new Map<string, Gate>()
   const questIds = new Set<number>()
@@ -68,8 +72,8 @@ export default defineEventHandler(async () => {
     const key = `${kind}:${r.id}`
     const g = gates.get(key) ?? {
       era: eraOf(Number(r.map)), kind, id: Number(r.id),
-      name: tidy(r.note ?? ''), opens: new Set<string>(),
-      holders: 0, inProgress: 0, heroic: Number(r.difficulty) > 0,
+      name: tidy(r.note || r.label || ''), opens: new Set<string>(),
+      holders: 0, inProgress: 0, heroic: Number(r.difficulty) > 0, legacy: false,
     }
     g.opens.add(NAMES[Number(r.map)] ? tidy(NAMES[Number(r.map)]!) : `Map ${r.map}`)
     gates.set(key, g)
@@ -83,7 +87,7 @@ export default defineEventHandler(async () => {
     gates.set(`quest:${g.quests[0]}`, {
       era: g.era, kind: 'quest', id: g.quests[0]!, name: '',
       opens: new Set([NAMES[g.map] ? tidy(NAMES[g.map]!) : `Map ${g.map}`]),
-      holders: 0, inProgress: 0, heroic: false,
+      holders: 0, inProgress: 0, heroic: false, legacy: true,
     })
   }
   // Alternate ids for the same attunement roll up into its primary row.
@@ -168,11 +172,12 @@ export default defineEventHandler(async () => {
     gates: [...gates.values()]
       .filter(g => g.era === e.key)
       .map(g => ({
-        kind: g.kind, name: g.name, heroic: g.heroic,
+        kind: g.kind, name: g.name, heroic: g.heroic, legacy: g.legacy,
         opens: [...g.opens].sort(),
         holders: g.holders, inProgress: g.inProgress,
       }))
-      .sort((a, b) => b.holders - a.holders || a.name.localeCompare(b.name)),
+      .sort((a, b) => Number(a.legacy) - Number(b.legacy) ||
+                      b.holders - a.holders || a.name.localeCompare(b.name)),
     raids: (OLD_RAIDS[e.key] ?? []).map(map => {
       const r = visitsBy.get(map)
       return {

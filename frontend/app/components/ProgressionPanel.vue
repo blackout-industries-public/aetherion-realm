@@ -57,15 +57,22 @@ const KIND_NOTE: Record<string, string> = {
 
         <div :style="{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: '11px' }">
           <div v-if="era.gates.length">
-            <div :style="capMini">GATES</div>
+            <div :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }">
+              <span :style="capMini">GATES</span>
+              <span
+                v-if="era.gates.some((g: any) => g.legacy)"
+                :style="{ fontFamily: FONT.mono, fontSize: '9px', color: V.faint2, marginBottom: '6px' }"
+              >LIFTED = no longer enforced in 3.3.5</span>
+            </div>
             <div
               v-for="g in era.gates"
               :key="g.name + g.opens.join()"
               :style="{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', alignItems: 'baseline', padding: '2px 0' }"
             >
               <span :style="{ minWidth: 0 }">
-                <span :style="{ fontSize: '12.5px', color: g.holders ? V.textHi : V.muted }">{{ g.name }}</span>
+                <span :style="{ fontSize: '12.5px', color: g.holders ? V.textHi : g.legacy ? V.faint : V.muted }">{{ g.name }}</span>
                 <span :style="{ fontSize: '11px', color: V.faint }"> · {{ g.opens.join(', ') }}</span>
+                <span v-if="g.legacy" :style="{ fontFamily: FONT.mono, fontSize: '9px', color: V.faint2 }"> LIFTED</span>
               </span>
               <span :style="{ fontFamily: FONT.mono, fontSize: '11px', color: g.holders ? T.green : V.faint, whiteSpace: 'nowrap' }">
                 {{ g.holders ? fmt.int(g.holders) : '—' }}<span v-if="g.inProgress" :style="{ color: V.accent }"> +{{ fmt.int(g.inProgress) }}</span>
