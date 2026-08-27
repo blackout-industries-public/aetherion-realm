@@ -3,6 +3,10 @@ import { computed, ref, watch } from 'vue'
 import { T, V, FONT, STATE, fmt } from '../theme'
 import { CLASS_COLOR, zoneName } from '../data'
 
+// Item rarity is the game's own ladder, never the palette's.
+const QUALITY = ['oklch(0.62 0 0)', 'oklch(0.86 0.01 100)', 'oklch(0.72 0.17 145)',
+  'oklch(0.68 0.13 250)', 'oklch(0.66 0.18 300)', 'oklch(0.74 0.16 60)'] as const
+
 type FeedEvent = {
   id: number; guid: number; who: string; cls: number; level: number
   faction: string; kind: string; tag: string; movedToZone: number | null
@@ -15,6 +19,7 @@ const props = defineProps<{
   ready: boolean
   selected: string | null
   detail: any | null
+  armory: any | null
   activity: string | null
   loading: boolean
 }>()
@@ -176,6 +181,44 @@ const sparkAny = computed(() => spark.value.some(v => v > 0))
             borderLeft: `2px solid ${V.accentDim}`, background: V.panel,
           }"
         >{{ activity }}</p>
+
+        <div v-if="armory?.found" :style="{ marginTop: '12px' }">
+          <div :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '5px' }">
+            <span :style="{ fontFamily: FONT.display, fontWeight: 600, fontSize: '9px', letterSpacing: '.14em', color: V.faint2 }">ARMORY</span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.accent }">
+              ilvl {{ armory.avgIlvl }}<span v-if="armory.empties" :style="{ color: T.red }"> · {{ armory.empties }} bare</span>
+            </span>
+          </div>
+
+          <div
+            v-for="g in armory.gear"
+            :key="g.slotId"
+            :style="{ display: 'grid', gridTemplateColumns: '68px 1fr auto', gap: '6px', alignItems: 'baseline', padding: '1px 0' }"
+          >
+            <span :style="{ fontFamily: FONT.mono, fontSize: '9.5px', color: V.faint2 }">{{ g.slot.toLowerCase() }}</span>
+            <span :style="{ fontSize: '11.5px', color: QUALITY[Math.min(g.quality, 5)], overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ g.name }}</span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '9.5px', color: V.faint }">{{ g.ilvl || '' }}</span>
+          </div>
+
+          <div v-if="armory.skills.length" :style="{ marginTop: '8px', fontSize: '11.5px', color: V.body, lineHeight: 1.6 }">
+            <span v-for="(sk, i) in armory.skills" :key="sk.name">
+              <span :style="{ color: V.textMid }">{{ sk.name }}</span>
+              <span :style="{ fontFamily: FONT.mono, color: sk.value >= sk.max ? T.green : V.faint }"> {{ sk.value }}</span>{{ i < armory.skills.length - 1 ? ' · ' : '' }}
+            </span>
+          </div>
+
+          <div :style="{ marginTop: '8px', fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">
+            {{ armory.gold }}g held · {{ armory.achievements.total }} achievements ·
+            {{ armory.bank.count }} in bank
+          </div>
+
+          <div v-if="armory.bank.items.length" :style="{ marginTop: '4px', fontSize: '11px', lineHeight: 1.5 }">
+            <span v-for="(b, i) in armory.bank.items" :key="b.name">
+              <span :style="{ color: QUALITY[Math.min(b.quality, 5)] }">{{ b.name }}</span><span
+                v-if="b.count > 1" :style="{ color: V.faint }">×{{ b.count }}</span>{{ i < armory.bank.items.length - 1 ? ', ' : '' }}
+            </span>
+          </div>
+        </div>
 
         <div :style="{ display: 'flex', gap: '6px', marginTop: '10px' }">
           <button

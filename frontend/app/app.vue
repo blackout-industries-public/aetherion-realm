@@ -119,18 +119,26 @@ watch(entities, list => refreshMovement(list), { immediate: true })
 // history and personality.
 const selected = ref<string | null>(null)
 const detail = ref<any | null>(null)
+const armory = ref<any | null>(null)
 const loadingDetail = ref(false)
 
 async function select(name: string) {
   if (!name) return
   selected.value = name
   detail.value = null
+  armory.value = null
   loadingDetail.value = true
   try {
     // One call: the bridge's history response already carries personality and level.
-    const history = await $fetch<any>(`/api/bot/${name}/history`).catch(() => null)
+    // The armory is a separate read: it comes from the realm's own tables while
+    // history comes from the bridge, and one being down should not blank the other.
+    const [history, sheet] = await Promise.all([
+      $fetch<any>(`/api/bot/${name}/history`).catch(() => null),
+      $fetch<any>(`/api/armory/${name}`).catch(() => null),
+    ])
     const ent = entities.value.find(e => e.name === name)
     detail.value = { ...(history ?? {}), cls: ent?.cls ?? 0, level: history?.level ?? ent?.level ?? 0 }
+    armory.value = sheet
   } finally {
     loadingDetail.value = false
   }
@@ -520,6 +528,7 @@ onUnmounted(() => {
         :ready="!!events?.ready"
         :selected="selected"
         :detail="detail"
+        :armory="armory"
         :activity="activity"
         :loading="loadingDetail"
         @select="select"
