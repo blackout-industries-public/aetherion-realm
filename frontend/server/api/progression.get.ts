@@ -137,10 +137,20 @@ export default defineEventHandler(async () => {
            ON de.MapID = i.map AND de.Difficulty = i.difficulty
          WHERE i.map IN (${[...Object.values(OLD_RAIDS)].flat().join(',')})
          GROUP BY i.map`),
-      q(`SELECT le.map AS map, ct.name AS boss, COUNT(*) AS kills
+      q(`SELECT le.map AS map, ct.name AS boss
          FROM acore_characters.log_encounter le
          LEFT JOIN acore_world.creature_template ct ON ct.entry = le.creditEntry
-         WHERE ct.name IS NOT NULL GROUP BY le.map, ct.name`),
+         WHERE ct.name IS NOT NULL GROUP BY le.map, ct.name
+         UNION
+         SELECT i.map AS map, COALESCE(ct2.name, ie.comment) AS boss
+         FROM acore_characters.instance i
+         JOIN acore_world.dungeonencounter_dbc de
+           ON de.MapID = i.map AND de.Difficulty = i.difficulty
+         JOIN acore_world.instance_encounters ie ON ie.entry = de.ID
+         LEFT JOIN acore_world.creature_template ct2
+           ON ct2.entry = ie.creditEntry AND ie.creditType = 0
+         WHERE i.completedEncounters & (1 << de.Bit)
+         GROUP BY i.map, boss`),
       // Attunement runs the assembler is undertaking right now.
       q(`SELECT attunement AS name, COUNT(*) AS runs,
                 SUM(ended_at = 0) AS underway
