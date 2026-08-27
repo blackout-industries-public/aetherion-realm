@@ -105,10 +105,18 @@ const KIND_NOTE: Record<string, string> = {
                   :style="{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.round((r.killed / Math.max(1, r.bosses)) * 100)}%`, background: T.green }"
                 />
               </span>
-              <span :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: r.killed ? V.text : V.faint, whiteSpace: 'nowrap' }">
+              <span
+                :style="{ fontFamily: FONT.mono, fontSize: '10.5px', color: r.killed ? V.text : V.faint, whiteSpace: 'nowrap' }"
+                :title="r.beaten?.length ? `beaten: ${r.beaten.join(', ')}` : ''"
+              >
                 {{ r.killed }}/{{ r.bosses }}<span v-if="r.visits" :style="{ color: V.faint }"> · {{ r.visits }} run{{ r.visits === 1 ? '' : 's' }}</span>
               </span>
             </div>
+            <div
+              v-for="r in era.raids.filter((x: any) => x.beaten?.length)"
+              :key="`beaten-${r.map}`"
+              :style="{ fontSize: '11px', color: T.green, lineHeight: 1.5, paddingLeft: '2px' }"
+            >{{ r.name }}: {{ r.beaten.join(', ') }}</div>
           </div>
         </div>
       </section>

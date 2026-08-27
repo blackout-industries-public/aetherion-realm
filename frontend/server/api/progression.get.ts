@@ -105,7 +105,7 @@ export default defineEventHandler(async () => {
 
   const inList = (s: Set<number>) => [...s].join(',') || '0'
   const [questNames, itemNames, rewarded, active, held, earned, frontier, earning,
-         liveKills, collectorCount, collectorRuns, legendary] =
+         liveKills, namedKills, collectorCount, collectorRuns, legendary] =
     await Promise.all([
       q(`SELECT ID AS id, LogTitle AS name FROM acore_world.quest_template WHERE ID IN (${inList(questIds)})`),
       q(`SELECT entry AS id, name FROM acore_world.item_template WHERE entry IN (${inList(itemIds)})`),
@@ -137,6 +137,10 @@ export default defineEventHandler(async () => {
            ON de.MapID = i.map AND de.Difficulty = i.difficulty
          WHERE i.map IN (${[...Object.values(OLD_RAIDS)].flat().join(',')})
          GROUP BY i.map`),
+      q(`SELECT le.map AS map, ct.name AS boss, COUNT(*) AS kills
+         FROM acore_characters.log_encounter le
+         LEFT JOIN acore_world.creature_template ct ON ct.entry = le.creditEntry
+         WHERE ct.name IS NOT NULL GROUP BY le.map, ct.name`),
       // Attunement runs the assembler is undertaking right now.
       q(`SELECT attunement AS name, COUNT(*) AS runs,
                 SUM(ended_at = 0) AS underway
@@ -193,6 +197,14 @@ export default defineEventHandler(async () => {
 
   const visitsBy = new Map<number, any>(frontier.map(r => [Number(r.map), r]))
   const liveBy = new Map<number, number>(liveKills.map(r => [Number(r.map), Number(r.killed ?? 0)]))
+  // Which bosses actually fell, by name. A count cannot distinguish a raid's
+  // final boss from an optional one standing nearer the door.
+  const namedBy = new Map<number, string[]>()
+  for (const r of namedKills) {
+    const list = namedBy.get(Number(r.map)) ?? []
+    list.push(String(r.boss))
+    namedBy.set(Number(r.map), list)
+  }
   const eras = ERAS.map(e => ({
     ...e,
     gates: Object.values([...gates.values()]
@@ -217,7 +229,9 @@ export default defineEventHandler(async () => {
         map,
         name: r?.label ? raidName(r.label) : NAMES[map] ? raidName(NAMES[map]!) : `Map ${map}`,
         visits: Number(r?.visits ?? 0),
-        killed: Math.max(Number(r?.killed ?? 0), liveBy.get(map) ?? 0),
+        killed: Math.max(Number(r?.killed ?? 0), liveBy.get(map) ?? 0,
+                         (namedBy.get(map) ?? []).length),
+        beaten: (namedBy.get(map) ?? []).sort(),
         bosses: Number(r?.bosses ?? 0),
       }
     }).sort((a, b) => b.killed - a.killed || a.name.localeCompare(b.name)),
