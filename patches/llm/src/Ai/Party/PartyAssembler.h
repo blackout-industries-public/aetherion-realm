@@ -130,8 +130,19 @@ private:
     };
     std::unordered_map<uint32, Entrance> _entrances;   // instance map id -> outdoor spot
     std::unordered_map<uint32, Entrance> _insides;     // instance map id -> inside spot
+    // Where a boss stands, and which creature's death credits its encounter. The
+    // credit entry is what ties a position on the floor to a bit in the instance's
+    // own completed-encounter mask, so a boss the mask says is already dead is never
+    // walked at - whether it died to this party ten minutes ago or to the party that
+    // held this lockout yesterday.
+    struct BossSpot
+    {
+        float x{0.f}, y{0.f}, z{0.f};
+        uint32 creditEntry{0};
+    };
+
     std::unordered_map<uint32, std::vector<Entrance>> _spawns;  // instance map id -> packs
-    std::unordered_map<uint32, std::vector<Entrance>> _bosses;  // instance map id -> bosses
+    std::unordered_map<uint32, std::vector<BossSpot>> _bosses;  // instance map id -> bosses
     // Dwell-clock multiplier per map, derived from how far the farthest boss stands
     // from the arrival point. A party closes roughly twenty yards a tick once it is
     // fighting its way in, so a five-hundred-yard wing spends its whole budget
@@ -144,6 +155,25 @@ private:
     std::unordered_map<uint32, uint16> _ilvlFloor;
     static float PartyAvgIlvl(Group* group);
     uint32 GearScaledPct(Group* group, uint32 mapId, uint8 difficulty, uint32 fullPct) const;
+
+    // What the party's gear says about one destination. The operator's question -
+    // "is this raid even possible for us" - has three honest answers and this is
+    // where they are decided, once, so the log line, the appetite roll and the
+    // ledger row all say the same thing.
+    struct GearVerdict
+    {
+        uint16 floor{0};     // what the door asks, 0 when the realm never said
+        int16 margin{0};     // party average minus that floor
+        uint32 weight{100};  // relative appetite, 0 when it is out of reach
+        char const* band{"unmeasured"};
+    };
+    GearVerdict JudgeGear(Group* group, uint32 mapId, uint8 difficulty) const;
+
+    // How many encounters the place holds at this difficulty, from the same list
+    // the core credits kills against. Zero when the realm has no encounter data,
+    // which is the signal to fall back to "walk until the clock stops".
+    static uint32 EncounterCount(uint32 mapId, uint8 difficulty);
+    static uint32 CountBits(uint32 mask);
 
 
     // How a real group gets to a dungeon: one player travels, everyone else waits,
@@ -178,7 +208,8 @@ private:
     // Declared after Travel, which the signature needs.
     uint32 _runSeq{0};
     uint32 RecordRunStart(Group* group, Player* leader, std::string const& name, uint32 mapId,
-                          bool isRaid, uint8 difficulty, Travel how, uint32 startYards);
+                          bool isRaid, uint8 difficulty, Travel how, uint32 startYards,
+                          GearVerdict const& gear, uint16 gearCeiling);
     void EndRun(uint32 runId, uint32 mapId, char const* outcome);
 
     // "Not walking at any boss right now". Zero is a real index into the boss list,
@@ -236,6 +267,34 @@ private:
         // A trip into content the realm has outgrown, chasing achievements and old
         // legendaries rather than progression.
         bool collector{false};
+        // Which mode the group set out in. Needed inside the run to ask the core for
+        // this venue's encounter list, which is keyed by (map, difficulty).
+        uint8 difficulty{0};
+        // The instance's own completed-encounter mask, read live each tick while the
+        // party is standing in it. entryMask is whatever was already down when they
+        // walked in - a lockout somebody else spent - so credit for this run is the
+        // difference and never the total. killMask only ever grows: an instance that
+        // resets under a party must not be able to take its record away.
+        uint32 entryMask{0};
+        uint32 killMask{0};
+        bool maskSeeded{false};
+        uint32 bossesDown{0};        // encounters this run put down itself
+        uint32 encounters{0};        // how many the venue holds at this difficulty
+        // Determination, earned rather than configured. Every encounter that falls
+        // buys the run a bounded extension of its dwell clock, so a raid that is
+        // still killing things is not shown the door mid-progress - and a raid that
+        // is killing nothing gets exactly the clock it always had.
+        uint32 bonusTicks{0};
+        uint32 extensions{0};
+        // Consecutive ticks with every boss position visited and nothing new dead.
+        // A run with nothing left to walk at is finished; without this it hunts
+        // trash for the rest of an hour-and-a-half clock holding 10-25 bots.
+        uint32 idleTicks{0};
+        // Ticks spent trying to pull the party to the leader's stone. Ulduar's
+        // doorway trigger stands 100 yards above its own platform, so summoned
+        // members fall out of range and are summoned into the air again - 34 runs
+        // reached that door and 4 ever got in.
+        uint32 summonTicks{0};
         // Who was in the party at the end of the previous tick. Diffed against the
         // live roster so a member that disappears is named at the moment it happens,
         // against this run's own id rather than a group id that gets reused.
@@ -318,6 +377,16 @@ private:
     void AdvanceTrips();
     bool EnterInstance(Group* group, Trip const& trip);
 
+    // Reads the instance's own completed-encounter mask and turns it into a durable
+    // record: every encounter that falls is stamped to the ledger at the moment it
+    // dies, named from the encounter list. The old count was read once at EndRun from
+    // the `instance` table, which is live state pruned on reset - a run whose instance
+    // had gone recorded zero however deep it got, and nothing outside WotLK raids was
+    // ever named at all, because the core's own encounter log refuses everything else.
+    // Also retires the boss positions the mask says are done, which is what lets a
+    // party that inherits a spent lockout walk past the corpses to what is left.
+    void NoteKills(Group* group, Player* leader, Trip& trip);
+
     // Everything a party inside an instance needs to still be a party next tick:
     // dead members put back on their feet once the fight is over, members that ended
     // up off the dungeon map brought back, and departures recorded. Partial deaths
@@ -385,6 +454,28 @@ private:
     // How many full wipes a run absorbs before the group calls it. Zero
     // restores the old behavior: first wipe quietly burns the clock out.
     uint32 _wipeRetries{3};
+    // Extra attempts a run earns per encounter it has already put down, capped.
+    // Determination that has to be paid for: a raid four bosses deep is in business
+    // and gets to keep pulling, a raid that wipes on the trash still calls it after
+    // the base retries.
+    uint32 _wipeBonusPerBoss{1};
+    uint32 _wipeBonusCap{4};
+    // What a kill buys, in dwell ticks, and how many times over. Bounded so a venue
+    // that keeps feeding a party kills cannot hold a raid's worth of bots forever.
+    uint32 _progressExtendTicks{10};
+    uint32 _progressExtendMax{4};
+    // How far under a door's item-level floor a party will still try. At the floor
+    // the appetite is whole; it ramps to nothing this far below, which is the same
+    // ramp the heroic roll has always used. Deeper than this and the destination is
+    // named as out of reach rather than quietly attempted.
+    uint32 _gearStretch{20};
+    // Ticks the summon at the door is given before the party is taken in anyway.
+    // Standing at the stone is scenery; the instance teleport does not care where
+    // anyone was standing when it fired.
+    uint32 _summonTicks{4};
+    // Ticks a run with nothing left to walk at is given before it is closed out, so
+    // a fight in progress and a spell-credited encounter both still have room to land.
+    uint32 _exhaustGrace{4};
     // Consecutive assemblies refused for want of a tank or a healer, indexed by size
     // class (party, raid). Without a ceiling a bracket that truly holds neither would
     // stop forming parties altogether, so the run of refusals is what releases one.
@@ -412,6 +503,12 @@ private:
     uint32 _statStalls{0};
     uint32 _statArrived{0};
     uint32 _statEntered{0};
+    // Destinations a forming raid looked at and put back: the first because the party
+    // is not geared for it yet, the second because a party of bots cannot perform it
+    // at all. Two different answers to "is this even possible", counted apart so the
+    // board can tell "come back better dressed" from "never, not by us".
+    uint32 _statGearRefused{0};
+    uint32 _statUnperformable{0};
     uint32 _raidMapCount{0};
 
     // Parties this assembler built, so it can stop once the world holds enough of

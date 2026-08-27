@@ -17,6 +17,7 @@
 #include "WorldSession.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"   // DungeonEncounterList: which bit of the mask is which boss
 #include "Player.h"
 #include "PlayerbotAI.h"   // IsRealPlayer
 #include "Playerbots.h"
@@ -109,6 +110,47 @@ namespace
             if (venue.map == mapId)
                 return venue.mult;
         return 1;
+    }
+
+    // Venues whose FIRST encounter a party of bots alone structurally cannot perform,
+    // however long it is given and however well geared it is. This is a different kind
+    // of "no" from the gear one: gear says not yet, this says not by us.
+    //
+    // Ulduar is the only member, and it is one for three reasons that had to hold
+    // together, each read out of the source rather than assumed:
+    //  - Flame Leviathan is a vehicle fight. The salvaged Siege Engine, Demolisher and
+    //    Chopper are boarded by spell click and the damage comes from the vehicle's
+    //    own bar; a party on foot has no way to hurt it.
+    //  - mod-playerbots does implement that fight - RaidUlduarStrategy carries
+    //    "flame leviathan enter vehicle" and a per-vehicle combat action, and this
+    //    realm has ApplyInstanceStrategies on, so map 603 does load it. But the
+    //    trigger that starts it, FlameLeviathanVehicleNearTrigger, requires the bot's
+    //    MASTER to already be sitting in a vehicle. The whole implementation is
+    //    bootstrapped by a human boarding first. In a bot-only raid the leader has no
+    //    master and every member's master is the leader, so nobody is ever first and
+    //    not one bot ever boards.
+    //  - Flame Leviathan is not skippable: GO_LIGHTNING_WALL1 is registered against
+    //    BOSS_LEVIATHAN as DOOR_TYPE_PASSAGE, and a passage door opens only on DONE.
+    //    The rest of the instance is behind it.
+    // So a bot-only raid sent here parks 10 to 25 characters for up to two hours to
+    // achieve nothing. A human-led adopted run is exactly the case the module's
+    // strategy was written for and is not refused - only the assembler's own picking
+    // consults this.
+    struct Unperformable
+    {
+        uint32 map;
+        char const* why;
+    };
+    constexpr Unperformable kUnperformable[] = {
+        { 603, "its first boss is a vehicle fight no bot can start without a player" },
+    };
+
+    char const* CannotPerform(uint32 mapId)
+    {
+        for (Unperformable const& venue : kUnperformable)
+            if (venue.map == mapId)
+                return venue.why;
+        return nullptr;
     }
 }
 
@@ -258,6 +300,20 @@ void PartyAssembler::LoadConfig()
     _musterEveryMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterEveryMin", 45);
     _musterTimeoutMin = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MusterTimeoutMin", 12);
     _wipeRetries = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.WipeRetries", 3);
+    _wipeBonusPerBoss =
+        sConfigMgr->GetOption<int32>("AiPlayerbot.Party.WipeBonusPerBoss", 1);
+    _wipeBonusCap = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.WipeBonusCap", 4);
+    _progressExtendTicks =
+        sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ProgressExtendTicks", 10);
+    _progressExtendMax =
+        sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ProgressExtendMax", 4);
+    // Zero would make every door either open or shut on the exact item level, which
+    // is the precise-gear veto this deliberately is not.
+    _gearStretch = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.GearStretch", 20);
+    if (!_gearStretch)
+        _gearStretch = 1;
+    _summonTicks = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.SummonTicks", 4);
+    _exhaustGrace = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ExhaustGrace", 4);
     _shortAbortLimit = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ShortAbortLimit", 3);
     _collectorPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.CollectorPct", 60);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
@@ -387,12 +443,15 @@ void PartyAssembler::LoadBossPositions()
     // creditType 0 means the encounter is credited by killing a creature, so its entry
     // resolves to a spawn. The other 34 encounters are credited by spell and have no
     // position; trash steering covers those maps.
+    // The credit entry travels with the position. It is the only thing that ties a
+    // spot on the floor to a bit in the instance's completed-encounter mask, and
+    // without that tie a dead boss can only be recognised by walking onto its corpse.
     QueryResult result = WorldDatabase.Query(
-        "SELECT c.map, c.position_x, c.position_y, c.position_z "
+        "SELECT c.map, c.position_x, c.position_y, c.position_z, ie.creditEntry "
         "FROM instance_encounters ie "
         "JOIN creature c ON c.id = ie.creditEntry "
         "WHERE ie.creditType = 0 "
-        "GROUP BY c.map, c.position_x, c.position_y, c.position_z");
+        "GROUP BY c.map, c.position_x, c.position_y, c.position_z, ie.creditEntry");
     if (!result)
         return;
 
@@ -400,8 +459,8 @@ void PartyAssembler::LoadBossPositions()
     {
         Field* f = result->Fetch();
         uint32 const map = f[0].Get<uint32>();
-        _bosses[map].push_back(Entrance{map, f[1].Get<float>(), f[2].Get<float>(),
-                                        f[3].Get<float>()});
+        _bosses[map].push_back(BossSpot{f[1].Get<float>(), f[2].Get<float>(),
+                                        f[3].Get<float>(), f[4].Get<uint32>()});
     } while (result->NextRow());
 
     // How long the place actually takes to cross. Measured on this realm: a party
@@ -419,7 +478,7 @@ void PartyAssembler::LoadBossPositions()
             continue;
 
         float farthest = 0.0f;
-        for (Entrance const& boss : entry.second)
+        for (BossSpot const& boss : entry.second)
         {
             float const dx = boss.x - inside->second.x;
             float const dy = boss.y - inside->second.y;
@@ -909,8 +968,12 @@ void PartyAssembler::AdvanceTrips()
         }
         if (trip.adopted)
             mult = std::max<uint32>(mult, 6);
+        // Whatever the venue is worth, plus whatever this particular run has earned by
+        // actually killing things. The bonus is only ever awarded against a boss that
+        // fell, so a raid going nowhere still ends on the same clock it always did.
         uint32 const budget =
-            (trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks) * mult;
+            (trip.phase == Phase::Inside ? _insideTicks : _maxTripTicks) * mult +
+            trip.bonusTicks;
         if (!group || ++trip.ticks > budget)
         {
             // The ledger's verdict on this journey: a run that got inside
@@ -1020,6 +1083,11 @@ void PartyAssembler::AdvanceTrips()
                         " WHERE id = {}", trip.runId);
             }
 
+            // What the instance itself says has died, read while it still exists.
+            // Ordered before the wipe watch because how many bosses are down is what
+            // decides how much determination this run has bought.
+            NoteKills(group, leader, trip);
+
             // Party discipline, re-asserted every tick. Death recovery calls
             // ResetStrategies, which restores the free-bot default set - battleground
             // queue, dungeon finder, wander - and the single strip done at formation
@@ -1091,11 +1159,20 @@ void PartyAssembler::AdvanceTrips()
                     CharacterDatabase.Execute(
                         "UPDATE aetherion_run_history SET wipes = {} WHERE id = {}",
                         trip.wipes, trip.runId);
-                if (trip.wipes > _wipeRetries)
+                // Determination, again paid for rather than configured. A raid four
+                // bosses deep is demonstrably in business and gets to keep pulling; a
+                // party that wipes on the way to the first still calls it after the
+                // base retries. That keeps "try harder" from becoming "hold ten bots
+                // hostage in a fight nobody can win".
+                uint32 const allowed =
+                    _wipeRetries +
+                    std::min(_wipeBonusCap, trip.bossesDown * _wipeBonusPerBoss);
+                if (trip.wipes > allowed)
                 {
                     LOG_INFO("playerbots",
-                             "Party assembler: wipe {} in {} breaks the raid - they call it",
-                             trip.wipes, trip.name);
+                             "Party assembler: wipe {} of {} in {} breaks the raid - "
+                             "they call it {} bosses in",
+                             trip.wipes, allowed, trip.name, trip.bossesDown);
                     EndRun(trip.runId, trip.dungeonMap, "wiped");
                     if (trip.adopted)
                         ReleaseAdopted(group);
@@ -1180,7 +1257,7 @@ void PartyAssembler::AdvanceTrips()
             // every boss has had its visit. Held as pointers rather than iterators:
             // the two maps are separate containers and comparing an iterator from one
             // against the other's end() is undefined.
-            std::vector<Entrance> const* bossSpots = nullptr;
+            std::vector<BossSpot> const* bossSpots = nullptr;
             if (auto const bossIt = _bosses.find(trip.dungeonMap);
                 bossIt != _bosses.end() && !bossIt->second.empty())
                 bossSpots = &bossIt->second;
@@ -1204,14 +1281,15 @@ void PartyAssembler::AdvanceTrips()
                 if (bossSpots)
                     for (uint32 i = 0; i < bossSpots->size(); ++i)
                     {
-                        Entrance const& spot = (*bossSpots)[i];
+                        BossSpot const& spot = (*bossSpots)[i];
                         float const dx = leader->GetPositionX() - spot.x;
                         float const dy = leader->GetPositionY() - spot.y;
                         if (dx * dx + dy * dy >= _huntRange * _huntRange)
                             continue;
-                        // Once per boss per run, which is also the only record of how
-                        // deep a party actually got: the ledger's boss count is read
-                        // from an instance row that may already have been pruned.
+                        // Once per boss per run. Standing on a boss is not the same
+                        // thing as killing it - a party can walk onto a spot and lose
+                        // the fight - so this only retires the walking target. What
+                        // actually died is read from the instance's own mask.
                         if (trip.visitedBosses.insert(i).second)
                             LOG_INFO("playerbots",
                                      "Party assembler: {}'s party reaches boss {} of "
@@ -1223,7 +1301,25 @@ void PartyAssembler::AdvanceTrips()
                 // Head for the nearest boss nobody has been to yet. Members follow the
                 // leader, so steering one character walks the whole party through the
                 // dungeon.
-                Entrance const* best = nullptr;
+                // Nobody is re-tasked mid-fight. The mover has no combat guard of its
+                // own beyond the one this patch chain adds, and a leader sent to the
+                // next pack while the current one is still swinging walks the whole
+                // party out of the fight - members follow the leader, the pack resets,
+                // and the run nets a couple of dozen yards per tick against a wing
+                // five hundred yards long. Held rather than cancelled: the
+                // destination stands, so the walk resumes the moment the fight ends.
+                // Asked before the steering rather than after it, because whether the
+                // party is swinging is also what decides whether a run with nothing
+                // left to walk at is finished or merely between pulls.
+                bool fighting = leader->IsInCombat();
+                for (GroupReference* mi = group->GetFirstMember(); !fighting && mi != nullptr;
+                     mi = mi->next())
+                    if (Player* m = mi->GetSource())
+                        if (m->IsInWorld() && m->IsInCombat())
+                            fighting = true;
+
+                bool haveBest = false;
+                float bestX = 0.0f, bestY = 0.0f, bestZ = 0.0f;
                 float bestDist = 0.0f;
                 uint32 bestBoss = kNoBossAim;
                 if (bossSpots)
@@ -1231,21 +1327,56 @@ void PartyAssembler::AdvanceTrips()
                     {
                         if (trip.visitedBosses.count(i))
                             continue;
-                        Entrance const& spot = (*bossSpots)[i];
+                        BossSpot const& spot = (*bossSpots)[i];
                         float const dx = leader->GetPositionX() - spot.x;
                         float const dy = leader->GetPositionY() - spot.y;
                         float const dist = std::sqrt(dx * dx + dy * dy);
-                        if (!best || dist < bestDist)
+                        if (!haveBest || dist < bestDist)
                         {
-                            best = &spot;
+                            haveBest = true;
+                            bestX = spot.x;
+                            bestY = spot.y;
+                            bestZ = spot.z;
                             bestDist = dist;
                             bestBoss = i;
                         }
                     }
 
+                // Every boss this venue has is either dead or given up on. Standing
+                // the party in the trash for the rest of an hour-and-a-half clock is
+                // not persistence, it is 10 to 25 bots held out of the world for
+                // nothing, so the run is closed out instead - after a short grace, so
+                // a fight in progress and a spell-credited encounter both still land.
+                if (bossSpots && !haveBest && !fighting)
+                {
+                    bool const cleared = trip.encounters &&
+                                         CountBits(trip.killMask) >= trip.encounters;
+                    if (cleared || ++trip.idleTicks > _exhaustGrace)
+                    {
+                        char const* verdict = cleared
+                            ? (trip.bossesDown ? "cleared" : "locked_out")
+                            : "exhausted";
+                        LOG_INFO("playerbots",
+                                 "Party assembler: {}'s party is done with {} - {} of {} "
+                                 "down, {}",
+                                 leader->GetName(), trip.name, trip.bossesDown,
+                                 trip.encounters, verdict);
+                        EndRun(trip.runId, trip.dungeonMap, verdict);
+                        if (trip.adopted)
+                            ReleaseAdopted(group);
+                        else
+                        {
+                            SendGroupOutside(group, trip.dungeonMap);
+                            group->Disband();
+                        }
+                        it = _trips.erase(it);
+                        continue;
+                    }
+                }
+
                 // Nothing left worth a name: hunt trash rather than stand still for
-                // the rest of the dwell clock.
-                if (!best && trashSpots)
+                // the grace ticks above.
+                if (!haveBest && trashSpots)
                     for (Entrance const& spot : *trashSpots)
                     {
                         float const dx = leader->GetPositionX() - spot.x;
@@ -1257,32 +1388,21 @@ void PartyAssembler::AdvanceTrips()
                         // oscillated between them and committed to neither.
                         if (dist < _huntRange)
                             continue;
-                        if (!best || dist < bestDist)
+                        if (!haveBest || dist < bestDist)
                         {
-                            best = &spot;
+                            haveBest = true;
+                            bestX = spot.x;
+                            bestY = spot.y;
+                            bestZ = spot.z;
                             bestDist = dist;
                         }
                     }
-
-                // Nobody is re-tasked mid-fight. The mover has no combat guard of its
-                // own beyond the one this patch chain adds, and a leader sent to the
-                // next pack while the current one is still swinging walks the whole
-                // party out of the fight - members follow the leader, the pack resets,
-                // and the run nets a couple of dozen yards per tick against a wing
-                // five hundred yards long. Held rather than cancelled: the
-                // destination stands, so the walk resumes the moment the fight ends.
-                bool fighting = leader->IsInCombat();
-                for (GroupReference* mi = group->GetFirstMember(); !fighting && mi != nullptr;
-                     mi = mi->next())
-                    if (Player* m = mi->GetSource())
-                        if (m->IsInWorld() && m->IsInCombat())
-                            fighting = true;
 
                 if (fighting && trip.combatTicks < kCombatHoldTicks)
                 {
                     ++trip.combatTicks;
                 }
-                else if (best)
+                else if (haveBest)
                 {
                     // A fight that never ends - one member kiting, or a pack that
                     // cannot be reached - would otherwise hold the party still until
@@ -1328,14 +1448,14 @@ void PartyAssembler::AdvanceTrips()
                     // Only when it actually changed. Re-issuing the same destination
                     // restarts the mover's no-progress clock, which is what decides
                     // whether it should fall back to a teleport.
-                    if (std::fabs(best->x - trip.aimX) > 1.0f ||
-                        std::fabs(best->y - trip.aimY) > 1.0f ||
+                    if (std::fabs(bestX - trip.aimX) > 1.0f ||
+                        std::fabs(bestY - trip.aimY) > 1.0f ||
                         GET_PLAYERBOT_AI(leader)->rpgInfo.GetStatus() != RPG_GO_GRIND)
                     {
-                        trip.aimX = best->x;
-                        trip.aimY = best->y;
+                        trip.aimX = bestX;
+                        trip.aimY = bestY;
                         GET_PLAYERBOT_AI(leader)->rpgInfo.ChangeToGoGrind(
-                            WorldPosition(trip.dungeonMap, best->x, best->y, best->z));
+                            WorldPosition(trip.dungeonMap, bestX, bestY, bestZ));
                     }
                 }
             }
@@ -1345,9 +1465,23 @@ void PartyAssembler::AdvanceTrips()
 
         if (trip.phase == Phase::Summoning)
         {
+            // Gathering at the stone is scenery, and some doorways will not allow it.
+            // Ulduar's entrance trigger stands at z=1320, about a hundred yards above
+            // its own platform: every summoned member is dropped into the air, falls
+            // out of the sixty-yard arrival radius on the way down, and is summoned
+            // into the air again. Measured on this realm, 34 raids reached that door
+            // and 4 ever got through it - every raid door_timeout on record is
+            // Ulduar. The instance teleport does not care where anyone was standing
+            // when it fired, so past this many ticks the party simply goes in.
+            // Tested before the summon rather than after it: a member teleported this
+            // very tick is mid-flight, and EnterInstance skips those, so summoning and
+            // giving up in the same pass would leave the scattered members behind.
+            // RecoverInside collects whoever was still falling.
+            bool const gaveUpGathering = ++trip.summonTicks > _summonTicks;
+
             // Meeting stones sit at dungeon entrances, so "leader arrives, everyone
             // else gets summoned" is exactly what a real group does.
-            uint32 summoned = 0;
+            uint32 scattered = 0, summoned = 0;
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
             {
                 Player* member = ref->GetSource();
@@ -1355,6 +1489,10 @@ void PartyAssembler::AdvanceTrips()
                     continue;
                 if (member->GetMapId() == leader->GetMapId() &&
                     member->GetDistance(leader) <= _arriveRange)
+                    continue;
+
+                ++scattered;
+                if (gaveUpGathering)
                     continue;
 
                 float x, y, z;
@@ -1367,9 +1505,14 @@ void PartyAssembler::AdvanceTrips()
             if (summoned)
                 LOG_INFO("playerbots", "Party assembler: summoned {} to the stone at {}",
                          summoned, trip.name);
+            else if (gaveUpGathering && scattered)
+                LOG_INFO("playerbots",
+                         "Party assembler: the stone at {} will not hold the party - "
+                         "{} still scattered, they go in from where they stand",
+                         trip.name, scattered);
 
             // Zone in on the following tick, once summons have landed.
-            if (!summoned)
+            if (!summoned || gaveUpGathering)
             {
                 if (!EnterInstance(group, trip))
                 {
@@ -1454,22 +1597,214 @@ float PartyAssembler::PartyAvgIlvl(Group* group)
 }
 
 // The middle path between a hard gate and a free-for-all: at or above the
-// floor the full knob applies; the chance ramps linearly to zero twenty item
+// floor the full knob applies; the chance ramps linearly to zero GearStretch item
 // levels below it. The party's AVERAGE decides, so one green member drags the
 // odds instead of vetoing the run, and an all-green party still stays home.
+// Shares the ramp with JudgeGear rather than repeating the number, so "slightly
+// under still marches" means one thing everywhere in this file.
 uint32 PartyAssembler::GearScaledPct(Group* group, uint32 mapId, uint8 difficulty,
                                      uint32 fullPct) const
 {
+    GearVerdict const gear = JudgeGear(group, mapId, difficulty);
+    if (!gear.floor)
+        return fullPct;
+    return fullPct * gear.weight / 100;
+}
+
+// One place that answers "can we do this", so the log line, the pick and the ledger
+// row cannot disagree. Deliberately the middle path the operator asked for: a door
+// whose floor the party clears is fully wanted, a door slightly above it is wanted
+// less the further above it stands, and a door far above is named as out of reach
+// rather than walked to and refused. Nobody is judged member by member - the party
+// average decides, so one member in greens costs the group odds rather than a veto.
+PartyAssembler::GearVerdict PartyAssembler::JudgeGear(Group* group, uint32 mapId,
+                                                      uint8 difficulty) const
+{
+    GearVerdict out;
     auto const it = _ilvlFloor.find((mapId << 8) | difficulty);
-    if (it == _ilvlFloor.end())
-        return fullPct;
+    if (it == _ilvlFloor.end() || !it->second)
+        return out;   // the realm never said; never a reason to refuse
+
     float const avg = PartyAvgIlvl(group);
-    if (avg >= it->second)
-        return fullPct;
-    float const deficit = float(it->second) - avg;
-    if (deficit >= 20.f)
-        return 0;
-    return uint32(float(fullPct) * (1.f - deficit / 20.f));
+    out.floor = it->second;
+    out.margin = int16(int32(avg) - int32(it->second));
+
+    if (out.margin >= 0)
+    {
+        out.band = "within reach";
+        out.weight = 100;
+        return out;
+    }
+
+    uint32 const under = uint32(-out.margin);
+    if (under >= _gearStretch)
+    {
+        out.band = "beyond us";
+        out.weight = 0;
+        return out;
+    }
+
+    out.band = "a stretch";
+    // Same ramp the heroic appetite has always used, so "slightly under still
+    // marches" means the same thing everywhere in this file.
+    out.weight = std::max<uint32>(1, 100 * (_gearStretch - under) / _gearStretch);
+    return out;
+}
+
+uint32 PartyAssembler::CountBits(uint32 mask)
+{
+    uint32 n = 0;
+    for (; mask; mask &= mask - 1)
+        ++n;
+    return n;
+}
+
+namespace
+{
+    // The core credits a kill against sObjectMgr's encounter list for exactly this
+    // (map, difficulty), so the same list is the only honest answer to "which bit is
+    // which boss" and "how many are there". Icecrown and the Ruby Sanctum carry no
+    // heroic list of their own - Map::UpdateEncounterState reads their normal one on
+    // heroic - so a missing list falls back across the modes rather than reporting a
+    // venue with no bosses in it.
+    DungeonEncounterList const* EncountersFor(uint32 mapId, uint8 difficulty)
+    {
+        if (DungeonEncounterList const* list =
+                sObjectMgr->GetDungeonEncounterList(mapId, Difficulty(difficulty)))
+            if (!list->empty())
+                return list;
+
+        DungeonEncounterList const* best = nullptr;
+        for (uint8 d = 0; d < MAX_DIFFICULTY; ++d)
+            if (DungeonEncounterList const* list =
+                    sObjectMgr->GetDungeonEncounterList(mapId, Difficulty(d)))
+                if (!list->empty() && (!best || list->size() > best->size()))
+                    best = list;
+        return best;
+    }
+
+    // Which bit of the completed-encounter mask this encounter owns.
+    uint32 EncounterBit(DungeonEncounter const* encounter)
+    {
+        uint32 const index = encounter->dbcEntry->encounterIndex;
+        return index < 32 ? (1u << index) : 0u;
+    }
+}
+
+uint32 PartyAssembler::EncounterCount(uint32 mapId, uint8 difficulty)
+{
+    DungeonEncounterList const* list = EncountersFor(mapId, difficulty);
+    return list ? uint32(list->size()) : 0u;
+}
+
+void PartyAssembler::NoteKills(Group* group, Player* leader, Trip& trip)
+{
+    if (leader->GetMapId() != trip.dungeonMap)
+        return;
+
+    // Only an instance with a script of its own keeps a mask. Everything else falls
+    // back to the behaviour that was here before: walk until the clock stops.
+    InstanceScript* instance = leader->GetInstanceScript();
+    if (!instance)
+        return;
+
+    DungeonEncounterList const* encounters = EncountersFor(trip.dungeonMap, trip.difficulty);
+    uint32 const live = instance->GetCompletedEncounterMask();
+
+    if (!trip.maskSeeded)
+    {
+        trip.maskSeeded = true;
+        // A raid holds its lockout for days, so a party can walk into a wing somebody
+        // else already spent. Whatever was down before they arrived is theirs to walk
+        // past, not theirs to be credited with.
+        trip.entryMask = live;
+        trip.killMask = live;
+        trip.encounters = EncounterCount(trip.dungeonMap, trip.difficulty);
+        if (trip.runId)
+            CharacterDatabase.Execute(
+                "UPDATE aetherion_run_history SET encounters = {}, bosses_at_entry = {}"
+                " WHERE id = {}",
+                trip.encounters, CountBits(trip.entryMask), trip.runId);
+        if (trip.entryMask)
+            LOG_INFO("playerbots",
+                     "Party assembler: {} take up a lockout in {} with {} of {} already "
+                     "down - they pick up where it was left",
+                     leader->GetName(), trip.name, CountBits(trip.entryMask),
+                     trip.encounters);
+    }
+
+    uint32 const gained = live & ~trip.killMask;
+    trip.killMask |= live;
+
+    // Boss positions the mask says are finished with. Done on every pass rather than
+    // only when something dies, so a lockout inherited at the door is walked past on
+    // the first tick inside instead of one corpse at a time.
+    if (encounters)
+        if (auto const spotsIt = _bosses.find(trip.dungeonMap); spotsIt != _bosses.end())
+            for (uint32 i = 0; i < spotsIt->second.size(); ++i)
+            {
+                if (trip.visitedBosses.count(i))
+                    continue;
+                for (DungeonEncounter const* encounter : *encounters)
+                    if (encounter->creditEntry == spotsIt->second[i].creditEntry &&
+                        (EncounterBit(encounter) & trip.killMask))
+                    {
+                        trip.visitedBosses.insert(i);
+                        break;
+                    }
+            }
+
+    if (!gained)
+        return;
+
+    trip.bossesDown = CountBits(trip.killMask & ~trip.entryMask);
+    trip.idleTicks = 0;
+
+    // Stamped now, while the instance still exists. The old count was read once at
+    // EndRun from the `instance` table, and that table is live state pruned on reset -
+    // a run whose instance had gone recorded zero however deep it got.
+    if (trip.runId)
+        CharacterDatabase.Execute(
+            "UPDATE aetherion_run_history SET bosses_downed = GREATEST(bosses_downed, {})"
+            " WHERE id = {}",
+            trip.bossesDown, trip.runId);
+
+    // Named, durably, for every expansion. The core's own encounter log returns early
+    // for anything that is not a WotLK raid, so nothing before Naxxramas has ever been
+    // nameable once its instance reset.
+    if (encounters)
+        for (DungeonEncounter const* encounter : *encounters)
+        {
+            uint32 const bit = EncounterBit(encounter);
+            if (!(bit & gained))
+                continue;
+            char const* who = encounter->dbcEntry->encounterName[0];
+            LOG_INFO("playerbots", "Party assembler: {} falls to {}'s party in {} ({} of {})",
+                     who ? who : "something", leader->GetName(), trip.name,
+                     trip.bossesDown, trip.encounters);
+            if (trip.runId)
+                CharacterDatabase.Execute(
+                    "INSERT INTO aetherion_run_kills (run_id, at, map, difficulty,"
+                    " encounter_index, name, party_size) VALUES ({}, UNIX_TIMESTAMP(),"
+                    " {}, {}, {}, '{}', {})",
+                    trip.runId, trip.dungeonMap, uint32(trip.difficulty),
+                    encounter->dbcEntry->encounterIndex,
+                    Sql(who ? who : "unnamed"), group->GetMembersCount());
+        }
+
+    // Determination, earned. A run that is still killing things is not shown the door
+    // mid-progress; a run that is killing nothing gets exactly the clock it always had.
+    // Bounded, because a bigger flat budget was measured to buy oscillation rather than
+    // depth - this only pays out against evidence.
+    if (_progressExtendTicks && trip.extensions < _progressExtendMax)
+    {
+        ++trip.extensions;
+        trip.bonusTicks += _progressExtendTicks;
+        if (trip.runId)
+            CharacterDatabase.Execute(
+                "UPDATE aetherion_run_history SET extensions = {} WHERE id = {}",
+                trip.extensions, trip.runId);
+    }
 }
 
 bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
@@ -1581,11 +1916,13 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
 
     // Only the leader travels. The rest wait where they are, exactly as a group waits
     // in a city for a summon rather than all running separately.
+    GearVerdict const gear = JudgeGear(group, chosen.dungeonMap, uint8(dungeonDiff));
     Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.dungeonMap, chosen.where, chosen.name, Phase::Travelling, how,
              start.place, start.actor, 0};
+    trip.difficulty = uint8(dungeonDiff);
     trip.runId = RecordRunStart(group, leader, chosen.name, chosen.dungeonMap, false,
-                                uint8(dungeonDiff), how, uint32(away));
+                                uint8(dungeonDiff), how, uint32(away), gear, gear.floor);
 
     // The quest goes in the log before they set off, so every boss they kill on the
     // way through counts. Nothing else about the run changes: it is an ordinary trip
@@ -1716,13 +2053,15 @@ bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
             fv->Load("arrow");
     }
 
+    uint8 const adoptedDiff = uint8(requester->GetDifficulty(map->IsRaid()));
+    GearVerdict const gear = JudgeGear(group, mapId, adoptedDiff);
     Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{mapId, Entrance{}, map->GetMapName(), Phase::Inside, Travel::Foot,
              map->GetMapName(), leader->GetName(), 0};
     trip.adopted = true;
+    trip.difficulty = adoptedDiff;
     trip.runId = RecordRunStart(group, leader, trip.name, mapId, group->isRaidGroup(),
-                                uint8(requester->GetDifficulty(map->IsRaid())),
-                                Travel::Foot, 0);
+                                adoptedDiff, Travel::Foot, 0, gear, gear.floor);
 
     // Register the adopted group as owned, the same way a formed one is. Without it
     // the module's teardown paths - which stand down only for groups Owns() answers
@@ -1785,16 +2124,21 @@ char const* PartyAssembler::PhaseName(Phase phase)
 
 uint32 PartyAssembler::RecordRunStart(Group* group, Player* leader, std::string const& name,
                                       uint32 mapId, bool isRaid, uint8 difficulty, Travel how,
-                                      uint32 startYards)
+                                      uint32 startYards, GearVerdict const& gear,
+                                      uint16 gearCeiling)
 {
     uint32 const id = ++_runSeq;
     CharacterDatabase.Execute(
         "INSERT INTO aetherion_run_history (id, group_id, started_at, dungeon, map, is_raid,"
-        " difficulty, size, leader, leader_class, avg_ilvl, via, start_yards)"
-        " VALUES ({}, {}, UNIX_TIMESTAMP(), '{}', {}, {}, {}, {}, '{}', {}, {}, '{}', {})",
+        " difficulty, size, leader, leader_class, avg_ilvl, via, start_yards,"
+        " ilvl_floor, gear_margin, gear_verdict, gear_ceiling, encounters)"
+        " VALUES ({}, {}, UNIX_TIMESTAMP(), '{}', {}, {}, {}, {}, '{}', {}, {}, '{}', {},"
+        " {}, {}, '{}', {}, {})",
         id, group->GetGUID().GetCounter(), Sql(name), mapId, isRaid ? 1 : 0, uint32(difficulty),
         group->GetMembersCount(), Sql(leader->GetName()), uint32(leader->getClass()),
-        uint32(PartyAvgIlvl(group)), TravelName(how), startYards);
+        uint32(PartyAvgIlvl(group)), TravelName(how), startYards,
+        gear.floor, int32(gear.margin), gear.band, gearCeiling,
+        EncounterCount(mapId, difficulty));
 
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         if (Player* m = itr->GetSource())
@@ -1810,16 +2154,21 @@ void PartyAssembler::EndRun(uint32 runId, uint32 mapId, char const* outcome)
 {
     if (!runId)
         return;
-    // Boss progress snapshots from the members' instance save at ending time,
-    // in pure SQL - the C++ side never has to marshal encounter state. The
-    // COALESCE keeps an earlier count when the save is already gone.
+    // Depth is stamped at kill time now, from the instance's own mask while the
+    // instance still exists - see NoteKills. This snapshot from the members' saves
+    // stays as a floor under it, for runs whose leader never had a script to read
+    // (adopted or upstream groups), and can only ever raise the number: the `instance`
+    // table is live state pruned on reset, so a run whose instance had gone used to
+    // overwrite a real count with zero.
     CharacterDatabase.Execute(
         "UPDATE aetherion_run_history SET ended_at = UNIX_TIMESTAMP(), outcome = '{}',"
-        " bosses_downed = COALESCE((SELECT MAX(BIT_COUNT(i.completedEncounters))"
-        "   FROM aetherion_run_members m"
-        "   JOIN character_instance ci ON ci.guid = m.guid"
-        "   JOIN instance i ON i.id = ci.instance AND i.map = {}"
-        "  WHERE m.run_id = {}), bosses_downed)"
+        " bosses_downed = IF(bosses_at_entry > 0, bosses_downed,"
+        "   GREATEST(bosses_downed,"
+        "     COALESCE((SELECT MAX(BIT_COUNT(i.completedEncounters))"
+        "     FROM aetherion_run_members m"
+        "     JOIN character_instance ci ON ci.guid = m.guid"
+        "     JOIN instance i ON i.id = ci.instance AND i.map = {}"
+        "    WHERE m.run_id = {}), 0)))"
         " WHERE id = {}",
         outcome, mapId, runId, runId);
 }
@@ -1912,6 +2261,57 @@ void PartyAssembler::EnsureTelemetryTables()
             "ALTER TABLE aetherion_run_history"
             " ADD COLUMN flavor VARCHAR(16) NOT NULL DEFAULT ''");
 
+    // The gear judgement, recorded so the dashboard can say WHY a party went where it
+    // went: what the door asked, how far over or under the party's average stood, the
+    // word for it, and the deepest floor anything open to them asked. Without these
+    // the ledger holds an item level with nothing to compare it against.
+    if (!CharacterDatabase.Query(
+            "SHOW COLUMNS FROM aetherion_run_history LIKE 'ilvl_floor'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN ilvl_floor SMALLINT UNSIGNED NOT NULL DEFAULT 0,"
+            " ADD COLUMN gear_margin SMALLINT NOT NULL DEFAULT 0,"
+            " ADD COLUMN gear_verdict VARCHAR(12) NOT NULL DEFAULT '',"
+            " ADD COLUMN gear_ceiling SMALLINT UNSIGNED NOT NULL DEFAULT 0");
+
+    // Depth, told truthfully. encounters is how many the venue holds, bosses_at_entry
+    // how many were already down when the party walked in - a raid lockout survives
+    // for days, so a run can inherit progress it did not make - and extensions how
+    // many times its own kills bought it more clock.
+    if (!CharacterDatabase.Query(
+            "SHOW COLUMNS FROM aetherion_run_history LIKE 'encounters'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN encounters TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+            " ADD COLUMN bosses_at_entry TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+            " ADD COLUMN extensions TINYINT UNSIGNED NOT NULL DEFAULT 0");
+
+    // Which bosses actually died, stamped as they fall. The core's own encounter log
+    // is durable but holds ONLY WotLK raids - Map::LogEncounterFinished returns early
+    // for anything else - and the `instance` table that could name the rest is pruned
+    // on reset. So nothing before Naxxramas has ever been nameable after the fact.
+    // This is read from the instance's live mask while the party is standing in it,
+    // which works for every expansion and every difficulty.
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS aetherion_run_kills ("
+        " id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        " run_id INT UNSIGNED NOT NULL, at INT UNSIGNED NOT NULL,"
+        " map INT UNSIGNED NOT NULL, difficulty TINYINT UNSIGNED NOT NULL,"
+        " encounter_index TINYINT UNSIGNED NOT NULL,"
+        " name VARCHAR(64) NOT NULL, party_size TINYINT UNSIGNED NOT NULL DEFAULT 0,"
+        " KEY at (at), KEY run_id (run_id), KEY map (map)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Every run this object was steering when the process last stopped is still marked
+    // underway and always will be - nothing outlives the restart to close it. Measured
+    // on three days of history: 1079 rows stuck underway against 535 that ended, which
+    // makes every rate computed off this table wrong. They are closed here, named for
+    // what actually happened to them. ended_at is deliberately left at zero: nothing
+    // observed these runs ending, and inventing a time for them would put a fictional
+    // duration into the same column the real ones live in.
+    CharacterDatabase.DirectExecute(
+        "UPDATE aetherion_run_history SET outcome = 'interrupted' WHERE outcome = 'underway'");
+
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_run_members ("
         " run_id INT UNSIGNED NOT NULL, guid INT UNSIGNED NOT NULL,"
@@ -1936,10 +2336,12 @@ void PartyAssembler::EnsureTelemetryTables()
     CharacterDatabase.Execute(
         "DELETE FROM aetherion_member_loss WHERE at < UNIX_TIMESTAMP() - 3*86400");
 
-    // Two weeks of history is the analysis window; members prune with runs.
+    // Two weeks of history is the analysis window; members and kills prune with runs.
     CharacterDatabase.Execute(
         "DELETE m FROM aetherion_run_members m JOIN aetherion_run_history h"
         " ON h.id = m.run_id WHERE h.started_at < UNIX_TIMESTAMP() - 14*86400");
+    CharacterDatabase.Execute(
+        "DELETE FROM aetherion_run_kills WHERE at < UNIX_TIMESTAMP() - 14*86400");
     CharacterDatabase.Execute(
         "DELETE FROM aetherion_run_history WHERE started_at < UNIX_TIMESTAMP() - 14*86400");
 
@@ -1968,6 +2370,15 @@ void PartyAssembler::EnsureTelemetryTables()
         CharacterDatabase.DirectExecute(
             "ALTER TABLE aetherion_assembler"
             " ADD COLUMN last_muster_at INT UNSIGNED NOT NULL DEFAULT 0");
+
+    // Two ways a forming raid says no to a destination, counted apart: gear_refused is
+    // "not yet", unperformable is "not by a party of bots at all".
+    if (!CharacterDatabase.Query(
+            "SHOW COLUMNS FROM aetherion_assembler LIKE 'gear_refused'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_assembler"
+            " ADD COLUMN gear_refused INT UNSIGNED NOT NULL DEFAULT 0,"
+            " ADD COLUMN unperformable INT UNSIGNED NOT NULL DEFAULT 0");
 
     if (QueryResult since = CharacterDatabase.Query(
             "SELECT GREATEST(0, UNIX_TIMESTAMP() - last_muster_at) FROM aetherion_assembler"
@@ -2082,16 +2493,18 @@ void PartyAssembler::WriteTelemetry()
         // Upsert rather than REPLACE: REPLACE deletes the row first, which would take
         // the muster clock with it every tick.
         "INSERT INTO aetherion_assembler (id, formed, raids, trips, stalls, arrived, "
-        "entered, active, entrances, arrival_points, raid_maps, updated_at) "
-        "VALUES (1, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, UNIX_TIMESTAMP()) "
+        "entered, active, entrances, arrival_points, raid_maps, updated_at, "
+        "gear_refused, unperformable) "
+        "VALUES (1, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, UNIX_TIMESTAMP(), {}, {}) "
         "ON DUPLICATE KEY UPDATE formed=VALUES(formed), raids=VALUES(raids), "
         "trips=VALUES(trips), stalls=VALUES(stalls), arrived=VALUES(arrived), "
         "entered=VALUES(entered), active=VALUES(active), entrances=VALUES(entrances), "
         "arrival_points=VALUES(arrival_points), raid_maps=VALUES(raid_maps), "
-        "updated_at=VALUES(updated_at)",
+        "updated_at=VALUES(updated_at), gear_refused=VALUES(gear_refused), "
+        "unperformable=VALUES(unperformable)",
         _statFormed, _statRaids, _statTrips, _statStalls, _statArrived, _statEntered,
         uint32(_assembled.size()), uint32(_entrances.size()), uint32(_insides.size()),
-        _raidMapCount);
+        _raidMapCount, _statGearRefused, _statUnperformable);
 }
 
 char const* PartyAssembler::TravelName(Travel how)
@@ -2200,6 +2613,10 @@ bool PartyAssembler::HasRaidTarget(Player const* leader, uint8& lowestFloor) con
     {
         MapEntry const* map = sMapStore.LookupEntry(entry.first);
         if (!map || !map->IsRaid())
+            continue;
+        // Same answer the trip check gives, asked at formation time: a raid raised
+        // for a venue its own bots cannot perform would just dissolve on the doorstep.
+        if (CannotPerform(entry.first))
             continue;
         auto const floorIt = _mapMinLevel.find(entry.first);
         if (floorIt == _mapMinLevel.end() || level < floorIt->second)
@@ -2327,14 +2744,19 @@ bool PartyAssembler::SendPartyToOldContent(Group* group, Player* leader)
              "collecting what the realm left behind",
              leader->GetName(), size, chosen.name, away, TravelName(start.how));
 
+    uint8 const oldDiff = uint8(chosen.raid ? RAID_DIFFICULTY_10MAN_NORMAL
+                                            : DUNGEON_DIFFICULTY_NORMAL);
+    // Recorded, never consulted: being massively over-geared is the whole point of a
+    // collector's night out, so the verdict here is a fact about the trip rather than
+    // a test it had to pass.
+    GearVerdict const gear = JudgeGear(group, chosen.mapId, oldDiff);
     Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.mapId, chosen.where, chosen.name, Phase::Travelling, start.how,
              start.place, start.actor, 0};
     trip.collector = true;
+    trip.difficulty = oldDiff;
     trip.runId = RecordRunStart(group, leader, chosen.name, chosen.mapId, chosen.raid,
-                                uint8(chosen.raid ? RAID_DIFFICULTY_10MAN_NORMAL
-                                                  : DUNGEON_DIFFICULTY_NORMAL),
-                                start.how, uint32(away));
+                                oldDiff, start.how, uint32(away), gear, gear.floor);
     if (trip.runId)
         CharacterDatabase.Execute(
             "UPDATE aetherion_run_history SET flavor = 'collector' WHERE id = {}", trip.runId);
@@ -2358,8 +2780,25 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
 
     uint32 const size = group->GetMembersCount();
 
-    struct Option { Entrance where; std::string name; uint32 raidMap; Difficulty diff; };
+    struct Option
+    {
+        Entrance where;
+        std::string name;
+        uint32 raidMap;
+        Difficulty diff;
+        GearVerdict gear;
+    };
     std::vector<Option> options;
+
+    // What the party's gear says about the whole shelf, not just about where it ends
+    // up going. The ceiling is the deepest door it could plausibly stand in; the
+    // refused count and the name of the thing just out of reach are what make "we
+    // cannot do that yet" visible instead of silent.
+    uint16 ceiling = 0;
+    uint16 outOfReachFloor = 0;
+    std::string outOfReachName;
+    uint32 refusedOnGear = 0;
+    uint32 refusedOnCapability = 0;
 
     // Every member must satisfy the access rows for the chosen difficulty -
     // this is what keeps a heroic Trial of the Grand Crusader pick from
@@ -2384,6 +2823,18 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
         MapEntry const* map = sMapStore.LookupEntry(raidMap);
         if (!map || !map->IsRaid())
             continue;
+
+        // Some doors are not shut by gear or by level but by what a party of bots can
+        // physically do once it is inside. Asked before anything else, because no
+        // amount of clock or determination changes the answer.
+        if (char const* why = CannotPerform(raidMap))
+        {
+            if (!refusedOnCapability++)
+                LOG_INFO("playerbots",
+                         "Party assembler: {} passes over {} - {}",
+                         leader->GetName(), map->name[0] ? map->name[0] : "a raid", why);
+            continue;
+        }
 
         // Stands in for attunement: without a level floor a group of sixties walks
         // all the way to Icecrown and is refused at the portal.
@@ -2418,15 +2869,23 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
         else
             diff = RAID_DIFFICULTY_10MAN_NORMAL;
 
-        // Soft gear gate on the normal mode: a party averaging deeper than
-        // fifteen below the floor skips this destination; slightly under
-        // still marches. Nobody is individually vetoed on gear.
+        // Gear decides, out loud. A door the party clears is fully wanted; one a
+        // little above it is wanted less the further above it stands; one far above
+        // is named as out of reach rather than walked to and turned away. The party
+        // average is what is judged, so a single member in greens costs the group
+        // odds instead of vetoing the destination.
+        GearVerdict gear = JudgeGear(group, raidMap, uint8(diff));
+        if (!gear.weight)
         {
-            auto const fIt = _ilvlFloor.find((raidMap << 8) | uint8(diff));
-            if (fIt != _ilvlFloor.end() &&
-                PartyAvgIlvl(group) < float(fIt->second) - 15.f)
-                continue;
+            ++refusedOnGear;
+            if (gear.floor > outOfReachFloor)
+            {
+                outOfReachFloor = gear.floor;
+                outOfReachName = map->name[0] ? map->name[0] : "a raid";
+            }
+            continue;
         }
+        ceiling = std::max(ceiling, gear.floor);
 
         Difficulty const heroic =
             size > 10 ? RAID_DIFFICULTY_25MAN_HEROIC : RAID_DIFFICULTY_10MAN_HEROIC;
@@ -2434,24 +2893,69 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
             urand(1, 100) <=
                 GearScaledPct(group, raidMap, uint8(heroic), _raidHeroicPct) &&
             allSatisfy(raidMap, heroic))
+        {
             diff = heroic;
+            // The harder mode asks for more, so the verdict is re-taken against the
+            // door they are actually going to knock on.
+            GearVerdict const harder = JudgeGear(group, raidMap, uint8(diff));
+            if (harder.weight)
+            {
+                gear = harder;
+                ceiling = std::max(ceiling, gear.floor);
+            }
+        }
 
         if (!allSatisfy(raidMap, diff))
             continue;
 
-        options.push_back({door, map->name[0] ? map->name[0] : "a raid", raidMap, diff});
+        options.push_back(
+            {door, map->name[0] ? map->name[0] : "a raid", raidMap, diff, gear});
     }
 
-    if (options.empty())
-        return false;
+    _statGearRefused += refusedOnGear;
+    _statUnperformable += refusedOnCapability;
 
-    // Closest-first, then a random pick among the nearest few: keeps some variety
-    // without sending a party to the far side of the continent.
+    if (options.empty())
+    {
+        // Only worth saying when something was actually turned down. A continent with
+        // no raid door at this party's level is an ordinary miss, not a judgement.
+        if (refusedOnGear)
+            LOG_INFO("playerbots",
+                     "Party assembler: {}'s raid averages {} item levels - {} raids are "
+                     "out of reach and nothing else will take them; the closest, {}, "
+                     "asks {}",
+                     leader->GetName(), uint32(PartyAvgIlvl(group)), refusedOnGear,
+                     outOfReachName.empty() ? "nothing" : outOfReachName.c_str(),
+                     outOfReachFloor);
+        return false;
+    }
+
+    // Closest-first, then a pick among the nearest few - but weighted by what the
+    // gear says rather than uniform. A door the party clears outright is the likely
+    // night out; one it is stretching for still comes up, less often the further it
+    // reaches. That is the middle path: neither all-greens suicide runs nor a
+    // precise-gear veto.
     std::sort(options.begin(), options.end(), [leader](Option const& a, Option const& b) {
         return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where);
     });
-    Option const& chosen =
-        options[urand(0, std::min<size_t>(options.size(), _nearestChoices) - 1)];
+    size_t const shortlist = std::min<size_t>(options.size(), _nearestChoices);
+    uint32 total = 0;
+    for (size_t i = 0; i < shortlist; ++i)
+        total += options[i].gear.weight;
+    size_t pick = 0;
+    if (total)
+    {
+        uint32 roll = urand(1, total);
+        for (; pick + 1 < shortlist; ++pick)
+        {
+            if (roll <= options[pick].gear.weight)
+                break;
+            roll -= options[pick].gear.weight;
+        }
+    }
+    else
+        pick = urand(0, shortlist - 1);
+    Option const& chosen = options[pick];
 
     if (!GET_PLAYERBOT_AI(leader))
         return false;
@@ -2465,16 +2969,23 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
     Departure const start = BeginTravel(group, leader, chosen.where);
     Travel const how = start.how;
 
+    // The judgement, said out loud, so the dashboard and the log agree on WHY this
+    // party went where it went - and on what it decided it could not do yet.
     LOG_INFO("playerbots",
-             "Party assembler: {} leads a {}-strong raid to {} ({:.0f} yards, {}, difficulty {})",
+             "Party assembler: {} leads a {}-strong raid to {} ({:.0f} yards, {}, "
+             "difficulty {}) - {} item levels against a floor of {}, {}; {} raids ruled "
+             "out on gear, deepest door open to them asks {}",
              leader->GetName(), group->GetMembersCount(), chosen.name, away, TravelName(how),
-             uint32(chosen.diff));
+             uint32(chosen.diff), uint32(PartyAvgIlvl(group)), chosen.gear.floor,
+             chosen.gear.band, refusedOnGear, ceiling);
 
     Trip& trip = _trips[group->GetGUID().GetCounter()] =
         Trip{chosen.raidMap, chosen.where, chosen.name, Phase::Travelling, how,
              start.place, start.actor, 0};
+    trip.difficulty = uint8(chosen.diff);
     trip.runId = RecordRunStart(group, leader, chosen.name, chosen.raidMap, true,
-                                uint8(chosen.diff), how, uint32(away));
+                                uint8(chosen.diff), how, uint32(away), chosen.gear,
+                                ceiling);
     ++_statTrips;
     return true;
 }

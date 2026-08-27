@@ -107,6 +107,24 @@ set_conf "$PB" "AiPlayerbot.Party.MusterTimeoutMin" "${PARTY_MUSTER_TIMEOUT_MIN:
 # Wipe determination: full-party falls a run absorbs (revived at the door,
 # fresh clock) before the group calls it. 0 = first wipe ends progress.
 set_conf "$PB" "AiPlayerbot.Party.WipeRetries" "${PARTY_WIPE_RETRIES:-3}"
+# Determination that has to be earned. Every encounter a run puts down buys it
+# one more wipe (to a cap) and one more block of dwell clock (to a cap), so a
+# raid still killing things keeps going and a raid killing nothing does not.
+set_conf "$PB" "AiPlayerbot.Party.WipeBonusPerBoss" "${PARTY_WIPE_BONUS_PER_BOSS:-1}"
+set_conf "$PB" "AiPlayerbot.Party.WipeBonusCap" "${PARTY_WIPE_BONUS_CAP:-4}"
+set_conf "$PB" "AiPlayerbot.Party.ProgressExtendTicks" "${PARTY_PROGRESS_EXTEND_TICKS:-10}"
+set_conf "$PB" "AiPlayerbot.Party.ProgressExtendMax" "${PARTY_PROGRESS_EXTEND_MAX:-4}"
+# How far under a door's item-level floor a party will still try. At the floor
+# the appetite is whole and it ramps to nothing this far below; past that the
+# destination is named as out of reach instead of quietly attempted.
+set_conf "$PB" "AiPlayerbot.Party.GearStretch" "${PARTY_GEAR_STRETCH:-20}"
+# Ticks the summon at the door gets before the party is taken in from where it
+# stands. Ulduar's trigger sits 100 yards above its platform, so its summons
+# never converge and 34 raids reached that door for 4 entries.
+set_conf "$PB" "AiPlayerbot.Party.SummonTicks" "${PARTY_SUMMON_TICKS:-4}"
+# Ticks a run with every boss dead or given up on is held before it is closed
+# out, rather than wandering trash for the rest of a 90-minute clock.
+set_conf "$PB" "AiPlayerbot.Party.ExhaustGrace" "${PARTY_EXHAUST_GRACE:-4}"
 set_conf "$PB" "AiPlayerbot.Party.ShortAbortLimit" "${PARTY_SHORT_ABORT_LIMIT:-3}"
 set_conf "$PB" "AiPlayerbot.Party.CollectorPct" "${PARTY_COLLECTOR_PCT:-60}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"
