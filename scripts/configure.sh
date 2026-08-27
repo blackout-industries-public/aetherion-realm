@@ -126,6 +126,12 @@ set_conf "$PB" "AiPlayerbot.Party.SummonTicks" "${PARTY_SUMMON_TICKS:-4}"
 # Ticks a run with every boss dead or given up on is held before it is closed
 # out, rather than wandering trash for the rest of a 90-minute clock.
 set_conf "$PB" "AiPlayerbot.Party.ExhaustGrace" "${PARTY_EXHAUST_GRACE:-4}"
+# The beat between pulls. After a fight ends the leader is held where it stands
+# for up to this many ticks while anybody is still walking back, hurt, or out of
+# mana, so the party loots and drinks instead of dragging the next pack onto a
+# fight that has only just finished. Costs nothing when the party is already fit.
+set_conf "$PB" "AiPlayerbot.Party.SettleTicks" "${PARTY_SETTLE_TICKS:-2}"
+set_conf "$PB" "AiPlayerbot.Party.RegroupRange" "${PARTY_REGROUP_RANGE:-40}"
 set_conf "$PB" "AiPlayerbot.Party.ShortAbortLimit" "${PARTY_SHORT_ABORT_LIMIT:-3}"
 set_conf "$PB" "AiPlayerbot.Party.CollectorPct" "${PARTY_COLLECTOR_PCT:-60}"
 set_conf "$PB" "AiPlayerbot.Party.QueueLfg" "${PARTY_QUEUE_LFG:-1}"

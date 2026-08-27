@@ -490,6 +490,13 @@ AiPlayerbot.Party.ShortAbortLimit = 3
 # content instead of the current tier. The persona share of the population is the
 # real ceiling on this; zero turns old-content trips off entirely.
 AiPlayerbot.Party.CollectorPct = 60
+# The beat between pulls. After a fight ends the leader is held where it stands for
+# up to this many ticks while anybody is still walking back, hurt, or out of mana -
+# so the party loots, drinks and closes up instead of walking into the next pack
+# with the last one's corpses still warm. RegroupRange is how far a member may
+# trail the leader and still count as having come back.
+AiPlayerbot.Party.SettleTicks = 2
+AiPlayerbot.Party.RegroupRange = 40
 AiPlayerbot.Party.QueueLfg = 1
 AiPlayerbot.Party.TravelToDungeon = 1
 

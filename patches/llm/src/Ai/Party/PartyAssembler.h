@@ -123,6 +123,16 @@ private:
     static bool CanTank(Player const* bot);
     static bool CanHeal(Player const* bot);
 
+    // Who takes point. The leader is not a title here: it is the character the
+    // steering aims, the one that arrives first, and the master every member
+    // follows and opens fire behind - so whatever leads is what walks into the
+    // pack. A tank is picked wherever the hand holds one, and uniformly among the
+    // tanks rather than by level, so parties still form across the brackets
+    // instead of piling up at the cap. Falls back to the old uniform draw when
+    // there is no tank to be had; refusing to form over it would cost far more
+    // than a rogue taking point.
+    static Player* PickLeader(std::vector<Player*> const& from);
+
     struct Entrance
     {
         uint32 map{0};
@@ -264,6 +274,18 @@ private:
         // Consecutive ticks the party has spent fighting. A fight nobody can win
         // must not hold the run still forever.
         uint32 combatTicks{0};
+        // Ticks still owed to the party after a fight ends, before the next advance.
+        // Armed while the party is swinging and spent afterwards, so the beat is
+        // taken between pulls rather than on a timer of its own.
+        uint32 settleTicks{0};
+        // Whether the leader is currently held in place - rpg steering off its
+        // engine and the grind target refused. Tracked so the hold is applied and
+        // lifted once rather than re-asserted into the strategy engine every tick.
+        bool parked{false};
+        // Deaths this run has taken that were not full wipes. The wipe count only
+        // ever named the falls that took everybody; a party that loses one member
+        // per pull and recovers looked identical to one that lost nobody.
+        uint32 deaths{0};
         // A trip into content the realm has outgrown, chasing achievements and old
         // legendaries rather than progression.
         bool collector{false};
@@ -399,6 +421,32 @@ private:
     // landed. World thread only, like everything else AdvanceTrips does.
     bool StartVenueEvent(Player* leader, Trip const& trip);
 
+    // Stops the leader where it stands, or lets it walk again. Withholding the next
+    // destination is not the same thing as holding still: the rpg engine keeps
+    // calling MoveFarTo against the destination it already has, every bot tick,
+    // whether or not this object re-issues it. patch_rpgcombat covers the bot's own
+    // combat; nothing covered the party's, so a leader that dropped combat while the
+    // members behind it were still swinging walked on and took them with it. Taking
+    // the rpg strategy off the engine is what actually stops the walk; "stay"
+    // alongside it is what stops the leader picking a fresh grind target, which is
+    // the blind pull itself - AttackAnythingAction asks for that strategy by name
+    // and stands down. Both are lifted together.
+    void HoldLeader(Player* leader, Trip& trip, bool hold);
+
+    // Leaders held by a run that has since ended - the group disbanded under it, the
+    // clock expired mid-fight - handed their engine back. Without this a character
+    // could be left standing at a door with its wandering switched off for the rest
+    // of the uptime, which is exactly the failure the sweep below exists to prevent
+    // for stranded bots.
+    void ReleaseParked();
+    std::unordered_set<uint32> _parked;
+
+    // Whether the party has anything to stand still for. Somebody still walking
+    // back, somebody hurt, or a healer with no mana to open the next pull with. When
+    // none of that is true the party is already settled and the advance resumes at
+    // no cost, so the grace is paid only where it buys something.
+    bool NeedsBreather(Group* group, Player* leader) const;
+
     bool _enabled{false};
     uint32 _intervalMs{60000};
     uint32 _targetSize{5};
@@ -476,6 +524,12 @@ private:
     // Ticks a run with nothing left to walk at is given before it is closed out, so
     // a fight in progress and a spell-credited encounter both still have room to land.
     uint32 _exhaustGrace{4};
+    // The beat between pulls. How many ticks the party may stand after a fight ends
+    // before the steering insists again, and how far a member may trail the leader
+    // and still count as having come back. Capped rather than open-ended: a
+    // straggler that will never arrive must not be able to hold the run still.
+    uint32 _settleTicks{2};
+    float _regroupRange{40.0f};
     // Consecutive assemblies refused for want of a tank or a healer, indexed by size
     // class (party, raid). Without a ceiling a bracket that truly holds neither would
     // stop forming parties altogether, so the run of refusals is what releases one.

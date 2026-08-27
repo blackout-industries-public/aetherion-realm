@@ -75,6 +75,14 @@ namespace
     // deadlocked in a fight it cannot win still gets moved along.
     constexpr uint32 kCombatHoldTicks = 8;
 
+    // What "not ready for the next pack" looks like from outside. Deliberately
+    // generous - a party at four fifths health with a healer near full is fine to
+    // walk on, and holding for perfection would spend the whole dwell clock
+    // standing. Out of combat a bot eats and drinks, so a single held tick is
+    // usually the whole recovery.
+    constexpr float kBreatherHealthPct = 70.0f;
+    constexpr float kBreatherManaPct = 65.0f;
+
     // What counts as getting somewhere. A party closes roughly twenty yards of ground
     // a tick once it is fighting its way in, so five is a generous floor, and six
     // ticks of failing to clear it is four minutes of a walk that is going nowhere.
@@ -314,6 +322,8 @@ void PartyAssembler::LoadConfig()
         _gearStretch = 1;
     _summonTicks = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.SummonTicks", 4);
     _exhaustGrace = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ExhaustGrace", 4);
+    _settleTicks = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.SettleTicks", 2);
+    _regroupRange = sConfigMgr->GetOption<float>("AiPlayerbot.Party.RegroupRange", 40.0f);
     _shortAbortLimit = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.ShortAbortLimit", 3);
     _collectorPct = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.CollectorPct", 60);
     _queueLfg = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.QueueLfg", true);
@@ -872,8 +882,19 @@ void PartyAssembler::RecoverInside(Group* group, Player* leader, Trip& trip)
         ++raised;
     }
     if (raised)
+    {
+        // Counted against the run, not just logged. Deaths short of a wipe are the
+        // ones pacing is meant to remove, and the ledger had no column that named
+        // them - a party that lost a member on every pull and picked it back up read
+        // exactly as clean as one that never lost anybody.
+        trip.deaths += raised;
+        if (trip.runId)
+            CharacterDatabase.Execute(
+                "UPDATE aetherion_run_history SET deaths = {} WHERE id = {}",
+                trip.deaths, trip.runId);
         LOG_INFO("playerbots", "Party assembler: {} back on their feet in {}",
                  raised, trip.name);
+    }
 }
 
 uint32 PartyAssembler::SendGroupOutside(Group* group, uint32 dungeonMap)
@@ -1155,10 +1176,14 @@ void PartyAssembler::AdvanceTrips()
             if (present && !alive)
             {
                 ++trip.wipes;
+                // A wipe is also `present` deaths. Counted here rather than in the
+                // recovery loop below, which the retry ceiling can skip past.
+                trip.deaths += present;
                 if (trip.runId)
                     CharacterDatabase.Execute(
-                        "UPDATE aetherion_run_history SET wipes = {} WHERE id = {}",
-                        trip.wipes, trip.runId);
+                        "UPDATE aetherion_run_history SET wipes = {}, deaths = {}"
+                        " WHERE id = {}",
+                        trip.wipes, trip.deaths, trip.runId);
                 // Determination, again paid for rather than configured. A raid four
                 // bosses deep is demonstrably in business and gets to keep pulling; a
                 // party that wipes on the way to the first still calls it after the
@@ -1318,6 +1343,19 @@ void PartyAssembler::AdvanceTrips()
                         if (m->IsInWorld() && m->IsInCombat())
                             fighting = true;
 
+                // The beat between pulls. A fight arms it and its end spends it, so
+                // the pause is taken where a party would take one - after the pack
+                // is down, not on a clock of its own - and only while the party
+                // still has something to stand there for. Read before the counter
+                // moves, or a one-tick grace would be spent on the tick that armed
+                // it and the party would walk on with the corpses still warm.
+                bool const settling = !fighting && trip.settleTicks &&
+                                      NeedsBreather(group, leader);
+                if (fighting)
+                    trip.settleTicks = _settleTicks;
+                else if (trip.settleTicks)
+                    --trip.settleTicks;
+
                 bool haveBest = false;
                 float bestX = 0.0f, bestY = 0.0f, bestZ = 0.0f;
                 float bestDist = 0.0f;
@@ -1398,15 +1436,27 @@ void PartyAssembler::AdvanceTrips()
                         }
                     }
 
-                if (fighting && trip.combatTicks < kCombatHoldTicks)
+                if ((fighting && trip.combatTicks < kCombatHoldTicks) || settling)
                 {
-                    ++trip.combatTicks;
+                    if (fighting)
+                        ++trip.combatTicks;
+                    // Held where it stands, not merely left untasked. patch_rpgcombat
+                    // already stops rpg movement while the bot ITSELF is fighting,
+                    // but the pull that matters here is the other one: the leader
+                    // finishes its target, drops combat while the party behind it is
+                    // still swinging, and walks on into the next pack every bot tick
+                    // against the destination it was last given - whatever this
+                    // object does or does not re-issue at forty-five second
+                    // intervals. Withholding the next destination was never the same
+                    // thing as stopping. This is.
+                    HoldLeader(leader, trip, true);
                 }
                 else if (haveBest)
                 {
                     // A fight that never ends - one member kiting, or a pack that
                     // cannot be reached - would otherwise hold the party still until
                     // the clock runs out, so past the hold the steering resumes.
+                    HoldLeader(leader, trip, false);
                     trip.combatTicks = 0;
 
                     // A boss the party cannot get any closer to is not a boss to keep
@@ -1457,6 +1507,13 @@ void PartyAssembler::AdvanceTrips()
                         GET_PLAYERBOT_AI(leader)->rpgInfo.ChangeToGoGrind(
                             WorldPosition(trip.dungeonMap, bestX, bestY, bestZ));
                     }
+                }
+                else
+                {
+                    // Nothing left to walk at and nothing to wait for. The run is on
+                    // its way out through the grace above, but a leader must never be
+                    // left standing with its own engine switched off.
+                    HoldLeader(leader, trip, false);
                 }
             }
             ++it;
@@ -1593,6 +1650,111 @@ bool PartyAssembler::StartVenueEvent(Player* leader, Trip const& trip)
         return true;
     }
 
+    return false;
+}
+
+void PartyAssembler::HoldLeader(Player* leader, Trip& trip, bool hold)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(leader);
+    if (!ai)
+        return;
+
+    uint32 const low = leader->GetGUID().GetCounter();
+    // Asked rather than asserted. Adding or removing a strategy rebuilds the
+    // engine's whole trigger and action list, and the answer is unchanged on the
+    // overwhelming majority of ticks - a run holds through one fight and walks
+    // through the rest. The state is also read back from the engine rather than
+    // from the trip's own flag, because a death restores the free-bot defaults and
+    // hands the leader its rpg engine back without this object hearing about it.
+    bool const held = ai->HasStrategy("stay", BOT_STATE_NON_COMBAT) &&
+                      !ai->HasStrategy("new rpg", BOT_STATE_NON_COMBAT);
+    if (hold == held)
+    {
+        trip.parked = hold;
+        if (hold)
+            _parked.insert(low);
+        else
+            _parked.erase(low);
+        return;
+    }
+
+    // "stay" is what refuses the grind target - AttackAnythingAction asks for it by
+    // name and stands down - so this is the blind pull switched off. Taking the rpg
+    // strategy off the engine is the other half: without it the leader keeps walking
+    // the destination it was last given, every bot tick, for as long as the party
+    // behind it is still fighting.
+    // Movement strategies are siblings, so adding "stay" also drops "follow" from
+    // the leader's non-combat engine and removing it does not put it back. That is
+    // the right way round here - the leader is steered by destination and has no
+    // master to follow, which is why the discipline pass gives "follow" to everyone
+    // EXCEPT the leader - and a bot that later joins a party as a member is reset
+    // and re-given it there.
+    ai->ChangeStrategy(hold ? "+stay,-new rpg" : "-stay,+new rpg", BOT_STATE_NON_COMBAT);
+    trip.parked = hold;
+    if (hold)
+        _parked.insert(low);
+    else
+        _parked.erase(low);
+}
+
+void PartyAssembler::ReleaseParked()
+{
+    if (_parked.empty())
+        return;
+
+    std::unordered_set<uint32> stillHeld;
+    for (auto const& entry : _trips)
+        if (entry.second.parked)
+            if (Group* group = sGroupMgr->GetGroupByGUID(entry.first))
+                stillHeld.insert(group->GetLeaderGUID().GetCounter());
+
+    for (auto it = _parked.begin(); it != _parked.end();)
+    {
+        if (stillHeld.count(*it))
+        {
+            ++it;
+            continue;
+        }
+        ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(*it);
+        if (Player* who = ObjectAccessor::FindConnectedPlayer(guid))
+            if (PlayerbotAI* ai = GET_PLAYERBOT_AI(who))
+            {
+                // The rpg engine only ever belongs to a bot that is free or leads
+                // its own group - AiFactory hands it out on exactly that condition -
+                // and a released leader may have been picked up by a party in the
+                // meantime, where the follow strategy is what it should be running.
+                // The hold on the grind target comes off either way.
+                Group* const now = who->GetGroup();
+                bool const ownsItself =
+                    !now || now->GetLeaderGUID() == who->GetGUID();
+                if (ai->HasStrategy("stay", BOT_STATE_NON_COMBAT) ||
+                    (ownsItself && !ai->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)))
+                    ai->ChangeStrategy(ownsItself ? "-stay,+new rpg" : "-stay",
+                                       BOT_STATE_NON_COMBAT);
+            }
+        it = _parked.erase(it);
+    }
+}
+
+bool PartyAssembler::NeedsBreather(Group* group, Player* leader) const
+{
+    for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+    {
+        Player* m = mi->GetSource();
+        if (!m || !m->IsInWorld() || !m->IsAlive())
+            continue;
+        // Only the ones actually here. A member on another map is the recall's
+        // problem, and waiting on it would hold the run for the whole clock.
+        if (m->GetMapId() != leader->GetMapId())
+            continue;
+        if (m != leader && m->GetDistance(leader) > _regroupRange)
+            return true;
+        if (m->GetHealthPct() < kBreatherHealthPct)
+            return true;
+        if (PlayerbotAI::IsHeal(m) && m->getPowerType() == POWER_MANA &&
+            m->GetPowerPct(POWER_MANA) < kBreatherManaPct)
+            return true;
+    }
     return false;
 }
 
@@ -2025,23 +2187,48 @@ bool PartyAssembler::AdoptRun(Player* requester, Player* claimedBot)
     Player* leader = ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID());
     if (!leader)
         return false;
+    // Every bot that could take point: in this group, in this instance, ours to
+    // steer. Gathered before the crown is decided because the same list answers both
+    // questions - who may lead at all, and which of them can hold a pull.
+    std::vector<Player*> eligible;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* m = ref->GetSource())
+            if (GET_PLAYERBOT_AI(m) && m->IsInWorld() && m->GetMapId() == mapId)
+                eligible.push_back(m);
+
+    Player* tank = nullptr;
+    for (Player* m : eligible)
+        if (PlayerbotAI::IsTank(m))
+        {
+            tank = m;
+            break;
+        }
+
     if (!GET_PLAYERBOT_AI(leader))
     {
-        Player* promote =
+        // The bot the player named wins when it can tank; otherwise a tank from the
+        // group, and only then the named bot. "Lead us through" is a request for
+        // somebody to walk in front, and what walks in front should be what can
+        // hold what is standing there.
+        Player* const named =
             claimedBot && claimedBot->GetGroup() == group && claimedBot->GetMapId() == mapId
                 ? claimedBot : nullptr;
+        Player* promote = named && PlayerbotAI::IsTank(named) ? named : tank;
         if (!promote)
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-                if (Player* m = ref->GetSource())
-                    if (GET_PLAYERBOT_AI(m) && m->IsInWorld() && m->GetMapId() == mapId)
-                    {
-                        promote = m;
-                        break;
-                    }
+            promote = named;
+        if (!promote && !eligible.empty())
+            promote = eligible.front();
         if (!promote)
             return false;
         group->ChangeLeader(promote->GetGUID());
         leader = promote;
+    }
+    else if (tank && tank != leader && !PlayerbotAI::IsTank(leader))
+    {
+        // A bot already leads, but not one that can take the hit. Same handover,
+        // bot to bot, and only where there is a tank to hand it to.
+        group->ChangeLeader(tank->GetGUID());
+        leader = tank;
     }
 
     // The point of adoption: the party is the LEADER's to run. Every bot
@@ -2298,6 +2485,15 @@ void PartyAssembler::EnsureTelemetryTables()
             " ADD COLUMN encounters TINYINT UNSIGNED NOT NULL DEFAULT 0,"
             " ADD COLUMN bosses_at_entry TINYINT UNSIGNED NOT NULL DEFAULT 0,"
             " ADD COLUMN extensions TINYINT UNSIGNED NOT NULL DEFAULT 0");
+
+    // What the run cost in bodies. The wipe count only ever named the falls that
+    // took everybody, so a party losing one member per pull and picking it back up
+    // read as identically clean as one that lost nobody - which is the exact
+    // difference pacing is supposed to move, and it was not being recorded.
+    if (!CharacterDatabase.Query("SHOW COLUMNS FROM aetherion_run_history LIKE 'deaths'"))
+        CharacterDatabase.DirectExecute(
+            "ALTER TABLE aetherion_run_history"
+            " ADD COLUMN deaths SMALLINT UNSIGNED NOT NULL DEFAULT 0");
 
     // Which bosses actually died, stamped as they fall. The core's own encounter log
     // is durable but holds ONLY WotLK raids - Map::LogEncounterFinished returns early
@@ -3125,6 +3321,20 @@ std::vector<Player*> PartyAssembler::Candidates() const
     return out;
 }
 
+Player* PartyAssembler::PickLeader(std::vector<Player*> const& from)
+{
+    if (from.empty())
+        return nullptr;
+
+    std::vector<Player*> tanks;
+    for (Player* bot : from)
+        if (PlayerbotAI::IsTank(bot))
+            tanks.push_back(bot);
+
+    std::vector<Player*> const& draw = tanks.empty() ? from : tanks;
+    return draw[urand(0, draw.size() - 1)];
+}
+
 bool PartyAssembler::AssembleOne()
 {
     _refusedShape = false;
@@ -3159,8 +3369,7 @@ bool PartyAssembler::AssembleOne()
             for (Player* bot : pool)
                 if (HasRaidTarget(bot, floorScratch))
                     doorled.push_back(bot);
-            musterLeader = doorled.empty() ? pool[urand(0, pool.size() - 1)]
-                                           : doorled[urand(0, doorled.size() - 1)];
+            musterLeader = PickLeader(doorled.empty() ? pool : doorled);
             LOG_INFO("playerbots",
                      "Party assembler: the muster answers - {} capped {} raise a raid",
                      pool.size(), _musterTeam == TEAM_ALLIANCE ? "Alliance" : "Horde");
@@ -3180,10 +3389,17 @@ bool PartyAssembler::AssembleOne()
         }
     }
 
-    // Leader first, then everyone compatible with the leader. Picking the leader at
-    // random rather than by level keeps parties spread across the level brackets
-    // instead of always forming at the cap.
-    Player* leader = musterLeader ? musterLeader : pool[urand(0, pool.size() - 1)];
+    // Leader first, then everyone compatible with the leader. A tank where the pool
+    // holds one, and uniformly among the tanks otherwise, which keeps parties spread
+    // across the level brackets instead of always forming at the cap. Measured on
+    // 398 five-man runs that set out with both a tank and a healer aboard: 45.5
+    // percent of the 66 that happened to draw a tank leader put a boss down against
+    // 27.9 percent of the 298 led by damage, and the tank-led parties were the
+    // POORER geared of the two (161 average item level against 178), so the
+    // difference is not the gear. Healer-led was the floor at 14.7 percent of 34 -
+    // which is the same finding read from the other end, because whoever leads is
+    // whoever walks into the pack first.
+    Player* leader = musterLeader ? musterLeader : PickLeader(pool);
 
     // Only now, with a leader in hand, can we tell whether a raid is even possible:
     // it needs the size, the level and a raid entrance on this continent. A
@@ -3551,6 +3767,12 @@ void PartyAssembler::Tick(uint32 diff)
     // Journeys already under way are advanced every tick, not just when a new party
     // is formed - that is what keeps a leader walking to the door.
     AdvanceTrips();
+
+    // Anyone still held by a run that no longer exists gets its engine back. Runs
+    // end from half a dozen places - the clock, a wipe, a group disbanded out from
+    // under one - and asking each of them to remember is how a character ends up
+    // standing at a door with its wandering switched off for the rest of the uptime.
+    ReleaseParked();
 
     // Stop at the first failure: if the pool cannot produce one party it will not
     // produce a second in the same tick either. A refusal over party shape is the
