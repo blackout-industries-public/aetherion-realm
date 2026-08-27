@@ -6,9 +6,13 @@
 #include "CharacterCache.h"
 #include "CraftPlanner.h"
 #include "Config.h"
+#include "Creature.h"
 #include "DatabaseEnv.h"
+#include "Group.h"
 #include "Mail.h"
+#include "Map.h"
 #include "ScriptMgr.h"
+#include "SharedDefines.h"
 #include "DBCStores.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -64,14 +68,23 @@ namespace
     // Carved out of the adventurer share rather than added on top, so the
     // population still sums to itself and current content keeps its numbers.
     uint8 constexpr PERSONA_COLLECTOR = 4;
+    // The hunter goes after named rare spawns - the trophy mobs a player farms
+    // for a mount or a collection. Carved out of the adventurer band by the same
+    // rule the collector was, and deliberately NOT out of the collector band:
+    // the party assembler reads IsCollector to decide who goes back for old
+    // content, and that share was expensive to tune. Every collector hash still
+    // returns collector, so party formation is bit-for-bit unchanged.
+    uint8 constexpr PERSONA_HUNTER = 5;
     char const* PERSONA_NAMES[] = {"adventurer", "farmer", "merchant", "warlord",
-                                   "collector"};
+                                   "collector", "hunter"};
     // Idle-beat errand appetite per persona. Measured before this existed:
     // every errand claimed every beat, and party formation fell 86% in a day.
     // A collector runs errands about as often as an adventurer - its
     // distinctiveness is where it goes, not how much time it spends shopping.
-    uint8 constexpr PERSONA_DUTY[] = {22, 65, 50, 10, 20};
-    uint8 constexpr PERSONA_LAST = PERSONA_COLLECTOR;
+    // A hunter sits between the two: hunting is mostly travel, and a hunter
+    // that claimed most of its beats would stop being available for anything.
+    uint8 constexpr PERSONA_DUTY[] = {22, 65, 50, 10, 20, 30};
+    uint8 constexpr PERSONA_LAST = PERSONA_HUNTER;
     uint32 sDutyScale = 100;
     // World-thread only: written during the pass, read by WriteTelemetry.
     std::unordered_map<uint32, uint8> sPersona;
@@ -90,15 +103,26 @@ namespace
         // Collectors come out of the top of each band - the same hash, so a bot
         // keeps its disposition for life across restarts, and roughly one in
         // eight of the realm ends up chasing old content.
+        // Hunters take the top slice of each ADVENTURER band; every collector
+        // threshold below (88, 90, 87, 85) is untouched on purpose, so the
+        // population still sums to itself and IsCollector answers identically
+        // for every bot on the realm.
         if (gathers && crafts)
-            return h < 70 ? PERSONA_FARMER : (h < 88 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
+            return h < 70 ? PERSONA_FARMER
+                          : (h < 82 ? PERSONA_ADVENTURER
+                                    : (h < 88 ? PERSONA_HUNTER : PERSONA_COLLECTOR));
         if (gathers)
             return h < 50 ? PERSONA_FARMER
                           : (h < 75 ? PERSONA_WARLORD
-                                    : (h < 90 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR));
+                                    : (h < 85 ? PERSONA_ADVENTURER
+                                              : (h < 90 ? PERSONA_HUNTER : PERSONA_COLLECTOR)));
         if (crafts)
-            return h < 60 ? PERSONA_MERCHANT : (h < 87 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
-        return h < 45 ? PERSONA_WARLORD : (h < 85 ? PERSONA_ADVENTURER : PERSONA_COLLECTOR);
+            return h < 60 ? PERSONA_MERCHANT
+                          : (h < 81 ? PERSONA_ADVENTURER
+                                    : (h < 87 ? PERSONA_HUNTER : PERSONA_COLLECTOR));
+        return h < 45 ? PERSONA_WARLORD
+                      : (h < 79 ? PERSONA_ADVENTURER
+                                : (h < 85 ? PERSONA_HUNTER : PERSONA_COLLECTOR));
     }
 
     struct Verdict
@@ -192,6 +216,40 @@ namespace
         float x, y, z;
     };
     std::unordered_map<uint16, std::vector<GatherSpawn>> sGatherSpawns;
+
+    // E10 rare geography: named rare and rare-elite spawns per map, with the
+    // rank and level the hunt has to be sized against. maxlevel rather than
+    // minlevel, because a spawn rolls somewhere in the band and the bot has to
+    // survive the top of it.
+    struct RareSpawn
+    {
+        uint32 entry;
+        uint32 spawnId;
+        uint8 rank;
+        uint8 level;
+        float x, y, z;
+    };
+    std::unordered_map<uint16, std::vector<RareSpawn>> sRareSpawns;
+    bool sRareEnabled = false;
+    uint32 sRareFarMaxYards = 2000;
+    // Nothing to prove killing something this far below the bot. Also keeps a
+    // level 80 out of Elwynn Forest, where the low-level rares are dense.
+    uint32 sRareMaxLevelGap = 25;
+    // Ceiling on hunts held at once, realm-wide. The persona share already caps
+    // who CAN hunt; this caps how much of the fleet is walking cross-zone at any
+    // moment, which is the load the economy errands and party formation compete
+    // with. Counted per pass, because the mirror is rebuilt whole every pass.
+    uint32 sRareMaxConcurrent = 60;
+    uint32 sRareIssued = 0;
+    // The shortlist a hunter draws its target from. Strictly-nearest would send
+    // every hunter in a zone at the same spawn, and the losers would arrive at a
+    // corpse; drawing by guid hash spreads them with no claim protocol to keep
+    // consistent across threads.
+    uint32 constexpr RARE_SHORTLIST = 6;
+    // What each bot is currently aimed at, world thread only. An aim event fires
+    // when this changes, so a bot holding the same target across passes is one
+    // commitment in the log rather than one row a minute.
+    std::unordered_map<uint32, uint32> sRareAimed;
 
     // E8.1 listings mirror, rebuilt each pass on the world thread.
     std::mutex sListingsMx;
@@ -443,6 +501,69 @@ namespace
         }
     };
 
+    // The rare a bot is currently hunting, or 0. Under the verdict lock like
+    // every other mirror read, because the hooks below run on map threads.
+    uint32 HuntedEntry(uint32 guid)
+    {
+        std::lock_guard<std::mutex> lock(sVerdictMx);
+        auto it = sVerdictMirror.find(guid);
+        return (it != sVerdictMirror.end() && it->second.kind == NeedsLedger::VERDICT_RARE)
+                   ? it->second.goEntry
+                   : 0;
+    }
+
+    // E10: a hunt's outcome, recorded where the world already knows it. Without
+    // these two hooks the only observable is that a bot was aimed at something,
+    // which cannot tell a kill from a death from a wasted walk.
+    class RareHuntScript : public PlayerScript
+    {
+    public:
+        RareHuntScript()
+            : PlayerScript("AetherionRareHuntScript",
+                           {PLAYERHOOK_ON_CREATURE_KILL, PLAYERHOOK_ON_PLAYER_JUST_DIED})
+        {
+        }
+
+        void OnPlayerCreatureKill(Player* killer, Creature* killed) override
+        {
+            if (!killer || !killed)
+                return;
+            CreatureTemplate const* proto = killed->GetCreatureTemplate();
+            if (!proto || (proto->rank != CREATURE_ELITE_RARE &&
+                           proto->rank != CREATURE_ELITE_RAREELITE))
+                return;
+            // A hunt that landed and a rare that happened to walk into a bot are
+            // the same kill to the world and completely different numbers to the
+            // operator, so the held verdict decides which one this was.
+            uint32 const guid = killer->GetGUID().GetCounter();
+            bool const hunted = HuntedEntry(guid) == killed->GetEntry();
+            NeedsLedger::LogEvent("rare_hunt", guid, killed->GetEntry(),
+                                  uint32(killed->GetLevel()),
+                                  std::string(hunted ? "kill|" : "bonus|") +
+                                      std::to_string(killer->GetMapId()) + "|" +
+                                      std::string(killed->GetName()));
+            if (hunted)
+                NeedsLedger::RetireRare(guid);
+        }
+
+        void OnPlayerJustDied(Player* player) override
+        {
+            if (!player)
+                return;
+            uint32 const guid = player->GetGUID().GetCounter();
+            // Real players never appear in the mirror - the ledger only walks
+            // the bot fleet - so this is a bot-only path without asking.
+            uint32 const entry = HuntedEntry(guid);
+            if (!entry)
+                return;
+            CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(entry);
+            NeedsLedger::LogEvent("rare_hunt", guid, entry, uint32(player->GetLevel()),
+                                  "died|" + std::to_string(player->GetMapId()) + "|" +
+                                      (proto ? proto->Name : std::string()));
+            NeedsLedger::RetireRare(guid);
+        }
+    };
+
     uint64 TrainingCost(Player* bot)
     {
         uint64 total = 0;
@@ -490,6 +611,10 @@ void NeedsLedger::LoadConfig()
     sGatherEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gather.Enabled", false);
     sGatherMaxTierGap = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gather.MaxTierGap", 150);
     sDutyScale = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Duty.Scale", 100);
+    sRareEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Rare.Enabled", false);
+    sRareFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.FarMaxYards", 2000);
+    sRareMaxLevelGap = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.MaxLevelGap", 25);
+    sRareMaxConcurrent = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.MaxConcurrent", 60);
 
     if (_enabled || sEventsEnabled)
         EnsureTables();
@@ -600,6 +725,34 @@ bool NeedsLedger::MailboxTarget(uint32 guid, uint32 botMap, uint32& entry, uint3
     return true;
 }
 
+bool NeedsLedger::RareTarget(uint32 guid, uint32 botMap, uint32& entry, uint32& spawnId,
+                             float& x, float& y, float& z)
+{
+    std::lock_guard<std::mutex> lock(sVerdictMx);
+    auto it = sVerdictMirror.find(guid);
+    if (it == sVerdictMirror.end() || it->second.kind != VERDICT_RARE || !it->second.hasFar ||
+        it->second.farMap != uint16(botMap))
+        return false;
+    entry = it->second.goEntry;
+    spawnId = it->second.goSpawnId;
+    x = it->second.x;
+    y = it->second.y;
+    z = it->second.z;
+    return true;
+}
+
+void NeedsLedger::RetireRare(uint32 guid)
+{
+    std::lock_guard<std::mutex> lock(sVerdictMx);
+    auto it = sVerdictMirror.find(guid);
+    // Only ever drops a rare verdict: an errand this bot also holds is the
+    // world thread's to withdraw, not a hunt outcome's.
+    if (it != sVerdictMirror.end() && it->second.kind == VERDICT_RARE)
+        sVerdictMirror.erase(it);
+}
+
+bool NeedsLedger::RareHuntEnabled() { return sRareEnabled; }
+
 bool NeedsLedger::SellOnVendorVisit() { return sVendorEnabled; }
 bool NeedsLedger::ProtectTradeGoods() { return sProtectTradeGoods; }
 bool NeedsLedger::PaidRepairs() { return sPaidRepairs; }
@@ -616,6 +769,14 @@ void NeedsLedger::RegisterAuctionScript()
     // Registration is one-way in the script system; the hooks no-op through the
     // LogEvent gate when events are off.
     new EconAuctionScript();
+}
+
+void NeedsLedger::RegisterHuntScript()
+{
+    // Same one-way registration as the auction script; both hooks no-op through
+    // the LogEvent gate when events are off, and the kill hook additionally
+    // costs nothing until something rare actually dies.
+    new RareHuntScript();
 }
 
 void NeedsLedger::BuildTrainerCache()
@@ -689,6 +850,19 @@ void NeedsLedger::BuildTrainerCache()
                 sAuctioneerSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
             if (proto && (proto->npcflag & UNIT_NPC_FLAG_BANKER))
                 sBankerSpawns[data.mapid].push_back({data.posX, data.posY, data.posZ});
+
+            // E10: rare geography, off the same walk. rank 4 is a rare and
+            // rank 2 a rare elite (SharedDefines CreatureEliteType). World
+            // bosses are rank 3 and are deliberately absent - a hunt has to be
+            // something one bot, or one small party, can finish. An NPC that
+            // offers a service is not prey however rare its model is, and a
+            // civilian will not fight back.
+            if (proto && (proto->rank == CREATURE_ELITE_RARE ||
+                          proto->rank == CREATURE_ELITE_RAREELITE) &&
+                !proto->npcflag && !proto->HasFlagsExtra(CREATURE_FLAG_EXTRA_CIVILIAN))
+                sRareSpawns[data.mapid].push_back({data.id, uint32(data.spawnId),
+                                                   uint8(proto->rank), proto->maxlevel,
+                                                   data.posX, data.posY, data.posZ});
         }
     }
 
@@ -715,6 +889,10 @@ void NeedsLedger::Tick(uint32 diff)
         _shard = 0;
         ++_passes;
         WriteTelemetry();
+        // The pass just published is the set of hunts now held; the next pass
+        // starts its concurrency budget over. Reset after the swap, never
+        // before, or the cap would count two passes' worth.
+        sRareIssued = 0;
     }
 
     // E8.2: refresh the vault view every five minutes. Guild bank writes go
@@ -1359,6 +1537,114 @@ void NeedsLedger::ComputeNeeds(Player* bot)
                 sVerdictBuild[guid] = v;
         }
     }
+    // E10 rare hunt. Ranks below every branch above - each of those keeps a bot
+    // solvent, fed or supplied, and none should ever lose a beat to a trophy -
+    // but deliberately NOT as another link in that else-if chain. The gather
+    // branch above ends in a config-only condition, so once gathering is armed
+    // the chain terminates there for every bot on the realm and anything
+    // appended below it is dead code. That is the same trap the chain's own
+    // comment records killing E7.5's first cut, and it killed this branch's
+    // first cut too: 2500 bots online, not one rare verdict issued. Asking
+    // whether the chain actually stored anything gives last place without
+    // depending on any branch above to decline politely.
+    if (sPreemptEnabled && sRareEnabled && sRareIssued < sRareMaxConcurrent &&
+        !sVerdictBuild.count(guid) && bot->IsAlive() && ArchetypeOf(bot) == PERSONA_HUNTER)
+    {
+        auto it = sRareSpawns.find(uint16(bot->GetMapId()));
+        if (it != sRareSpawns.end())
+        {
+            Map* map = bot->GetMap();
+            uint32 const level = bot->GetLevel();
+            // An elite hits far above its level. Solo, the bot wants a real
+            // margin; three or more can take one on the chin. The operator's
+            // rule, structurally: a level 20 walking at a level 60 rare elite
+            // is a death, not a hunt.
+            uint32 const party = bot->GetGroup() ? bot->GetGroup()->GetMembersCount() : 1;
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float const maxD = float(sRareFarMaxYards) * float(sRareFarMaxYards);
+
+            RareSpawn const* shortlist[RARE_SHORTLIST] = {};
+            float shortDist[RARE_SHORTLIST] = {};
+            uint32 held = 0;
+            // What this bot is already walking towards. A hunt is a commitment,
+            // and re-deciding it every pass is not a smaller version of hunting -
+            // it is not hunting at all. Measured: bot 129 alternated between two
+            // Storm Peaks rares 200 and 315 yards away for half an hour and
+            // closed 29 yards, because the shortlist is drawn by index and the
+            // index moves whenever the candidate count does.
+            auto const aimIt = sRareAimed.find(guid);
+            uint32 const currentAim = aimIt != sRareAimed.end() ? aimIt->second : 0;
+            RareSpawn const* sticky = nullptr;
+
+            for (RareSpawn const& rs : it->second)
+            {
+                if (rs.rank == CREATURE_ELITE_RAREELITE)
+                {
+                    if (party >= 3 ? uint32(rs.level) > level + 2
+                                   : uint32(rs.level) + 5 > level)
+                        continue;
+                }
+                else if (uint32(rs.level) > level + 2)
+                    continue;
+                if (uint32(rs.level) + sRareMaxLevelGap < level)
+                    continue;
+
+                float const dx = rs.x - bx, dy = rs.y - by;
+                float const d2 = dx * dx + dy * dy;
+                if (d2 >= maxD)
+                    continue;
+                // Dead and waiting out its timer. Rares respawn slowly, so this
+                // is the difference between a hunt and a walk to a corpse - and
+                // the respawn table answers even for a grid nobody has loaded,
+                // which a live-object lookup cannot do.
+                if (map && map->GetCreatureRespawnTime(rs.spawnId))
+                    continue;
+
+                // Still eligible and still the one we chose: keep walking. Every
+                // filter above has already run on it, so this can only hold a
+                // target that is alive, in range and the right size.
+                if (currentAim && rs.spawnId == currentAim)
+                {
+                    sticky = &rs;
+                    continue;
+                }
+
+                if (held < RARE_SHORTLIST)
+                    ++held;
+                else if (d2 >= shortDist[RARE_SHORTLIST - 1])
+                    continue;
+                uint32 slot = held - 1;
+                while (slot && shortDist[slot - 1] > d2)
+                {
+                    shortDist[slot] = shortDist[slot - 1];
+                    shortlist[slot] = shortlist[slot - 1];
+                    --slot;
+                }
+                shortDist[slot] = d2;
+                shortlist[slot] = &rs;
+            }
+
+            if (sticky || held)
+            {
+                RareSpawn const* pick = sticky ? sticky : shortlist[(guid * 2654435761u) % held];
+                sVerdictBuild[guid] = Verdict{VERDICT_RARE, true, uint16(bot->GetMapId()),
+                                              pick->x,      pick->y, pick->z,
+                                              pick->entry,  pick->spawnId};
+                ++sRareIssued;
+                // One event per commitment, not one per pass: a bot still
+                // walking toward the same rare a minute later is not news.
+                uint32& aimed = sRareAimed[guid];
+                if (aimed != pick->spawnId)
+                {
+                    aimed = pick->spawnId;
+                    CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(pick->entry);
+                    NeedsLedger::LogEvent("rare_hunt", guid, pick->entry, uint32(pick->level),
+                                          "aim|" + std::to_string(bot->GetMapId()) + "|" +
+                                              (proto ? proto->Name : std::string()));
+                }
+            }
+        }
+    }
 
     // Persona: recorded every pass for the census, and stamped onto whatever
     // verdict the chain just stored so the map thread's duty roll is one
@@ -1494,7 +1780,8 @@ void NeedsLedger::WriteTelemetry()
         sShortfallMirror.swap(sShortfallBuild);
 
         static char const* KINDS[] = {"none",  "vendor", "mailbox", "trainer",
-                                      "ah",    "focus",  "gather",  "bank"};
+                                      "ah",    "focus",  "gather",  "bank",
+                                      "rare"};
         std::ostringstream errandSql;
         uint32 batched = 0;
         for (auto const& pair : sVerdictMirror)

@@ -35,7 +35,8 @@ patch(SCRIPT, [
     ("        sPartyAssembler->LoadConfig();\n",
      "        sPartyAssembler->LoadConfig();\n        sNeedsLedger->LoadConfig();\n"),
     ("    new PlayerbotsScript();",
-     "    new PlayerbotsScript();\n    NeedsLedger::RegisterAuctionScript();"),
+     "    new PlayerbotsScript();\n    NeedsLedger::RegisterAuctionScript();"
+     "\n    NeedsLedger::RegisterHuntScript();"),
     # Marker must be a string only THIS patch writes: the harvest hook in the
     # apply.sh script section also says "NeedsLedger", and a bare class-name
     # marker made this whole block skip as already-applied.
@@ -79,21 +80,24 @@ ACTIONCTX = f"{module}/src/Ai/Base/ActionContext.h"
 patch(ACTIONCTX, [
     ('#include "AddLootAction.h"\n',
      '#include "AddLootAction.h"\n#include "AhBuyAction.h"\n#include "AhSellAction.h"\n'
-     '#include "BankDepositAction.h"\n#include "EconCraftAction.h"\n#include "MailCollectAction.h"\n'),
+     '#include "BankDepositAction.h"\n#include "EconCraftAction.h"\n#include "MailCollectAction.h"\n'
+     '#include "RareHuntAction.h"\n'),
     ('        creators["rpg sell"] = &ActionContext::rpg_sell;',
      '        creators["rpg sell"] = &ActionContext::rpg_sell;\n'
      '        creators["ah sell"] = &ActionContext::ah_sell;\n'
      '        creators["ah buy"] = &ActionContext::ah_buy;\n'
      '        creators["mail collect"] = &ActionContext::mail_collect;\n'
      '        creators["econ craft"] = &ActionContext::econ_craft;\n'
-     '        creators["bank deposit"] = &ActionContext::bank_deposit;'),
+     '        creators["bank deposit"] = &ActionContext::bank_deposit;\n'
+     '        creators["rare hunt"] = &ActionContext::rare_hunt;'),
     ('    static Action* rpg_sell(PlayerbotAI* botAI) { return new RpgSellAction(botAI); }',
      '    static Action* rpg_sell(PlayerbotAI* botAI) { return new RpgSellAction(botAI); }\n'
      '    static Action* ah_sell(PlayerbotAI* botAI) { return new AhSellAction(botAI); }\n'
      '    static Action* ah_buy(PlayerbotAI* botAI) { return new AhBuyAction(botAI); }\n'
      '    static Action* mail_collect(PlayerbotAI* botAI) { return new MailCollectAction(botAI); }\n'
      '    static Action* econ_craft(PlayerbotAI* botAI) { return new EconCraftAction(botAI); }\n'
-     '    static Action* bank_deposit(PlayerbotAI* botAI) { return new BankDepositAction(botAI); }'),
+     '    static Action* bank_deposit(PlayerbotAI* botAI) { return new BankDepositAction(botAI); }\n'
+     '    static Action* rare_hunt(PlayerbotAI* botAI) { return new RareHuntAction(botAI); }'),
 ], "AhSellAction")
 
 SELLACT = f"{module}/src/Ai/Base/Actions/SellAction.cpp"

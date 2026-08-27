@@ -20,7 +20,7 @@ CONF=conf/playerbots.conf.dist
 # and failed the second time it ran. The Economy BRD (E0.3) extended the list to
 # every file the chain touches, making the whole apply deterministic; ownership map:
 #   NewRpgAction.cpp        -> patch_questturnin (2c), patch_econ_idle (2c2),
-#                              patch_errandaim (2c3)
+#                              patch_errandaim (2c3), patch_rarehunt (2c4)
 #   RandomPlayerbotMgr.cpp  -> patch_processbot (2d), patch_botrevive (2d2),
 #                              patch_eventlock (2f), patch_racemode (2g)
 #   PlayerbotFactory.cpp    -> patch_racemode (2g), patch_econ (2h)
@@ -55,7 +55,8 @@ cp "$HERE/src/Ai/Econ/NeedsLedger.h" "$HERE/src/Ai/Econ/NeedsLedger.cpp" \
    "$HERE/src/Ai/Econ/MailCollectAction.h" "$HERE/src/Ai/Econ/MailCollectAction.cpp" \
    "$HERE/src/Ai/Econ/CraftPlanner.h" "$HERE/src/Ai/Econ/CraftPlanner.cpp" \
    "$HERE/src/Ai/Econ/EconCraftAction.h" "$HERE/src/Ai/Econ/EconCraftAction.cpp" \
-   "$HERE/src/Ai/Econ/BankDepositAction.h" "$HERE/src/Ai/Econ/BankDepositAction.cpp" "$MODULE/src/Ai/Econ/"
+   "$HERE/src/Ai/Econ/BankDepositAction.h" "$HERE/src/Ai/Econ/BankDepositAction.cpp" \
+   "$HERE/src/Ai/Econ/RareHuntAction.h" "$HERE/src/Ai/Econ/RareHuntAction.cpp" "$MODULE/src/Ai/Econ/"
 
 # 1. Route chat the command parser did not understand to the bridge. That branch is
 #    exactly the set of messages that are conversation rather than instructions.
@@ -377,6 +378,10 @@ python3 "$HERE/patch_econ_idle.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction
 # 2c3. The far leg of an errand arrives aimed instead of drawing an NPC at random
 # (see patch_errandaim.py header). Runs after 2c2, which adds the NeedsLedger include.
 python3 "$HERE/patch_errandaim.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
+
+# 2c4. The hunter persona's rare hunt: travel legs at IDLE, kill on arrival
+# (see patch_rarehunt.py header). Runs after 2c2, whose text both anchors match.
+python3 "$HERE/patch_rarehunt.py" "$MODULE/src/Ai/World/Rpg/Action/NewRpgAction.cpp"
 
 # 2d. Owned-group protection + optional revive drive (see patch_processbot.py header).
 python3 "$HERE/patch_processbot.py" "$MODULE/src/Bot/RandomPlayerbotMgr.cpp"

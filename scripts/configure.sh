@@ -286,8 +286,17 @@ set_conf "$PB" "AiPlayerbot.Econ.Mailbox.Enabled" "${ECON_MAILBOX:-0}"
 # nodes only with a reagent shortfall or an unfunded need to farm toward.
 set_conf "$PB" "AiPlayerbot.Econ.Gather.Enabled" "${ECON_GATHER:-0}"
 # Persona duty scale: global multiplier over each archetype's errand
-# appetite (farmer 65 / merchant 50 / adventurer 22 / warlord 10 percent).
+# appetite (farmer 65 / merchant 50 / hunter 30 / adventurer 22 / warlord 10).
 set_conf "$PB" "AiPlayerbot.Econ.Duty.Scale" "${ECON_DUTY_SCALE:-150}"
+# E10: the hunter persona goes after named rare spawns. The persona share is
+# carved out of the adventurer band (~6% of the fleet); MaxConcurrent caps how
+# many of them are walking cross-zone at once, so the economy errands and party
+# formation keep the idle time they were tuned against.
+set_conf "$PB" "AiPlayerbot.Econ.Rare.Enabled" "${ECON_RARE:-0}"
+set_conf "$PB" "AiPlayerbot.Econ.Rare.MaxConcurrent" "${ECON_RARE_MAX:-60}"
+set_conf "$PB" "AiPlayerbot.Econ.Rare.FarMaxYards" "${ECON_RARE_FAR_YARDS:-2000}"
+# Levels below the bot at which a rare stops being worth the walk.
+set_conf "$PB" "AiPlayerbot.Econ.Rare.MaxLevelGap" "${ECON_RARE_LEVEL_GAP:-25}"
 # E3.4a: the food cheat is a hidden faucet-equivalent; dropping 'food' makes
 # hunger real. Default keeps today's mask - staging arms the reduced one.
 set_conf "$PB" "AiPlayerbot.BotCheats" "\"${BOT_CHEATS:-food,taxi,raid}\""

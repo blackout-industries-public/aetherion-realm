@@ -53,6 +53,9 @@ public:
     // the realm's whole history at 683 personal deposits, four withdrawals, and 8 of
     // 60 guild vaults holding anything at all.
     static uint8 constexpr VERDICT_BANK = 7;
+    // E10: a hunt for a named rare spawn. Last in the verdict chain, so every
+    // errand that keeps a bot solvent outranks going after a trophy.
+    static uint8 constexpr VERDICT_RARE = 8;
     static uint8 UrgentVerdict(uint32 guid);
     // Persona duty roll for one idle beat: the held verdict kind when the
     // bot's disposition claims the beat, VERDICT_NONE otherwise (or when no
@@ -121,6 +124,25 @@ public:
     // E4.4: auction lifecycle hooks (listed/sold/bought/expired events). Called
     // once from AddPlayerbotsScripts; the script gates itself on the events key.
     static void RegisterAuctionScript();
+
+    // E10: the rare hunt's target - creature entry, DB spawn id and the spawn
+    // position, chosen on the world thread against the respawn table. Returns
+    // false unless the bot holds a rare verdict for the map it is standing on.
+    // Map-thread safe.
+    static bool RareTarget(uint32 guid, uint32 botMap, uint32& entry, uint32& spawnId,
+                           float& x, float& y, float& z);
+
+    // Drop a held rare verdict. A rare the bot has just killed, or found already
+    // dead, must stop being claimed on the very next idle beat - looping on an
+    // unengageable target is what made dungeon parties ping-pong for 600 runs.
+    // The next pass picks a fresh target. Map-thread safe.
+    static void RetireRare(uint32 guid);
+
+    static bool RareHuntEnabled();
+
+    // E10: creature-kill and bot-death hooks, so a hunt's outcome is recorded
+    // rather than inferred. Registered alongside the auction script.
+    static void RegisterHuntScript();
 
     // E8.1: a per-pass snapshot of live listings, so map-thread buy decisions
     // never touch the unlocked auction maps. ownerAccount powers the
