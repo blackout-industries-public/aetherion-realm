@@ -151,7 +151,10 @@ export default defineEventHandler(async () => {
          LEFT JOIN acore_world.creature_template ct2
            ON ct2.entry = ie.creditEntry AND ie.creditType = 0
          WHERE i.completedEncounters & (1 << de.Bit)
-         GROUP BY i.map, boss`),
+         GROUP BY i.map, boss
+         UNION
+         SELECT k.map AS map, k.name AS boss
+         FROM acore_characters.aetherion_run_kills k GROUP BY k.map, k.name`),
       // Attunement runs the assembler is undertaking right now.
       q(`SELECT attunement AS name, COUNT(*) AS runs,
                 SUM(ended_at = 0) AS underway
@@ -227,8 +230,10 @@ export default defineEventHandler(async () => {
 
   const visitsBy = new Map<number, any>(frontier.map(r => [Number(r.map), r]))
   const liveBy = new Map<number, number>(liveKills.map(r => [Number(r.map), Number(r.killed ?? 0)]))
-  // Which bosses actually fell, by name. A count cannot distinguish a raid's
-  // final boss from an optional one standing nearer the door.
+  // Which bosses actually fell, by name, from three sources: the core's raid log
+  // (Wrath only), the live instance bits (any map, until it resets) and the
+  // assembler's own kill ledger (any map, durable). A count alone cannot tell a
+  // raid's final boss from an optional one standing nearer the door.
   const namedBy = new Map<number, string[]>()
   for (const r of namedKills) {
     const list = namedBy.get(Number(r.map)) ?? []
