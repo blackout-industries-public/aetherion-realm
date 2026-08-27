@@ -74,6 +74,12 @@ namespace
     // deadlocked in a fight it cannot win still gets moved along.
     constexpr uint32 kCombatHoldTicks = 8;
 
+    // What counts as getting somewhere. A party closes roughly twenty yards of ground
+    // a tick once it is fighting its way in, so five is a generous floor, and six
+    // ticks of failing to clear it is four minutes of a walk that is going nowhere.
+    constexpr float kAimProgressYards = 5.0f;
+    constexpr uint32 kAimStallTicks = 6;
+
     // Old content is only worth going back for once a character has outgrown it by
     // enough that the trip is a collection rather than a progression run.
     constexpr uint8 kCollectorMinLevel = 70;
@@ -316,6 +322,17 @@ void PartyAssembler::LoadEntrances()
     {
         Field* f = result->Fetch();
         uint32 const target = f[0].Get<uint32>();
+        // Only somewhere that is actually an instance. Two triggers stand INSIDE a
+        // dungeon, are named "Entrance", and teleport out to the continent - so
+        // Eastern Kingdoms itself landed in this table, pointing at a spot inside
+        // Shadowfang Keep. The stranded-bot sweep reads this table as "maps we know a
+        // way out of", so every ungrouped bot standing in Eastern Kingdoms was
+        // "stranded": twenty-five a tick were teleported INTO Shadowfang Keep, swept
+        // back out to Silverpine the next tick, and pumped straight back in - for the
+        // whole uptime, spawning a fresh instance each time.
+        MapEntry const* targetMap = sMapStore.LookupEntry(target);
+        if (!targetMap || !targetMap->IsDungeon())
+            continue;
         // First entrance wins; several dungeons have more than one door.
         if (_entrances.find(target) != _entrances.end())
             continue;
@@ -1156,41 +1173,93 @@ void PartyAssembler::AdvanceTrips()
                 }
             }
 
-            // Bosses first; trash only where no boss position is known. Held as a
-            // pointer rather than an iterator: the two maps are separate containers and
-            // comparing an iterator from one against the other's end() is undefined.
-            std::vector<Entrance> const* packs = nullptr;
+            // Bosses first; trash where no boss position is known, and again once
+            // every boss has had its visit. Held as pointers rather than iterators:
+            // the two maps are separate containers and comparing an iterator from one
+            // against the other's end() is undefined.
+            std::vector<Entrance> const* bossSpots = nullptr;
             if (auto const bossIt = _bosses.find(trip.dungeonMap);
                 bossIt != _bosses.end() && !bossIt->second.empty())
-                packs = &bossIt->second;
-            else if (auto const trashIt = _spawns.find(trip.dungeonMap);
-                     trashIt != _spawns.end() && !trashIt->second.empty())
-                packs = &trashIt->second;
+                bossSpots = &bossIt->second;
+            std::vector<Entrance> const* trashSpots = nullptr;
+            if (auto const trashIt = _spawns.find(trip.dungeonMap);
+                trashIt != _spawns.end() && !trashIt->second.empty())
+                trashSpots = &trashIt->second;
 
-            if (packs && leader->GetMapId() == trip.dungeonMap)
+            if ((bossSpots || trashSpots) && leader->GetMapId() == trip.dungeonMap)
             {
-                // Head for the nearest pack that is not already on top of us. Members
-                // follow the leader, so steering one character walks the whole party
-                // through the dungeon.
+                // A boss the party has stood on is finished with, for good. The list
+                // is spawn data loaded once at startup, so a dead boss still occupies
+                // its spot: a leader that steps eight yards off it is nearest to it
+                // again, walks back, arrives, is sent at the next boss, drifts far
+                // enough for the corpse to win again, and spends the rest of the
+                // clock oscillating between the two. That is what "kills one boss and
+                // then nothing" was. Every Obsidian Sanctum kill this realm has ever
+                // logged is Vesperon, the drake nearest the arrival point, 11 for 11 -
+                // never Sartharion 8 yards further out, never a second encounter
+                // anywhere, and no run in 573 has ever downed three.
+                if (bossSpots)
+                    for (uint32 i = 0; i < bossSpots->size(); ++i)
+                    {
+                        Entrance const& spot = (*bossSpots)[i];
+                        float const dx = leader->GetPositionX() - spot.x;
+                        float const dy = leader->GetPositionY() - spot.y;
+                        if (dx * dx + dy * dy >= _huntRange * _huntRange)
+                            continue;
+                        // Once per boss per run, which is also the only record of how
+                        // deep a party actually got: the ledger's boss count is read
+                        // from an instance row that may already have been pruned.
+                        if (trip.visitedBosses.insert(i).second)
+                            LOG_INFO("playerbots",
+                                     "Party assembler: {}'s party reaches boss {} of "
+                                     "{} in {}",
+                                     leader->GetName(), uint32(trip.visitedBosses.size()),
+                                     uint32(bossSpots->size()), trip.name);
+                    }
+
+                // Head for the nearest boss nobody has been to yet. Members follow the
+                // leader, so steering one character walks the whole party through the
+                // dungeon.
                 Entrance const* best = nullptr;
                 float bestDist = 0.0f;
-                for (Entrance const& spot : *packs)
-                {
-                    float const dx = leader->GetPositionX() - spot.x;
-                    float const dy = leader->GetPositionY() - spot.y;
-                    float const dist = std::sqrt(dx * dx + dy * dy);
-                    // Only skip a target we are practically standing on. Skipping
-                    // anything within a generous radius sent a party that had closed to
-                    // 20 yards off towards a different boss, so it oscillated between
-                    // them and committed to neither.
-                    if (dist < _huntRange)
-                        continue;
-                    if (!best || dist < bestDist)
+                uint32 bestBoss = kNoBossAim;
+                if (bossSpots)
+                    for (uint32 i = 0; i < bossSpots->size(); ++i)
                     {
-                        best = &spot;
-                        bestDist = dist;
+                        if (trip.visitedBosses.count(i))
+                            continue;
+                        Entrance const& spot = (*bossSpots)[i];
+                        float const dx = leader->GetPositionX() - spot.x;
+                        float const dy = leader->GetPositionY() - spot.y;
+                        float const dist = std::sqrt(dx * dx + dy * dy);
+                        if (!best || dist < bestDist)
+                        {
+                            best = &spot;
+                            bestDist = dist;
+                            bestBoss = i;
+                        }
                     }
-                }
+
+                // Nothing left worth a name: hunt trash rather than stand still for
+                // the rest of the dwell clock.
+                if (!best && trashSpots)
+                    for (Entrance const& spot : *trashSpots)
+                    {
+                        float const dx = leader->GetPositionX() - spot.x;
+                        float const dy = leader->GetPositionY() - spot.y;
+                        float const dist = std::sqrt(dx * dx + dy * dy);
+                        // Only skip a target we are practically standing on. Skipping
+                        // anything within a generous radius sent a party that had
+                        // closed to 20 yards off towards a different pack, so it
+                        // oscillated between them and committed to neither.
+                        if (dist < _huntRange)
+                            continue;
+                        if (!best || dist < bestDist)
+                        {
+                            best = &spot;
+                            bestDist = dist;
+                        }
+                    }
 
                 // Nobody is re-tasked mid-fight. The mover has no combat guard of its
                 // own beyond the one this patch chain adds, and a leader sent to the
@@ -1216,6 +1285,36 @@ void PartyAssembler::AdvanceTrips()
                     // cannot be reached - would otherwise hold the party still until
                     // the clock runs out, so past the hold the steering resumes.
                     trip.combatTicks = 0;
+
+                    // A boss the party cannot get any closer to is not a boss to keep
+                    // walking at. Naxxramas keeps its wings behind teleporters no
+                    // mover paths through, so a leader aimed at the nearest one simply
+                    // stands in the entry hub: 38 recorded runs there spent over an
+                    // hour inside apiece without a single kill or even a wipe. Give up
+                    // on that one and try the next. Only counted out of combat - a
+                    // party holding still because it is fighting is not stuck.
+                    if (bestBoss != kNoBossAim && !fighting)
+                    {
+                        if (bestBoss != trip.aimBoss ||
+                            bestDist < trip.aimDist - kAimProgressYards)
+                        {
+                            trip.aimBoss = bestBoss;
+                            trip.aimDist = bestDist;
+                            trip.aimStalls = 0;
+                        }
+                        else if (++trip.aimStalls > kAimStallTicks)
+                        {
+                            trip.visitedBosses.insert(bestBoss);
+                            trip.aimBoss = kNoBossAim;
+                            trip.aimStalls = 0;
+                            LOG_INFO("playerbots",
+                                     "Party assembler: {}'s party cannot reach a boss "
+                                     "in {} ({} yards and no closer) - moving on",
+                                     leader->GetName(), trip.name, uint32(bestDist));
+                            ++it;
+                            continue;
+                        }
+                    }
 
                     // Only when it actually changed. Re-issuing the same destination
                     // restarts the mover's no-progress clock, which is what decides

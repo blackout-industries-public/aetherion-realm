@@ -181,6 +181,10 @@ private:
                           bool isRaid, uint8 difficulty, Travel how, uint32 startYards);
     void EndRun(uint32 runId, uint32 mapId, char const* outcome);
 
+    // "Not walking at any boss right now". Zero is a real index into the boss list,
+    // so the empty slot needs a value of its own.
+    static constexpr uint32 kNoBossAim = 0xFFFFFFFFu;
+
     struct Trip
     {
         uint32 dungeonMap{0};
@@ -215,6 +219,17 @@ private:
         // Where the leader was last pointed, so an unchanged destination is not
         // re-issued every tick - re-issuing restarts the mover's stuck clock.
         float aimX{0.0f}, aimY{0.0f};
+        // Boss positions this run is done with, by index into the map's boss list.
+        // The list is spawn data and never changes, so a boss stays in it after it
+        // dies; without this the nearest-boss rule walks the party back to the corpse
+        // it just made. Also collects bosses the party demonstrably cannot walk to.
+        std::unordered_set<uint32> visitedBosses;
+        // Which boss the leader is currently walking at, the closest it has got, and
+        // how many ticks it has failed to get closer. A wing whose bosses sit behind
+        // a teleporter is never reached on foot, and staring at one is the whole run.
+        uint32 aimBoss{kNoBossAim};
+        float aimDist{0.0f};
+        uint32 aimStalls{0};
         // Consecutive ticks the party has spent fighting. A fight nobody can win
         // must not hold the run still forever.
         uint32 combatTicks{0};
