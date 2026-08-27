@@ -25,6 +25,13 @@ const eras = computed(() => prog.value?.eras ?? [])
 const earning = computed(() => prog.value?.earning ?? [])
 const legendaries = computed(() => prog.value?.legendaries ?? [])
 const collectors = computed(() => prog.value?.collectors ?? null)
+const hunters = computed(() => prog.value?.hunters ?? null)
+
+// A hunt that closed is the only success; a rare killed in passing is luck, and
+// saying so keeps the conversion figure honest.
+const HUNT_VERB: Record<string, string> = {
+  aim: 'set out after', kill: 'brought down', died: 'fell to',
+}
 
 // The old world is a frontier, not a scoreboard: the sentence has to work when
 // the answer is "almost none of it".
@@ -172,6 +179,53 @@ const KIND_NOTE: Record<string, string> = {
           </div>
           <p v-if="!(collectors?.recent ?? []).length" :style="{ margin: 0, fontSize: '12.5px', color: V.muted, lineHeight: 1.5 }">
             {{ collectors?.bots ? `${fmt.int(collectors.bots)} bots have the collector's disposition. None have set out yet.` : 'No collectors on the realm.' }}
+          </p>
+        </div>
+      </section>
+
+      <section v-if="hunters?.bots" :style="panel">
+        <header :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '10px 12px 6px' }">
+          <span :style="cap">Hunters</span>
+          <span :style="{ fontFamily: FONT.mono, fontSize: '10px', color: V.faint }">
+            {{ fmt.int(hunters.bots) }} bots · {{ hunters.hunting }} out
+          </span>
+        </header>
+        <div :style="{ padding: '0 12px 12px' }">
+          <div :style="{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }">
+            <div
+              v-for="f in [
+                { l: 'hunts begun', v: hunters.aims, c: V.text },
+                { l: 'quarry reached', v: hunters.reached, c: V.accent },
+                { l: 'rares brought down', v: hunters.kills, c: T.green },
+                { l: 'killed in passing', v: hunters.bonus, c: V.muted },
+                { l: 'hunters lost', v: hunters.died, c: T.red },
+              ]"
+              :key="f.l"
+              :style="{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '9px', alignItems: 'baseline' }"
+            >
+              <span :style="{ fontSize: '12.5px', color: f.v ? V.body : V.faint }">{{ f.l }}</span>
+              <span :style="{ fontFamily: FONT.mono, fontSize: '11.5px', color: f.v ? f.c : V.faint }">{{ f.v || '—' }}</span>
+            </div>
+          </div>
+
+          <div v-for="h in hunters.recent" :key="h.at + h.bot" :style="{ fontSize: '12px', color: V.body, lineHeight: 1.45 }">
+            <button
+              class="nm"
+              :style="{
+                appearance: 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                fontFamily: FONT.body, fontSize: '12px', color: V.textHi,
+              }"
+              @click="emit('select', h.bot)"
+            >{{ h.bot }}</button>
+            {{ ' ' }}{{ HUNT_VERB[h.phase] ?? h.phase }}{{ ' ' }}<span
+              :style="{ color: h.phase === 'kill' ? T.green : h.phase === 'died' ? T.red : V.accent }"
+            >{{ h.quarry }}</span>
+            <span :style="{ fontFamily: FONT.mono, fontSize: '9.5px', color: V.faint }"> {{ fmt.ago(h.at) }} ago</span>
+          </div>
+
+          <p v-if="!hunters.kills" :style="{ margin: '8px 0 0', fontSize: '11.5px', color: V.faint, lineHeight: 1.5 }">
+            No hunt has closed yet. Rares stand about a thousand yards out, so the
+            walk is measured in hours.
           </p>
         </div>
       </section>

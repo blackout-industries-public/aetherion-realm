@@ -105,7 +105,8 @@ export default defineEventHandler(async () => {
 
   const inList = (s: Set<number>) => [...s].join(',') || '0'
   const [questNames, itemNames, rewarded, active, held, earned, frontier, earning,
-         liveKills, namedKills, collectorCount, collectorRuns, legendary] =
+         liveKills, namedKills, collectorCount, collectorRuns,
+         huntPhases, huntRecent, huntWho, legendary] =
     await Promise.all([
       q(`SELECT ID AS id, LogTitle AS name FROM acore_world.quest_template WHERE ID IN (${inList(questIds)})`),
       q(`SELECT entry AS id, name FROM acore_world.item_template WHERE entry IN (${inList(itemIds)})`),
@@ -164,6 +165,25 @@ export default defineEventHandler(async () => {
                 ended_at = 0 AS live, started_at
          FROM acore_characters.aetherion_run_history
          WHERE flavor = 'collector' ORDER BY started_at DESC LIMIT 8`),
+      // The hunters. detail is "<phase>|<mapId>|<field3>"; field3 carries the
+      // rare's name on aim, kill and died. A 'bonus' is a rare killed in passing
+      // and is deliberately NOT counted as a hunt closing.
+      q(`SELECT SUBSTRING_INDEX(detail, '|', 1) AS phase,
+                COUNT(*) AS n, COUNT(DISTINCT guid) AS bots
+         FROM acore_characters.aetherion_econ_events
+         WHERE kind = 'rare_hunt' GROUP BY phase`),
+      q(`SELECT e.ts, SUBSTRING_INDEX(e.detail, '|', 1) AS phase,
+                SUBSTRING_INDEX(e.detail, '|', -1) AS quarry, e.count AS lvl, c.name AS bot
+         FROM acore_characters.aetherion_econ_events e
+         JOIN acore_characters.characters c ON c.guid = e.guid
+         WHERE e.kind = 'rare_hunt'
+           AND SUBSTRING_INDEX(e.detail, '|', 1) IN ('aim','kill','died')
+         ORDER BY e.ts DESC LIMIT 8`),
+      q(`SELECT
+           (SELECT COUNT(*) FROM acore_characters.aetherion_needs
+             WHERE need_type = 'persona' AND target = 'hunter') AS hunters,
+           (SELECT COUNT(*) FROM acore_characters.aetherion_needs
+             WHERE need_type = 'errand' AND target = 'rare') AS hunting`),
       // Legendaries in existence on the realm - the collector's scoreboard.
       q(`SELECT it.name, COUNT(DISTINCT ii.owner_guid) AS owners
          FROM acore_characters.item_instance ii
@@ -270,6 +290,20 @@ export default defineEventHandler(async () => {
         live: !!Number(r.live), at: Number(r.started_at) * 1000,
       })),
     },
+    hunters: (() => {
+      const by = new Map<string, any>(huntPhases.map(r => [String(r.phase), r]))
+      const n = (k: string) => Number(by.get(k)?.n ?? 0)
+      return {
+        bots: Number(huntWho[0]?.hunters ?? 0),
+        hunting: Number(huntWho[0]?.hunting ?? 0),
+        aims: n('aim'), reached: n('reach'), kills: n('kill'),
+        bonus: n('bonus'), died: n('died'), gone: n('gone'),
+        recent: huntRecent.map(r => ({
+          at: Number(r.ts) * 1000, phase: String(r.phase),
+          quarry: String(r.quarry), lvl: Number(r.lvl ?? 0), bot: r.bot,
+        })),
+      }
+    })(),
     earning: earning.map(r => ({
       name: r.name, runs: Number(r.runs), underway: Number(r.underway ?? 0),
     })),
