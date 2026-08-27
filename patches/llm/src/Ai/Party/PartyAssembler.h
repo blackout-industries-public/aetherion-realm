@@ -290,10 +290,10 @@ private:
         // A run with nothing left to walk at is finished; without this it hunts
         // trash for the rest of an hour-and-a-half clock holding 10-25 bots.
         uint32 idleTicks{0};
-        // Ticks spent trying to pull the party to the leader's stone. Ulduar's
-        // doorway trigger stands 100 yards above its own platform, so summoned
-        // members fall out of range and are summoned into the air again - 34 runs
-        // reached that door and 4 ever got in.
+        // Ticks spent trying to pull the party to the leader's stone. At some doors
+        // the sixty-yard arrival test never comes true and the party stands outside
+        // until its whole budget expires: Ulduar 32 runs reached the door for 4
+        // entries, Uldaman 6 for none.
         uint32 summonTicks{0};
         // Who was in the party at the end of the previous tick. Diffed against the
         // live roster so a member that disappears is named at the moment it happens,

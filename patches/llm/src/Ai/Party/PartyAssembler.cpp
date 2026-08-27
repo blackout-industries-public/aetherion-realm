@@ -1466,17 +1466,30 @@ void PartyAssembler::AdvanceTrips()
         if (trip.phase == Phase::Summoning)
         {
             // Gathering at the stone is scenery, and some doorways will not allow it.
-            // Ulduar's entrance trigger stands at z=1320, about a hundred yards above
-            // its own platform: every summoned member is dropped into the air, falls
-            // out of the sixty-yard arrival radius on the way down, and is summoned
-            // into the air again. Measured on this realm, 34 raids reached that door
-            // and 4 ever got through it - every raid door_timeout on record is
-            // Ulduar. The instance teleport does not care where anyone was standing
-            // when it fired, so past this many ticks the party simply goes in.
+            // The entry test asks that every member be within sixty yards of the
+            // leader in THREE dimensions, and at some doors that never becomes true,
+            // so the party stands outside until the whole trip budget runs out.
+            // Measured on this realm before this was added:
+            //   Ulduar   37 runs, 32 reached the door,  4 entered, 13 door_timeout
+            //   Uldaman   8 runs,  6 reached the door,  0 entered,  3 door_timeout
+            //   Zul'Farrak 15 runs, 6 reached the door, 5 entered,  1 door_timeout
+            // Height alone does not explain it: Ulduar's trigger stands at z=1320 on a
+            // mountaintop platform, but Uldaman's is at z=214 and fails just as
+            // completely. What both have in common is a leader standing on ground the
+            // heightmap does not agree with, and a summon target that comes from
+            // GetClosePoint - which snaps its z to the allowed position. A member put
+            // down at the snapped height is far enough away in z alone to fail a
+            // three-dimensional sixty-yard test, and is summoned to the same place
+            // again next tick. That is the leading explanation and it is NOT proven
+            // here; the escape valve deliberately does not depend on which door is
+            // awkward or why, because the instance teleport does not care where anyone
+            // was standing when it fired.
             // Tested before the summon rather than after it: a member teleported this
             // very tick is mid-flight, and EnterInstance skips those, so summoning and
             // giving up in the same pass would leave the scattered members behind.
-            // RecoverInside collects whoever was still falling.
+            // RecoverInside collects the stragglers on the far side.
+            // Four ticks is well clear of the one or two an ordinary door takes, so
+            // the maps that converge today are untouched by it.
             bool const gaveUpGathering = ++trip.summonTicks > _summonTicks;
 
             // Meeting stones sit at dungeon entrances, so "leader arrives, everyone

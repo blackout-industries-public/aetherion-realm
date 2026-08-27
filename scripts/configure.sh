@@ -119,8 +119,9 @@ set_conf "$PB" "AiPlayerbot.Party.ProgressExtendMax" "${PARTY_PROGRESS_EXTEND_MA
 # destination is named as out of reach instead of quietly attempted.
 set_conf "$PB" "AiPlayerbot.Party.GearStretch" "${PARTY_GEAR_STRETCH:-20}"
 # Ticks the summon at the door gets before the party is taken in from where it
-# stands. Ulduar's trigger sits 100 yards above its platform, so its summons
-# never converge and 34 raids reached that door for 4 entries.
+# stands. At some doors the arrival test never comes true and the party waits
+# out its whole budget: Ulduar 32 runs reached the door for 4 entries, Uldaman
+# 6 for none. Four is well clear of the one or two an ordinary door takes.
 set_conf "$PB" "AiPlayerbot.Party.SummonTicks" "${PARTY_SUMMON_TICKS:-4}"
 # Ticks a run with every boss dead or given up on is held before it is closed
 # out, rather than wandering trash for the rest of a 90-minute clock.
