@@ -79,6 +79,9 @@ namespace
     // ticks of failing to clear it is four minutes of a walk that is going nowhere.
     constexpr float kAimProgressYards = 5.0f;
     constexpr uint32 kAimStallTicks = 6;
+    // Ground lost that means the party was moved rather than that it failed to walk -
+    // three ticks' worth, so ordinary jitter around a target does not clear the count.
+    constexpr float kAimResetYards = 60.0f;
 
     // Old content is only worth going back for once a character has outgrown it by
     // enough that the trip is a collection rather than a progression run.
@@ -1295,8 +1298,14 @@ void PartyAssembler::AdvanceTrips()
                     // party holding still because it is fighting is not stuck.
                     if (bestBoss != kNoBossAim && !fighting)
                     {
+                        // Closing on it resets the count, and so does being much
+                        // further from it than the last reading: a wipe reseats the
+                        // whole party at the arrival point, which is not the party
+                        // failing to walk - measuring that as failure would retire a
+                        // boss they had merely died on the way to.
                         if (bestBoss != trip.aimBoss ||
-                            bestDist < trip.aimDist - kAimProgressYards)
+                            bestDist < trip.aimDist - kAimProgressYards ||
+                            bestDist > trip.aimDist + kAimResetYards)
                         {
                             trip.aimBoss = bestBoss;
                             trip.aimDist = bestDist;
