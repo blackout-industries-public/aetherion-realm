@@ -8,6 +8,7 @@ import { CLASS_COLOR, zoneName } from './data'
 import WorldView from './components/WorldView.vue'
 import GroupsView from './components/GroupsView.vue'
 import DebugView from './components/DebugView.vue'
+import ProgressionPanel from './components/ProgressionPanel.vue'
 import SocietyView from './components/SocietyView.vue'
 import OpsView from './components/OpsView.vue'
 import GuildsView from './components/GuildsView.vue'
@@ -36,7 +37,7 @@ useHead({
 })
 
 type TabKey = 'overview' | 'world' | 'groups' | 'pvp' | 'race' | 'econ' | 'market'
-  | 'society' | 'guilds' | 'ops' | 'debug'
+  | 'society' | 'guilds' | 'ops' | 'debug' | 'progress'
 const tab = ref<TabKey>('overview')
 
 // Grouped navigation. OVERVIEW joins the LIVE group as one more entry when the
@@ -48,6 +49,7 @@ const NAV_GROUPS: { label: string; tabs: { key: TabKey; label: string }[] }[] = 
       { key: 'overview', label: 'OVERVIEW' },
       { key: 'world', label: 'WORLD' },
       { key: 'groups', label: 'PVE' },
+      { key: 'progress', label: 'PROGRESS' },
       { key: 'pvp', label: 'PVP' },
       { key: 'race', label: 'RACE' },
     ],
@@ -304,6 +306,34 @@ function onKeydown(ev: KeyboardEvent) {
   }
 }
 
+// The data's own age. Endpoints answer from a warm cache, so `at` is the moment
+// the answer was produced rather than the moment it was asked for - which is the
+// honest thing to show a reader wondering how live the screen is.
+const dataAt = computed(() => {
+  const stamps = [world.value?.at, assembler.value?.at, events.value?.at,
+                  econ.value?.at, race.value?.at, guild.value?.at]
+    .map(Number).filter(n => Number.isFinite(n) && n > 0)
+  return stamps.length ? Math.max(...stamps) : 0
+})
+const dataAge = computed(() => {
+  if (!dataAt.value) return null
+  return Math.max(0, Math.round((now.value - dataAt.value) / 1000))
+})
+const refreshing = ref(false)
+async function refreshAll() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([
+      refreshWorld(), refreshAssembler(), refreshEvents(), refreshPvp(),
+      refreshGuilds(), refreshCombat(), refreshLlm(), refreshOps(),
+      refreshSociety(), refreshGuild(), refreshQuests(), refreshRace(), refreshEcon(),
+    ])
+  } finally {
+    refreshing.value = false
+  }
+}
+
 let fast: ReturnType<typeof setInterval> | undefined
 let slow: ReturnType<typeof setInterval> | undefined
 let tick: ReturnType<typeof setInterval> | undefined
@@ -447,11 +477,27 @@ onUnmounted(() => {
           <span :style="{ fontFamily: FONT.display, fontSize: '8.5px', fontWeight: 600, letterSpacing: '.14em', color: V.dim }">CHARACTERS</span>
         </span>
 
-        <span :style="{ display: 'flex', alignItems: 'center', gap: '7px' }">
-          <span :style="{ width: '5px', height: '5px', borderRadius: '50%', background: world?.stale ? T.red : T.green }" />
-          <span :style="{ fontFamily: FONT.display, fontSize: '9.5px', fontWeight: 600, letterSpacing: '.14em', color: world?.stale ? T.red : V.dim }">
-            {{ world?.stale ? 'STALE' : 'LIVE' }}
+        <span :style="{ display: 'flex', alignItems: 'center', gap: '9px' }">
+          <span :style="{ display: 'flex', alignItems: 'center', gap: '6px' }">
+            <span :style="{ width: '5px', height: '5px', borderRadius: '50%', background: world?.stale ? T.red : dataAge !== null && dataAge > 90 ? 'oklch(0.80 0.10 88)' : T.green }" />
+            <span :style="{ textAlign: 'left', lineHeight: 1.15 }">
+              <span :style="{ display: 'block', fontFamily: FONT.display, fontSize: '9.5px', fontWeight: 600, letterSpacing: '.14em', color: world?.stale ? T.red : V.dim }">
+                {{ world?.stale ? 'STALE' : 'LIVE' }}
+              </span>
+              <span :style="{ display: 'block', fontFamily: FONT.mono, fontSize: '9px', color: V.faint2, whiteSpace: 'nowrap' }">
+                {{ dataAge === null ? 'loading' : dataAge < 5 ? 'just now' : `${dataAge}s ago` }}
+              </span>
+            </span>
           </span>
+          <button
+            :title="'Refresh every panel now'"
+            :style="{
+              appearance: 'none', cursor: refreshing ? 'default' : 'pointer',
+              border: `1px solid ${V.line}`, background: V.panel, color: refreshing ? V.faint2 : V.muted,
+              fontFamily: FONT.mono, fontSize: '11px', lineHeight: 1, padding: '6px 8px',
+            }"
+            @click="refreshAll"
+          >{{ refreshing ? '...' : '\u21bb' }}</button>
         </span>
       </div>
     </header>
@@ -522,6 +568,12 @@ onUnmounted(() => {
         <WealthView @select="select" />
       </div>
       <GuildsView v-else-if="tab === 'guilds'" :guild="guild" @select="select" />
+      <div
+        v-else-if="tab === 'progress'"
+        :style="{ padding: '18px 22px', minHeight: 0, height: '100%', overflow: 'auto' }"
+      >
+        <ProgressionPanel @select="select" />
+      </div>
       <DebugView v-else-if="tab === 'debug'" />
       <OpsView v-else :ops="ops" :assembler="assembler" :llm="llm" />
 
