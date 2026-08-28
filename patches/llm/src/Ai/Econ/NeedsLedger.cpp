@@ -262,14 +262,24 @@ namespace
     bool sGearRescue = false;
     uint32 sGearRescueMax = 6;
     bool sShopEnabled = false;
-    // Ceiling on shopping trips held at once, realm-wide, and how long a bot
-    // that has just been sent is left alone. Same reasoning as the rare hunt's
-    // cap: the persona duty roll decides how eagerly a bot runs an errand, but
-    // something has to bound how much of the fleet is walking to a city at all.
+    // Ceiling on shopping trips held at once, realm-wide. Same reasoning as the
+    // rare hunt's cap: the persona duty roll decides how eagerly a bot runs an
+    // errand, but something has to bound how much of the fleet is walking to a
+    // city at all.
     uint32 sShopMaxConcurrent = 80;
-    uint32 sShopCooldownSec = 900;
     uint32 sShopIssued = 0;
-    std::unordered_map<uint32, uint32> sShopLast;
+    // What each shopper is currently walking to the market FOR, world thread
+    // only. This is an aim log, not a cooldown. The first cut stamped a 900s
+    // cooldown at issue time, and because the verdict mirror is rebuilt whole
+    // every pass, that did not stop a bot pacing the auction house - it deleted
+    // the bot's errand 60 seconds after granting it and refused to grant it
+    // again for fifteen minutes. Measured: held shopping trips collapsed from
+    // 41 to 2 and stayed there while the cumulative aim count kept climbing, so
+    // nearly every trip issued was one that evaporated before the bot could act
+    // on it - and the arrival aim, which asks UrgentVerdict at the door, would
+    // have found nothing by then either. The rare hunt had this right: re-issue
+    // while the reason holds, and log only when the aim changes.
+    std::unordered_map<uint32, uint64> sShopAimed;
 
     // The gear half of the listings mirror, distilled once per pass. The screen
     // it feeds runs for every bot on the realm, so it must not be a full-market
@@ -697,7 +707,6 @@ void NeedsLedger::LoadConfig()
     sShopEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gear.Shop.Enabled", false);
     sShopMaxConcurrent =
         sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gear.Shop.MaxConcurrent", 80);
-    sShopCooldownSec = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gear.Shop.CooldownSec", 900);
 
     if (_enabled || sEventsEnabled)
         EnsureTables();
@@ -1796,50 +1805,71 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // in a config-only condition, so anything appended below it is dead code
     // the moment gathering is armed.
     //
-    // Three gates beyond that, and each answers a specific way this could go
-    // wrong. The funded gear need means the bot is not walking to a city to
-    // window-shop or to spend its repair money. The realm-wide ceiling means a
-    // market that suddenly fills with gear cannot empty the world into
-    // Ironforge. The cooldown means a bot whose target was bought by someone
-    // else in the meantime goes and does something else instead of pacing the
-    // auction house - the ping-pong failure the rare hunt already paid for.
+    // Two gates beyond that. The funded gear need means the bot is not walking
+    // to a city to window-shop or to spend its repair money. The realm-wide
+    // ceiling means a market that suddenly fills with gear cannot empty the
+    // world into Ironforge. Nothing here ends the trip on a timer: the reason
+    // ends it. When the upgrade is bought - by this bot or by anyone else - the
+    // screen above stops pricing one, and the verdict is simply not rebuilt.
+    // The ceiling counts trips STARTED this pass, not trips held. A bot already
+    // walking to a market keeps its errand regardless, because dropping it to
+    // hand the slot to a stranger is the same mistake the cooldown made from the
+    // other direction - a trip abandoned halfway is a trip that bought nothing.
+    // The pool this draws from is bounded anyway: only bots the chain declined
+    // that can also afford a real upgrade, measured at a couple of hundred.
     if (sPreemptEnabled && sShopEnabled && gearUpgradeFunded && !sVerdictBuild.count(guid) &&
-        sShopIssued < sShopMaxConcurrent)
+        (sShopAimed.count(guid) || sShopIssued < sShopMaxConcurrent))
     {
-        uint32 const nowSec = uint32(time(nullptr));
-        auto const last = sShopLast.find(guid);
-        if (last == sShopLast.end() || nowSec - last->second >= sShopCooldownSec)
+        auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
+        if (it != sAuctioneerSpawns.end())
         {
-            auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
-            if (it != sAuctioneerSpawns.end())
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+            float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+            Verdict v{VERDICT_SHOP, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+            for (auto const& p : it->second)
             {
-                float const bx = bot->GetPositionX(), by = bot->GetPositionY();
-                float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
-                Verdict v{VERDICT_SHOP, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
-                for (auto const& p : it->second)
+                float const dx = p[0] - bx, dy = p[1] - by;
+                float const d2 = dx * dx + dy * dy;
+                if (d2 < best)
                 {
-                    float const dx = p[0] - bx, dy = p[1] - by;
-                    float const d2 = dx * dx + dy * dy;
-                    if (d2 < best)
-                    {
-                        best = d2;
-                        v.hasFar = true;
-                        v.x = p[0];
-                        v.y = p[1];
-                        v.z = p[2];
-                    }
+                    best = d2;
+                    v.hasFar = true;
+                    v.x = p[0];
+                    v.y = p[1];
+                    v.z = p[2];
                 }
-                if (v.hasFar)
-                {
-                    sVerdictBuild[guid] = v;
-                    sShopLast[guid] = nowSec;
+            }
+            if (v.hasFar)
+            {
+                sVerdictBuild[guid] = v;
+                // The trip is re-issued every pass for as long as the reason
+                // holds, so the event has to fire on a CHANGED aim or the log
+                // becomes one row a minute per shopper. A bot whose upgrade
+                // someone else buys simply stops pricing one and the verdict
+                // falls away on its own - no cooldown needed to end the trip.
+                auto const known = sShopAimed.find(guid);
+                if (known == sShopAimed.end())
                     ++sShopIssued;
+                uint64& aimed = sShopAimed[guid];
+                if (aimed != gearUpgradePrice)
+                {
+                    aimed = gearUpgradePrice;
                     NeedsLedger::LogEvent("gear_shop", guid, 0, 0,
                                           "aim|" + std::to_string(bot->GetMapId()) + "|" +
                                               std::to_string(gearUpgradePrice));
                 }
             }
         }
+    }
+
+    // A bot that is not shopping this pass forgets what it was shopping for.
+    // Without this the aim log only ever grows: a finished shopper would keep
+    // bypassing the ceiling as though still in flight, and its stale price would
+    // suppress the event for its next real commitment.
+    {
+        auto const vit = sVerdictBuild.find(guid);
+        if (vit == sVerdictBuild.end() || vit->second.kind != VERDICT_SHOP)
+            sShopAimed.erase(guid);
     }
 
     // Persona: recorded every pass for the census, and stamped onto whatever

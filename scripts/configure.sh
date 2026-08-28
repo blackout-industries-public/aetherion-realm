@@ -318,11 +318,11 @@ set_conf "$PB" "AiPlayerbot.Econ.Gear.Rescue" "${ECON_GEAR_RESCUE:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.Gear.RescueMax" "${ECON_GEAR_RESCUE_MAX:-6}"
 # The shopping trip: a bot whose funded gear need names something live on the
 # market walks to an auctioneer. Weakest claim on the realm - it only ever takes
-# a bot every other errand declined - and bounded by a realm-wide ceiling plus a
-# per-bot cooldown, so "occasionally check the AH" stays occasional.
+# a bot every other errand declined - and bounded by a realm-wide ceiling. The
+# trip lasts while the reason does; there is deliberately no per-bot timer, one
+# having already been measured deleting the errand a minute after granting it.
 set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.Enabled" "${ECON_GEAR_SHOP:-0}"
 set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.MaxConcurrent" "${ECON_GEAR_SHOP_MAX:-80}"
-set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.CooldownSec" "${ECON_GEAR_SHOP_COOLDOWN:-900}"
 # How many known recipes a crafter ranks before casting. Twelve truncated the
 # list in spell-map order, so a tailor chose among an arbitrary twelve.
 set_conf "$PB" "AiPlayerbot.Econ.Craft.Scan" "${ECON_CRAFT_SCAN:-40}"
