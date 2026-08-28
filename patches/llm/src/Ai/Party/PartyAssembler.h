@@ -368,6 +368,15 @@ private:
     };
     std::unordered_map<uint32, Trip> _trips;   // group low guid -> journey
 
+    // Groups outlive the process - the database reloads them at boot while the
+    // trips that owned them die with memory - so restarts strand whole parties
+    // as zombies whose members never errand and never re-form. The reaper
+    // disbands any all-bot group that has stood tripless in the open world for
+    // ten consecutive ticks. Measured need: 631 groups holding 97 percent of
+    // the realm, 7 of them on a live run.
+    void ReapOrphanGroups();
+    std::unordered_map<uint32, uint32> _orphanStrikes;
+
     // Hands an adopted run's bots back to the human (or sets them free when
     // none is left): master restored, strategies rebuilt.
     void ReleaseAdopted(Group* group);

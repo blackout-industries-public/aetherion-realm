@@ -1116,15 +1116,19 @@ void PartyAssembler::AdvanceTrips()
             // clock only stops the steering and closes the ledger row.
             if (group && trip.adopted)
                 ReleaseAdopted(group);
-            if (group && trip.phase == Phase::Inside && !trip.adopted)
+            else if (group)
             {
-                // Out of the instance first. Disbanding alone leaves five characters
-                // standing in a dungeon nothing will ever move them out of.
-                uint32 const out = SendGroupOutside(group, trip.dungeonMap);
-                if (out)
-                    LOG_INFO("playerbots",
-                             "Party assembler: {} leave {} after their run",
-                             out, trip.name);
+                // Out of the instance first where they got in. Disbanding alone
+                // leaves five characters standing in a dungeon nothing will ever
+                // move them out of; a party that died on the road just disbands.
+                if (trip.phase == Phase::Inside)
+                {
+                    uint32 const out = SendGroupOutside(group, trip.dungeonMap);
+                    if (out)
+                        LOG_INFO("playerbots",
+                                 "Party assembler: {} leave {} after their run",
+                                 out, trip.name);
+                }
                 group->Disband();
             }
             it = _trips.erase(it);
@@ -1137,6 +1141,8 @@ void PartyAssembler::AdvanceTrips()
             EndRun(trip.runId, trip.dungeonMap, "leader_lost");
             if (trip.adopted)
                 ReleaseAdopted(group);
+            else if (group)
+                group->Disband();
             it = _trips.erase(it);
             continue;
         }
@@ -1831,6 +1837,8 @@ void PartyAssembler::AdvanceTrips()
                 if (!EnterInstance(group, trip))
                 {
                     EndRun(trip.runId, trip.dungeonMap, "enter_failed");
+                    if (!trip.adopted)
+                        group->Disband();
                     it = _trips.erase(it);
                     continue;
                 }
@@ -4163,6 +4171,74 @@ bool PartyAssembler::AssembleOne()
     return true;
 }
 
+void PartyAssembler::ReapOrphanGroups()
+{
+    // Collect the distinct groups the bot population is standing in. GroupStore
+    // is protected, and walking the fleet is the pattern this file already uses.
+    std::unordered_map<uint32, Group*> seen;
+    for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+         it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+    {
+        Player* bot = it->second;
+        if (!bot || !bot->IsInWorld())
+            continue;
+        if (Group* group = bot->GetGroup())
+            seen.emplace(group->GetGUID().GetCounter(), group);
+    }
+
+    uint32 reaped = 0;
+    for (auto const& [low, group] : seen)
+    {
+        // A group on a live run is exactly what this must never touch.
+        if (_trips.count(low))
+        {
+            _orphanStrikes.erase(low);
+            continue;
+        }
+
+        // Conservative membership test: every slot must resolve to an ONLINE
+        // bot standing in the open world. An offline slot could be a human, a
+        // member inside an instance or battleground is mid-something, and a
+        // human member makes the group theirs, not ours. Any doubt spares it.
+        bool reapable = true;
+        for (Group::MemberSlotList::const_iterator ms = group->GetMemberSlots().begin();
+             ms != group->GetMemberSlots().end(); ++ms)
+        {
+            Player* member = ObjectAccessor::FindConnectedPlayer(ms->guid);
+            if (!member || !member->IsInWorld() || !GET_PLAYERBOT_AI(member) ||
+                member->GetMap()->IsDungeon() || member->GetMap()->IsBattlegroundOrArena())
+            {
+                reapable = false;
+                break;
+            }
+        }
+        if (!reapable)
+        {
+            _orphanStrikes.erase(low);
+            continue;
+        }
+
+        // Ten consecutive tripless sightings before the axe: a party that is
+        // forming, mustering or between decisions gets minutes of grace, while
+        // a zombie from a restart gets collected within the quarter hour.
+        if (++_orphanStrikes[low] < 10)
+            continue;
+
+        _orphanStrikes.erase(low);
+        group->Disband();
+        ++reaped;
+    }
+
+    // Strikes for groups that vanished on their own.
+    for (auto it = _orphanStrikes.begin(); it != _orphanStrikes.end();)
+        it = seen.count(it->first) ? std::next(it) : _orphanStrikes.erase(it);
+
+    if (reaped)
+        LOG_INFO("playerbots",
+                 "Party assembler: reaped {} orphaned groups - their bots rejoin the pool",
+                 reaped);
+}
+
 void PartyAssembler::Tick(uint32 diff)
 {
     if (!_enabled)
@@ -4172,6 +4248,8 @@ void PartyAssembler::Tick(uint32 diff)
     if (_timer < _intervalMs)
         return;
     _timer = 0;
+
+    ReapOrphanGroups();
 
     // Drop parties that have since disbanded, so the cap reflects reality.
     for (auto it = _assembled.begin(); it != _assembled.end();)
