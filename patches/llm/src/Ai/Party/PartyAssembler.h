@@ -163,6 +163,15 @@ private:
     // Gear floors per (map << 8 | difficulty), from dungeon_access_template.
     // Consumed by the soft gearing math, never as a member-by-member veto.
     std::unordered_map<uint32, uint16> _ilvlFloor;
+    // The lowest floor a map declares for ANY of its modes. The realm writes an
+    // item-level floor for 25 heroic dungeon rows and only 13 normal ones, so every
+    // Wrath five-man run at normal difficulty was judged 'unmeasured' and handed out
+    // with no feasibility check at all. The heroic number is still a fact about the
+    // venue, and this realm's own record says it is the right one: across 570 Wrath
+    // five-man runs, parties below that floor produced a kill in 3.7% of runs and
+    // wiped 0.54 times a run, parties at or above it 23.7% and 0.19. Used only where
+    // the mode being run declares nothing of its own.
+    std::unordered_map<uint32, uint16> _mapFloorAny;
     static float PartyAvgIlvl(Group* group);
     uint32 GearScaledPct(Group* group, uint32 mapId, uint8 difficulty, uint32 fullPct) const;
 
@@ -249,8 +258,34 @@ private:
         bool adopted{false};
         // Venues whose content does not begin until somebody asks for it. Counted
         // so a venue that refuses stops being asked instead of being asked forever.
+        // The count is cleared every time the instance is seen actually running, so
+        // an event that stops - Violet Hold resets itself to NOT_STARTED the moment
+        // the last member of the party is down - is asked for again on a fresh
+        // budget rather than being asked once at the door and never again.
         uint32 nudges{0};
         bool started{false};
+        // The member holding this venue's event: the character the instance is asked
+        // through and the one the party musters on. A role rather than a title, and
+        // re-let whenever its holder is dead, gone, or standing on another map -
+        // asking through the leader alone put the whole event behind one character
+        // that spends the run walking into things.
+        uint32 warden{0};
+        // How far the venue's own event has got - Violet Hold's wave count, the Halls'
+        // wave number, the Trial's progress counter. Kept so a run can tell an event
+        // that is ramping from one that has stalled, and so the log names progress the
+        // encounter mask never sees: waves are not encounters and credit nothing until
+        // a boss is released. Starts at a value no venue reports, so the first reading
+        // is a change rather than a stall.
+        static constexpr uint32 kNoStage = 0xFFFFFFFFu;
+        uint32 eventStage{kNoStage};
+        uint32 stageTicks{0};
+        // What the stage counter read when this run last asked the venue for
+        // something. The Trial of the Champion stops at three separate gates and its
+        // counter does NOT move when the ask lands - the champions die at stage six
+        // and the arena stays at six through the whole Argent Challenge the ask brings
+        // on - so "have we already asked at this stage" is the only safe test there.
+        // Asking twice would summon the next act twice.
+        uint32 askedStage{kNoStage};
         // Set the first tick the leader is confirmed standing on the dungeon map,
         // which is a different thing from having been sent there.
         bool arrived{false};
@@ -265,6 +300,15 @@ private:
         // dies; without this the nearest-boss rule walks the party back to the corpse
         // it just made. Also collects bosses the party demonstrably cannot walk to.
         std::unordered_set<uint32> visitedBosses;
+        // The subset of the above that was retired for being out of reach rather than
+        // for having been stood on. A wipe reseats the party at the door and buys it a
+        // whole fresh attempt, and that attempt needs something to attempt: standing on
+        // a boss is not killing it, so the visits are forgiven and only the ones the
+        // party demonstrably cannot walk to stay struck off. Measured before this: the
+        // Forge of Souls reached both of its bosses, wiped, and then spent the rest of
+        // a ninety-minute clock in the trash with an empty list - 102 minutes and 0.2
+        // bosses a run across six runs.
+        std::unordered_set<uint32> unreachableBosses;
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.
@@ -418,8 +462,37 @@ private:
 
     // Violet Hold and Halls of Reflection hold their content behind a conversation
     // no bot ever has. Asks the instance for it directly instead; true when the ask
-    // landed. World thread only, like everything else AdvanceTrips does.
-    bool StartVenueEvent(Player* leader, Trip const& trip);
+    // landed. World thread only, like everything else AdvanceTrips does. Takes
+    // whichever member is standing in the place rather than the leader specifically:
+    // the instance answers any player on its map, and the leader is the one character
+    // guaranteed to be somewhere else fighting something.
+    bool StartVenueEvent(Player* asker, Trip const& trip);
+
+    // Venues whose content is an event rather than a floor plan. Their bosses sit in
+    // sealed cells until the event releases them, so the spawn positions the rest of
+    // this file steers by are addresses of locked doors: a party walks onto both of
+    // Violet Hold's, retires them for having been reached, finds nothing left to walk
+    // at and declares itself exhausted ten minutes in - four of five runs, zero deaths
+    // apiece, while the assault it had just started was still on its first wave.
+    static bool IsEventVenue(uint32 mapId);
+
+    // Whether the venue's own event is running, and how far it has got. Read from the
+    // instance script every tick through a member standing in it, because nothing else
+    // knows: waves are not encounters, so the completed-encounter mask stays empty for
+    // the whole first half of a Violet Hold run that is going perfectly well.
+    bool VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) const;
+
+    // Who holds the event this tick. Prefers the member that already held it, so the
+    // role is stable across a run; re-let to any live member standing on the dungeon
+    // map when its holder cannot serve.
+    Player* PickWarden(Group* group, Trip& trip) const;
+
+    // Where an event venue's party should actually be standing. The live objective if
+    // the venue has one - the thing whose death advances the event, not the nearest
+    // corpse-to-be - and otherwise the point every wave walks to, which is a far better
+    // place to wait than a cell door.
+    bool EventObjective(Player* onMap, Trip const& trip, float& x, float& y,
+                        float& z) const;
 
     // Stops the leader where it stands, or lets it walk again. Withholding the next
     // destination is not the same thing as holding still: the rpg engine keeps
@@ -557,10 +630,13 @@ private:
     uint32 _statStalls{0};
     uint32 _statArrived{0};
     uint32 _statEntered{0};
-    // Destinations a forming raid looked at and put back: the first because the party
+    // Destinations a forming party looked at and put back: the first because the party
     // is not geared for it yet, the second because a party of bots cannot perform it
     // at all. Two different answers to "is this even possible", counted apart so the
-    // board can tell "come back better dressed" from "never, not by us".
+    // board can tell "come back better dressed" from "never, not by us". The gear
+    // count covers dungeons as well as raids now - a five-man was never asked the
+    // question, which is how parties at 147 item levels kept being handed Wrath
+    // wings they killed nothing in.
     uint32 _statGearRefused{0};
     uint32 _statUnperformable{0};
     uint32 _raidMapCount{0};

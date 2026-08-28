@@ -2,6 +2,7 @@
 
 #include "Chat.h"
 #include "Config.h"
+#include "Creature.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "DatabaseEnv.h"
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <limits>
 #include <mutex>
 #include <cmath>
 #include <string>
@@ -68,7 +70,93 @@ namespace
     constexpr uint32 kHorWaveNumber = 8;         // DATA_WAVE_NUMBER
     constexpr uint32 kHorShowTrash = 11;         // ACTION_SHOW_TRASH
     // A venue that will not take the ask is asked a few times and then left alone.
+    // The count is cleared every time the event is seen running, so this bounds the
+    // consecutive refusals rather than the whole run: Violet Hold resets itself to
+    // NOT_STARTED the moment the last standing member of the party goes down
+    // (InstanceCleanup, reached from the five-second EVENT_CHECK_PLAYERS when no
+    // player in the instance is alive), and a run that asked once at the door had no
+    // way to ask again afterwards.
     constexpr uint32 kVenueNudges = 4;
+
+    // How long an event may sit on the same wave before the run is called. A Violet
+    // Hold wave is a portal, a keeper and a handful of adds - minutes of work, not
+    // ten of them - and twelve waves at this many ticks apiece is already more than
+    // the whole dwell clock. An event that is running but not advancing is the same
+    // failure the Forge of Souls taught: five bots held for an hour against content
+    // that is not moving, and the clock alone will not notice.
+    constexpr uint32 kEventStallTicks = 12;
+
+    // Violet Hold's own vocabulary for the things worth killing, restated from
+    // VioletHold/violet_hold.h beside the enums above and checked against it whenever
+    // the core is bumped. Ordered the way the encounter is actually won:
+    //  - Cyanigosa ends it.
+    //  - The saboteur is what releases a boss at waves six and twelve; the boss then
+    //    walks out to the middle of the room, so its cell - which is the only position
+    //    the creature table knows - was never a place to steer a party to.
+    //  - A keeper portal stays open for exactly as long as its Portal Guardian or
+    //    Portal Keeper lives: the portal channels on it, and kills ITSELF the moment
+    //    the channel finds nothing to hold (npc_vh_teleportation_portal::UpdateAI).
+    //    The portal's own death is what schedules the next wave, so killing the thing
+    //    holding it open is how the assault advances - grinding the adds it spawns
+    //    every twenty seconds is losing by design.
+    //  - An elite portal has no keeper; it goes invisible and dies when its summons
+    //    are dead, so the portal's position is simply where the elites are.
+    constexpr uint32 kVhCyanigosa = 31134;
+    constexpr uint32 kVhSaboteur = 31079;
+    constexpr uint32 kVhPortalGuardian = 30660;
+    constexpr uint32 kVhPortalKeeper1 = 30695;
+    constexpr uint32 kVhPortalKeeper2 = 30893;
+    constexpr uint32 kVhPortal = 31011;
+    constexpr uint32 kVhWaveCount = 33;          // DATA_WAVE_COUNT
+    constexpr uint32 kHorWaveNumberData = 8;     // DATA_WAVE_NUMBER, same as above
+
+    // How far across an event venue to look for the objective. Violet Hold's chamber
+    // is about a hundred and fifty yards corner to corner and the portals stand at its
+    // edges, so this reaches the whole room from anywhere in it without reaching out
+    // of the instance.
+    constexpr float kEventObjectiveRange = 220.0f;
+
+    // Where Violet Hold's waves end up. Every one of the six portal routes finishes
+    // within a yard or two of this spot - it is the last waypoint of all six waypoint
+    // tables in violet_hold.h - because that is the prison door the assault is there
+    // to break. A party standing on it fights every wave that spawns without walking
+    // anywhere, which is the whole shape of the encounter; the party used to walk away
+    // from it towards two sealed cells instead.
+    constexpr float kVhMusterX = 1843.71f;
+    constexpr float kVhMusterY = 805.81f;
+    constexpr float kVhMusterZ = 44.14f;
+
+    // The Trial of the Champion is the same shape and the clearest case yet for asking
+    // more than once. Nothing in it is spawned: the creature table holds no Grand
+    // Champion, no Argent Challenge and no Black Knight on map 650 - only mounts,
+    // spectators and Tirion - because every encounter is summoned by the announcer
+    // when a player takes her gossip. So the party has no boss position to walk at, no
+    // enemy to meet, and 18 recorded runs there have produced 0 kills and 0 deaths
+    // apiece while riding out a thirty-minute clock in an empty arena.
+    //
+    // The ask has to be made three separate times, which is exactly what a one-shot
+    // nudge could never do: at INITIAL to summon the champions, again once they are
+    // dead to bring on the Argent Challenge, and again once that is dead to bring on
+    // the Black Knight. The instance guards it on its own progress counter and on
+    // nothing else, so a request made at the wrong moment is simply ignored.
+    // Restated from CrusadersColiseum/TrialOfTheChampion/trial_of_the_champion.h.
+    constexpr uint32 kMapTrialOfChampion = 650;
+    constexpr uint32 kTocInstanceProgress = 4;   // DATA_INSTANCE_PROGRESS
+    constexpr uint32 kTocGossipSelect = 6;       // DATA_ANNOUNCER_GOSSIP_SELECT
+    constexpr uint32 kTocProgressInitial = 0;
+    constexpr uint32 kTocProgressChampionsDead = 6;
+    constexpr uint32 kTocProgressChallengeDead = 8;
+    constexpr uint32 kTocProgressFinished = 9;
+    // Non-zero asks for the short version, which starts the fight instead of playing
+    // an introduction to an arena with nobody in the stands who can hear it.
+    constexpr uint32 kTocStartShort = 1;
+
+    // The middle of the arena. Every summoned encounter is walked here - the champions
+    // to 746.9/660 and 746.9/635, the Argent Challenge to 747.1/628, the Black Knight
+    // to 746.8/623 - so a party standing on it is standing where the fight comes.
+    constexpr float kTocMusterX = 746.60f;
+    constexpr float kTocMusterY = 630.00f;
+    constexpr float kTocMusterZ = 411.30f;
 
     // How many ticks of continuous fighting the steering waits out before it insists
     // again. Long enough for any real pull to finish, short enough that a party
@@ -376,6 +464,7 @@ void PartyAssembler::LoadEntrances()
     // (that made one green member a veto); these feed the scaled-appetite
     // math instead.
     _ilvlFloor.clear();
+    _mapFloorAny.clear();
     if (QueryResult floors = WorldDatabase.Query(
             "SELECT map_id, difficulty, min_avg_item_level FROM dungeon_access_template "
             "WHERE min_avg_item_level > 0"))
@@ -383,7 +472,16 @@ void PartyAssembler::LoadEntrances()
         do
         {
             Field* f = floors->Fetch();
-            _ilvlFloor[(f[0].Get<uint32>() << 8) | f[1].Get<uint8>()] = f[2].Get<uint16>();
+            uint32 const map = f[0].Get<uint32>();
+            uint16 const floor = f[2].Get<uint16>();
+            _ilvlFloor[(map << 8) | f[1].Get<uint8>()] = floor;
+            // The venue's own lowest word on what it takes, whichever mode said it.
+            // Kept apart from the exact per-mode number because a floor borrowed from
+            // another difficulty is a weaker claim and only ever gets used where the
+            // mode being run said nothing at all.
+            auto const any = _mapFloorAny.find(map);
+            if (any == _mapFloorAny.end() || floor < any->second)
+                _mapFloorAny[map] = floor;
         } while (floors->NextRow());
     }
 
@@ -1233,6 +1331,18 @@ void PartyAssembler::AdvanceTrips()
                                                     BOT_STATE_NON_COMBAT);
                             }
                         }
+                // A whole fresh attempt needs something to attempt. Boss positions are
+                // retired the moment the leader stands within eight yards of one, and
+                // standing on a boss is not killing it - so a party that reached the
+                // first boss, wiped on it, and was reseated at the door came back to an
+                // empty list and spent the rest of its clock in the trash. The ones the
+                // instance mask says are dead are re-struck by NoteKills on the next
+                // pass; the ones the party demonstrably could not walk to stay struck.
+                trip.visitedBosses = trip.unreachableBosses;
+                trip.aimBoss = kNoBossAim;
+                trip.aimStalls = 0;
+                trip.idleTicks = 0;
+
                 // Reseat everyone at the inside arrival point and restart the
                 // dwell clock - determination buys a whole fresh attempt.
                 EnterInstance(group, trip);
@@ -1261,20 +1371,71 @@ void PartyAssembler::AdvanceTrips()
                              trip.name);
                 }
 
-            // Two venues hold their content behind an opening request. Attempted over
-            // several ticks rather than once: the party may still be landing on the
-            // first, and an attempt the instance refuses costs nothing.
-            if (!trip.started && trip.nudges < kVenueNudges &&
-                (trip.dungeonMap == kMapVioletHold ||
-                 trip.dungeonMap == kMapHallsOfReflection))
+            // Two venues hold their content behind an opening request, and holding it
+            // open is a job that lasts the whole run rather than one knock at the
+            // door. One member carries it: the instance answers any player standing on
+            // its map, and the leader is the one character guaranteed to be off
+            // somewhere swinging at something when the ask is needed.
+            bool eventLive = false;
+            uint32 eventStage = 0;
+            if (IsEventVenue(trip.dungeonMap))
             {
-                ++trip.nudges;
-                if (StartVenueEvent(leader, trip))
+                Player* warden = PickWarden(group, trip);
+                eventLive = VenueEventLive(warden, trip.dungeonMap, eventStage);
+
+                // How long the venue has sat on the same number, kept whether or not it
+                // reports itself running. A hall stuck on a wave nobody can kill and an
+                // arena stuck at a gate nobody can open are the same failure, and the
+                // dwell clock alone is far too slow to notice either.
+                if (eventStage != trip.eventStage)
                 {
-                    trip.started = true;
-                    LOG_INFO("playerbots",
-                             "Party assembler: {} asks for the event to start in {}",
-                             leader->GetName(), trip.name);
+                    if (trip.eventStage != Trip::kNoStage)
+                        LOG_INFO("playerbots",
+                                 "Party assembler: {} holds {} at stage {}",
+                                 warden ? warden->GetName() : leader->GetName(),
+                                 trip.name, eventStage);
+                    trip.eventStage = eventStage;
+                    trip.stageTicks = 0;
+                }
+                else
+                    ++trip.stageTicks;
+
+                // A venue that is running has earned a fresh budget of asks. This is
+                // what makes the role last the run: Violet Hold winds itself back to
+                // NOT_STARTED as soon as nobody in the instance is alive, and the old
+                // one-shot flag meant a party that wiped once stood in a hall that
+                // would never start again.
+                if (eventLive)
+                    trip.nudges = 0;
+
+                // The Trial's counter does not move when its ask lands, so asking
+                // whenever it looks stopped would summon the next act over and over.
+                // Once per stage there; Violet Hold and the Halls refuse a repeat
+                // themselves and are asked whenever they say they are not running.
+                bool const wantsAsk =
+                    !eventLive && (trip.dungeonMap != kMapTrialOfChampion ||
+                                   trip.askedStage != eventStage);
+
+                if (wantsAsk && warden && trip.nudges < kVenueNudges)
+                {
+                    ++trip.nudges;
+                    if (StartVenueEvent(warden, trip))
+                    {
+                        if (trip.started)
+                            LOG_INFO("playerbots",
+                                     "Party assembler: {} asks {} for the next act",
+                                     warden->GetName(), trip.name);
+                        else
+                            LOG_INFO("playerbots",
+                                     "Party assembler: {} asks for the event to start "
+                                     "in {}",
+                                     warden->GetName(), trip.name);
+                        trip.started = true;
+                        trip.askedStage = eventStage;
+                        // The ask landed this tick, so there is content coming and the
+                        // close-out below must not see an idle hall.
+                        eventLive = true;
+                    }
                 }
             }
 
@@ -1303,6 +1464,25 @@ void PartyAssembler::AdvanceTrips()
                 // logged is Vesperon, the drake nearest the arrival point, 11 for 11 -
                 // never Sartharion 8 yards further out, never a second encounter
                 // anywhere, and no run in 573 has ever downed three.
+                // An event venue's boss positions are the addresses of locked cells.
+                // Violet Hold's two - Erekem and Moragg, the only encounters in the
+                // place with a creature spawned at all - sit sealed until a saboteur
+                // releases one at wave six, and the released boss then walks out to the
+                // middle of the room rather than waiting at its door. So the party
+                // walked seventy-eight yards to one cell, ninety-nine to the other,
+                // retired both for having been reached, found nothing left and called
+                // the run exhausted: four of five runs ended that way at ten to
+                // fourteen minutes with not a single death between them, while the
+                // assault they had just asked for was still on its first wave. Struck
+                // off as unreachable rather than visited, so a wipe does not hand them
+                // back.
+                if (bossSpots && IsEventVenue(trip.dungeonMap))
+                    for (uint32 i = 0; i < bossSpots->size(); ++i)
+                    {
+                        trip.unreachableBosses.insert(i);
+                        trip.visitedBosses.insert(i);
+                    }
+
                 if (bossSpots)
                     for (uint32 i = 0; i < bossSpots->size(); ++i)
                     {
@@ -1385,11 +1565,35 @@ void PartyAssembler::AdvanceTrips()
                 // not persistence, it is 10 to 25 bots held out of the world for
                 // nothing, so the run is closed out instead - after a short grace, so
                 // a fight in progress and a spell-credited encounter both still land.
-                if (bossSpots && !haveBest && !fighting)
+                //
+                // Two things this used to get wrong. It refused to close out at all
+                // while anybody was in combat, and a wing thick with trash is a party
+                // in combat more or less permanently: the Forge of Souls reached both
+                // its bosses, killed neither, and then ground trash for the rest of a
+                // ninety-minute clock - 102 minutes and 0.2 bosses across six runs, the
+                // longest runs on the realm and among the emptiest. Combat now buys a
+                // longer grace rather than an unlimited one. And a venue whose content
+                // is an event has no boss to walk at BY DESIGN for most of the run, so
+                // a running event holds the door open however empty the boss list is;
+                // an event that will not start is exactly the run that should end.
+                bool nothingLeft = bossSpots && !haveBest;
+                if (IsEventVenue(trip.dungeonMap))
+                    // An event venue always has somewhere to stand, so its boss list
+                    // says nothing about whether the run is over. Two things end it
+                    // instead: the event refusing to run at all after its whole budget
+                    // of asks, and the event running but going nowhere - a party that
+                    // cannot get past a wave is not going to get past the eleven
+                    // behind it, and the alternative is holding five bots for the rest
+                    // of an hour to watch it fail again.
+                    nothingLeft = (!eventLive && trip.nudges >= kVenueNudges) ||
+                                  trip.stageTicks > kEventStallTicks;
+                if (nothingLeft)
                 {
                     bool const cleared = trip.encounters &&
                                          CountBits(trip.killMask) >= trip.encounters;
-                    if (cleared || ++trip.idleTicks > _exhaustGrace)
+                    uint32 const grace =
+                        fighting ? _exhaustGrace + kCombatHoldTicks : _exhaustGrace;
+                    if (cleared || ++trip.idleTicks > grace)
                     {
                         char const* verdict = cleared
                             ? (trip.bossesDown ? "cleared" : "locked_out")
@@ -1409,6 +1613,35 @@ void PartyAssembler::AdvanceTrips()
                         }
                         it = _trips.erase(it);
                         continue;
+                    }
+                }
+
+                // An event venue is steered by what the event has on the floor right
+                // now, not by a spawn table. The order the objective is chosen in is
+                // the order the encounter is actually won: in Violet Hold a portal
+                // stays open for exactly as long as the Portal Guardian or Keeper it
+                // is channelling on lives, and the portal's death is what schedules the
+                // next wave - so the party that kills the keeper advances the assault
+                // and the party that grinds the adds it spawns every twenty seconds
+                // does not. Aimed at the creature's live position rather than at a
+                // radius: the bots' own target search only reaches about thirty yards
+                // and is leashed to fifteen from whoever they follow, and neither of
+                // those is ours to widen from here, so putting the party on top of the
+                // thing that matters is what actually finds it. Between waves the
+                // objective is the prison door every route ends at.
+                if (IsEventVenue(trip.dungeonMap))
+                {
+                    float ex, ey, ez;
+                    if (EventObjective(leader, trip, ex, ey, ez))
+                    {
+                        haveBest = true;
+                        bestX = ex;
+                        bestY = ey;
+                        bestZ = ez;
+                        bestBoss = kNoBossAim;
+                        float const dx = leader->GetPositionX() - ex;
+                        float const dy = leader->GetPositionY() - ey;
+                        bestDist = std::sqrt(dx * dx + dy * dy);
                     }
                 }
 
@@ -1483,6 +1716,10 @@ void PartyAssembler::AdvanceTrips()
                         }
                         else if (++trip.aimStalls > kAimStallTicks)
                         {
+                            // Struck off for good, wipes included: a boss no mover can
+                            // path to from inside is no more reachable on the second
+                            // attempt than the first.
+                            trip.unreachableBosses.insert(bestBoss);
                             trip.visitedBosses.insert(bestBoss);
                             trip.aimBoss = kNoBossAim;
                             trip.aimStalls = 0;
@@ -1616,13 +1853,13 @@ void PartyAssembler::AdvanceTrips()
 // Safe from here: MapMgr::Update joins its worker threads before the world script
 // hook that drives this runs, so no map is mid-update while the call lands - the same
 // reason the teleports and resurrections above are safe on this thread.
-bool PartyAssembler::StartVenueEvent(Player* leader, Trip const& trip)
+bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
 {
-    // Only meaningful once the leader is actually standing in the place.
-    if (leader->GetMapId() != trip.dungeonMap)
+    // Only meaningful once the asker is actually standing in the place.
+    if (asker->GetMapId() != trip.dungeonMap)
         return false;
 
-    InstanceScript* instance = leader->GetInstanceScript();
+    InstanceScript* instance = asker->GetInstanceScript();
     if (!instance)
         return false;
 
@@ -1650,7 +1887,151 @@ bool PartyAssembler::StartVenueEvent(Player* leader, Trip const& trip)
         return true;
     }
 
+    if (trip.dungeonMap == kMapTrialOfChampion)
+    {
+        // Asked at each of the three stops and nowhere else. The instance ignores the
+        // request at any other progress value, but asking anyway would spend a nudge
+        // and read in the log as an event that refuses to start.
+        uint32 const progress = instance->GetData(kTocInstanceProgress);
+        if (progress != kTocProgressInitial &&
+            progress != kTocProgressChampionsDead &&
+            progress != kTocProgressChallengeDead)
+            return false;
+        instance->SetData(kTocGossipSelect, kTocStartShort);
+        return true;
+    }
+
     return false;
+}
+
+bool PartyAssembler::IsEventVenue(uint32 mapId)
+{
+    return mapId == kMapVioletHold || mapId == kMapHallsOfReflection ||
+           mapId == kMapTrialOfChampion;
+}
+
+bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) const
+{
+    stage = 0;
+    if (!onMap || onMap->GetMapId() != mapId)
+        return false;
+
+    InstanceScript* instance = onMap->GetInstanceScript();
+    if (!instance)
+        return false;
+
+    if (mapId == kMapVioletHold)
+    {
+        // The instance keeps its own three-state answer and hands it out through
+        // GetData, which is the same door StartVenueEvent already knocks on. DONE is
+        // Cyanigosa dead, and a finished venue is not a running one.
+        stage = instance->GetData(kVhWaveCount);
+        return instance->GetData(kVhEncounterStatus) == IN_PROGRESS;
+    }
+
+    if (mapId == kMapHallsOfReflection)
+    {
+        // The Halls has no status word, only a wave counter that the intro starts and
+        // nothing ever winds back. Non-zero is running.
+        stage = instance->GetData(kHorWaveNumberData);
+        return stage != 0;
+    }
+
+    if (mapId == kMapTrialOfChampion)
+    {
+        // One counter that walks from nothing to finished, and it stops dead at three
+        // places waiting to be asked for the next act. Those three, and the end, are
+        // the only values that are not "a fight is under way".
+        stage = instance->GetData(kTocInstanceProgress);
+        return stage != kTocProgressInitial && stage != kTocProgressChampionsDead &&
+               stage != kTocProgressChallengeDead && stage != kTocProgressFinished;
+    }
+
+    return false;
+}
+
+Player* PartyAssembler::PickWarden(Group* group, Trip& trip) const
+{
+    // The sitting holder keeps the role for as long as it can serve it. Stability is
+    // most of the point: a role that changes hands every tick is not a role, and the
+    // log could never say who had it.
+    if (trip.warden)
+    {
+        ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(trip.warden);
+        if (Player* held = ObjectAccessor::FindConnectedPlayer(guid))
+            if (held->IsInWorld() && held->IsAlive() && !held->IsBeingTeleported() &&
+                held->GetMapId() == trip.dungeonMap && group->IsMember(guid))
+                return held;
+    }
+
+    for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
+    {
+        Player* m = mi->GetSource();
+        if (!m || !m->IsInWorld() || !m->IsAlive() || m->IsBeingTeleported())
+            continue;
+        if (m->GetMapId() != trip.dungeonMap)
+            continue;
+        trip.warden = m->GetGUID().GetCounter();
+        return m;
+    }
+
+    trip.warden = 0;
+    return nullptr;
+}
+
+bool PartyAssembler::EventObjective(Player* onMap, Trip const& trip, float& x, float& y,
+                                    float& z) const
+{
+    if (!onMap || onMap->GetMapId() != trip.dungeonMap)
+        return false;
+
+    if (trip.dungeonMap == kMapVioletHold)
+    {
+        // Highest thing on the board first. The order is the encounter's own: the
+        // dragon that ends it, then the saboteur that releases a boss, then whatever
+        // is holding the current portal open, then the portal itself.
+        static constexpr uint32 kOrder[] = {kVhCyanigosa,       kVhSaboteur,
+                                            kVhPortalGuardian,  kVhPortalKeeper1,
+                                            kVhPortalKeeper2,   kVhPortal};
+        for (uint32 entry : kOrder)
+            if (Creature* who = onMap->FindNearestCreature(entry, kEventObjectiveRange, true))
+            {
+                x = who->GetPositionX();
+                y = who->GetPositionY();
+                z = who->GetPositionZ();
+                return true;
+            }
+
+        // Between waves, and while a wave is still walking. Standing where every route
+        // ends is how this fight is held, and it is where the released boss is brought
+        // to as well.
+        x = kVhMusterX;
+        y = kVhMusterY;
+        z = kVhMusterZ;
+        return true;
+    }
+
+    if (trip.dungeonMap == kMapTrialOfChampion)
+    {
+        // Nothing to hunt: every encounter here is summoned and ridden to the middle.
+        // Standing there is the whole of the party's job.
+        x = kTocMusterX;
+        y = kTocMusterY;
+        z = kTocMusterZ;
+        return true;
+    }
+
+    // The Halls' waves walk to the party rather than the party to them, and the
+    // arrival point is where they are walked to. Nothing better to say than "stand
+    // where you came in", which is still a great deal better than walking off at a
+    // boss that has not spawned.
+    auto const inside = _insides.find(trip.dungeonMap);
+    if (inside == _insides.end())
+        return false;
+    x = inside->second.x;
+    y = inside->second.y;
+    z = inside->second.z;
+    return true;
 }
 
 void PartyAssembler::HoldLeader(Player* leader, Trip& trip, bool hold)
@@ -1796,13 +2177,27 @@ PartyAssembler::GearVerdict PartyAssembler::JudgeGear(Group* group, uint32 mapId
                                                       uint8 difficulty) const
 {
     GearVerdict out;
-    auto const it = _ilvlFloor.find((mapId << 8) | difficulty);
-    if (it == _ilvlFloor.end() || !it->second)
+    uint16 floor = 0;
+    if (auto const it = _ilvlFloor.find((mapId << 8) | difficulty); it != _ilvlFloor.end())
+        floor = it->second;
+    // Nothing for this mode. Fall back to the lowest floor the venue declares for any
+    // of them rather than calling a Wrath five-man unmeasured, which is what left
+    // every normal-difficulty dungeon handed out with no feasibility check at all -
+    // the realm writes a heroic floor for those maps and no normal one. The borrowed
+    // number is not a guess: measured across 570 Wrath five-man runs on this realm,
+    // parties under it killed something in 3.7% of runs against 23.7% at or above it,
+    // and wiped 0.54 times a run against 0.19. Classic and Burning Crusade dungeons
+    // declare no floor in any mode and stay unmeasured; 69 runs there is not a sample
+    // that can name one.
+    if (!floor)
+        if (auto const any = _mapFloorAny.find(mapId); any != _mapFloorAny.end())
+            floor = any->second;
+    if (!floor)
         return out;   // the realm never said; never a reason to refuse
 
     float const avg = PartyAvgIlvl(group);
-    out.floor = it->second;
-    out.margin = int16(int32(avg) - int32(it->second));
+    out.floor = floor;
+    out.margin = int16(int32(avg) - int32(floor));
 
     if (out.margin >= 0)
     {
@@ -2020,13 +2415,73 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     if (options.empty())
         return false;
 
-    // Closest-first, then a random pick among the nearest few: keeps some variety
-    // without sending a party to the far side of the continent.
+    // Closest-first, then a pick among the nearest few: keeps some variety without
+    // sending a party to the far side of the continent.
     std::sort(options.begin(), options.end(), [leader](Option const& a, Option const& b) {
         return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where);
     });
-    Option chosen =
-        options[urand(0, std::min<size_t>(options.size(), _nearestChoices) - 1)];
+    size_t const shortlist = std::min<size_t>(options.size(), _nearestChoices);
+
+    // The same question a raid has always been asked, now asked of a dungeon too.
+    // Every dungeon row in the ledger reads 'unmeasured' because the judgement was
+    // only ever wired into the raid path, which is how parties at 147 item levels kept
+    // being handed Drak'Tharon Keep: 80 such runs killed something three times between
+    // them. Deliberately the middle the operator asked for and not a veto - a door
+    // slightly above the party is wanted less rather than refused, and a party with
+    // nothing within reach still goes somewhere.
+    std::vector<uint32> weights(shortlist, 100);
+    uint32 total = 0;
+    for (size_t i = 0; i < shortlist; ++i)
+    {
+        GearVerdict const v = JudgeGear(group, options[i].dungeonMap,
+                                        uint8(DUNGEON_DIFFICULTY_NORMAL));
+        weights[i] = v.weight;
+        total += v.weight;
+    }
+
+    Option chosen = options[0];
+    if (total)
+    {
+        uint32 roll = urand(1, total);
+        for (size_t i = 0; i < shortlist; ++i)
+        {
+            if (roll <= weights[i])
+            {
+                chosen = options[i];
+                break;
+            }
+            roll -= weights[i];
+        }
+    }
+    else
+    {
+        // Nothing nearby this party is dressed for. Old content is the honest answer
+        // before a doomed run is: a party that outgrew Zul'Farrak clears it, and the
+        // collector path already knows how to get there. It refuses parties under
+        // level seventy and parties with no old doorway in reach, and then this falls
+        // back to the least hopeless of the near ones rather than forming a party that
+        // never leaves - a run that gets nowhere is still worth more than a group that
+        // sits in the cap doing nothing.
+        if (SendPartyToOldContent(group, leader))
+            return true;
+
+        ++_statGearRefused;
+        int16 best = std::numeric_limits<int16>::min();
+        for (size_t i = 0; i < shortlist; ++i)
+        {
+            GearVerdict const v = JudgeGear(group, options[i].dungeonMap,
+                                            uint8(DUNGEON_DIFFICULTY_NORMAL));
+            if (v.margin > best)
+            {
+                best = v.margin;
+                chosen = options[i];
+            }
+        }
+        LOG_INFO("playerbots",
+                 "Party assembler: {}'s party is dressed for none of the doors near "
+                 "them - {} is the least of it ({} short)",
+                 leader->GetName(), chosen.name, uint32(-best));
+    }
 
     if (!GET_PLAYERBOT_AI(leader))
         return false;
