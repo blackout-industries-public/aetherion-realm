@@ -64,7 +64,30 @@ patch(FACTORY, [
         if (NeedsLedger::ProtectTradeGoods() &&
             item->GetTemplate()->Class == ITEM_CLASS_TRADE_GOODS)
             return true;
+        // E11: gear the realm can still trade is worth more on the auction
+        // house than in the bin. This shredder was measured destroying 1030
+        // green-or-better tradeable equippables a day while the whole fleet
+        // listed ten - which is why the auction house held nine wearable items
+        // out of 360 and the buy side had nothing to answer. Capped per clear:
+        // a rescued piece costs a bag slot until an auctioneer takes it, and a
+        // bot with no room cannot loot.
+        if (rescued < NeedsLedger::RescueGearMax() && NeedsLedger::WorthRescuing(item))
+        {
+            ++rescued;
+            NeedsLedger::LogEvent("gear_rescue", bot->GetGUID().GetCounter(), id,
+                                  item->GetCount(),
+                                  std::to_string(item->GetTemplate()->ItemLevel));
+            return true;
+        }
         if (CanKeep(id))"""),
+    ("""    Player* bot;
+    std::set<uint32> keep;
+};""",
+     """    Player* bot;
+    // E11: how many pieces this one clear has already spared for the market.
+    uint32 rescued = 0;
+    std::set<uint32> keep;
+};"""),
     (VISIT,
      """        // Economy BRD E1.8: destruction is the baseline the economy is judged
         // against, so it is recorded before it happens.

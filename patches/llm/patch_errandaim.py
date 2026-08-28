@@ -71,7 +71,12 @@ NEW = """            // GO_CAMP -> WANDER_NPC
                     case NeedsLedger::VERDICT_BANK:
                         wantFlag = UNIT_NPC_FLAG_BANKER;
                         break;
+                    // E11: a shopping trip is an auction-house trip that happens
+                    // to be about buying. Omitting it here would land the bot in
+                    // the right city and then hand the arrival to the uniform
+                    // draw, which is the whole failure this switch exists to fix.
                     case NeedsLedger::VERDICT_AH:
+                    case NeedsLedger::VERDICT_SHOP:
                         wantFlag = UNIT_NPC_FLAG_AUCTIONEER;
                         break;
                     case NeedsLedger::VERDICT_TRAINER:

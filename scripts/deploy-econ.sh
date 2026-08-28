@@ -41,6 +41,8 @@ arm ECON_CRAFT 1
 arm ECON_BANK 1
 arm ECON_GATHER 1
 arm ECON_RARE 1
+arm ECON_GEAR_RESCUE 1
+arm ECON_GEAR_SHOP 1
 arm BOT_CHEATS taxi,raid
 cp /opt/warcraft/overlay/docker-compose.override.yml /opt/warcraft/azerothcore/docker-compose.override.yml
 '
@@ -56,7 +58,32 @@ echo "[deploy] configure + restart worldserver"
 ssh "$HOST" '
 set -e
 /opt/warcraft/scripts/configure.sh
-cd /opt/warcraft/azerothcore && docker compose up -d ac-worldserver
+cd /opt/warcraft/azerothcore && docker compose up -d --force-recreate ac-worldserver
+'
+
+# The config directory is a live bind mount, so a key written into the file is
+# NOT proof the running process read it - a restart that races configure.sh
+# leaves the server on its defaults with the file looking perfect. That silently
+# cost a full observation window: every Econ.Gear key sat at 1 on disk while the
+# worldserver ran with all of them off. The server says so in its own log; ask it.
+echo "[deploy] verifying the server actually read the Econ keys"
+ssh "$HOST" '
+set -e
+sleep 60
+ST=$(docker inspect -f "{{.State.StartedAt}}" ac-worldserver)
+CONF=/opt/warcraft/config/modules/playerbots.conf
+# A key the server calls missing while the file defines it is the race, and the
+# only case worth failing on. A key missing from both is just an unset knob
+# sitting on its compiled-in default, which is fine and long-standing.
+RACED=$(docker logs --since "$ST" ac-worldserver 2>&1 |
+    grep -o "Missing property AiPlayerbot[A-Za-z.]*" | awk "{print \$3}" | sort -u |
+    while read -r k; do grep -q "^$k *=" "$CONF" && echo "$k"; done)
+if [ -n "$RACED" ]; then
+    echo "config did not reach the worldserver: $RACED" >&2
+    echo "reconfigure and restart again" >&2
+    exit 1
+fi
+echo "every configured key was read by the worldserver"
 '
 
 echo "[deploy] frontend + bridge"

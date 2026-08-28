@@ -56,6 +56,10 @@ public:
     // E10: a hunt for a named rare spawn. Last in the verdict chain, so every
     // errand that keeps a bot solvent outranks going after a trophy.
     static uint8 constexpr VERDICT_RARE = 8;
+    // E11: a shopping trip. VERDICT_AH is a bag with things to list; this is a
+    // market with something the bot could wear. Only ever issued to a bot the
+    // chain left with no verdict at all, so it can take a beat from nothing.
+    static uint8 constexpr VERDICT_SHOP = 9;
     static uint8 UrgentVerdict(uint32 guid);
     // Persona duty roll for one idle beat: the held verdict kind when the
     // bot's disposition claims the beat, VERDICT_NONE otherwise (or when no
@@ -120,6 +124,14 @@ public:
     static bool SellOnVendorVisit();
     static bool ProtectTradeGoods();
     static bool PaidRepairs();
+
+    // E11: whether this item is worth sparing from the factory's inventory
+    // clear so it can reach an auctioneer, and how many pieces one clear may
+    // spare. The cap exists because rescued gear costs bag slots until it is
+    // listed, and a bot with no room cannot loot. Answers false unless
+    // AiPlayerbot.Econ.Gear.Rescue, so the clear is untouched until armed.
+    static bool WorthRescuing(Item* item);
+    static uint32 RescueGearMax();
 
     // E4.4: auction lifecycle hooks (listed/sold/bought/expired events). Called
     // once from AddPlayerbotsScripts; the script gates itself on the events key.

@@ -113,7 +113,12 @@ IDLE_NEW = """                info.ChangeToDoQuest(questId, quest);
                 }
             }
             // E4.2: deliberate auction-house trip; arrival handles sell+buy.
-            if (econVerdict == NeedsLedger::VERDICT_AH)
+            // E11: the shopping trip walks the same two legs to the same NPC.
+            // The two verdicts differ only in why the ledger issued them - a bag
+            // worth listing, or a market holding something the bot could wear -
+            // and the arrival block below already does both halves either way.
+            if (econVerdict == NeedsLedger::VERDICT_AH ||
+                econVerdict == NeedsLedger::VERDICT_SHOP)
             {
                 GuidVector possible = context->GetValue<GuidVector>("possible new rpg targets")->Get();
                 ObjectGuid auctioneer;

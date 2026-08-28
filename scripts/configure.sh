@@ -292,6 +292,11 @@ set_conf "$PB" "AiPlayerbot.Econ.Mailbox.Enabled" "${ECON_MAILBOX:-0}"
 # E7.5: needs-driven gathering trips - never free-running; a bot walks to
 # nodes only with a reagent shortfall or an unfunded need to farm toward.
 set_conf "$PB" "AiPlayerbot.Econ.Gather.Enabled" "${ECON_GATHER:-0}"
+# Both of these were read by the ledger and written by nothing, so they sat on
+# their compiled-in defaults while the worldserver logged them as missing every
+# boot. Values here are those same defaults - this makes them a knob, not a change.
+set_conf "$PB" "AiPlayerbot.Econ.Gather.MaxTierGap" "${ECON_GATHER_TIER_GAP:-150}"
+set_conf "$PB" "AiPlayerbot.Econ.Guild.PlentyStacks" "${ECON_GUILD_PLENTY_STACKS:-3}"
 # Persona duty scale: global multiplier over each archetype's errand
 # appetite (farmer 65 / merchant 50 / hunter 30 / adventurer 22 / warlord 10).
 set_conf "$PB" "AiPlayerbot.Econ.Duty.Scale" "${ECON_DUTY_SCALE:-150}"
@@ -304,6 +309,23 @@ set_conf "$PB" "AiPlayerbot.Econ.Rare.MaxConcurrent" "${ECON_RARE_MAX:-60}"
 set_conf "$PB" "AiPlayerbot.Econ.Rare.FarMaxYards" "${ECON_RARE_FAR_YARDS:-2000}"
 # Levels below the bot at which a rare stops being worth the walk.
 set_conf "$PB" "AiPlayerbot.Econ.Rare.MaxLevelGap" "${ECON_RARE_LEVEL_GAP:-25}"
+# E11 gear market. Rescue keeps still-tradeable green-or-better gear out of the
+# factory's inventory shredder so it can reach an auctioneer; measured, that
+# shredder was destroying 1030 such pieces a day while the whole fleet listed
+# ten. RescueMax caps how many one clear may spare, because a rescued piece
+# costs a bag slot until it sells.
+set_conf "$PB" "AiPlayerbot.Econ.Gear.Rescue" "${ECON_GEAR_RESCUE:-0}"
+set_conf "$PB" "AiPlayerbot.Econ.Gear.RescueMax" "${ECON_GEAR_RESCUE_MAX:-6}"
+# The shopping trip: a bot whose funded gear need names something live on the
+# market walks to an auctioneer. Weakest claim on the realm - it only ever takes
+# a bot every other errand declined - and bounded by a realm-wide ceiling plus a
+# per-bot cooldown, so "occasionally check the AH" stays occasional.
+set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.Enabled" "${ECON_GEAR_SHOP:-0}"
+set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.MaxConcurrent" "${ECON_GEAR_SHOP_MAX:-80}"
+set_conf "$PB" "AiPlayerbot.Econ.Gear.Shop.CooldownSec" "${ECON_GEAR_SHOP_COOLDOWN:-900}"
+# How many known recipes a crafter ranks before casting. Twelve truncated the
+# list in spell-map order, so a tailor chose among an arbitrary twelve.
+set_conf "$PB" "AiPlayerbot.Econ.Craft.Scan" "${ECON_CRAFT_SCAN:-40}"
 # E3.4a: the food cheat is a hidden faucet-equivalent; dropping 'food' makes
 # hunger real. Default keeps today's mask - staging arms the reduced one.
 set_conf "$PB" "AiPlayerbot.BotCheats" "\"${BOT_CHEATS:-food,taxi,raid}\""

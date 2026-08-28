@@ -255,6 +255,83 @@ namespace
     std::mutex sListingsMx;
     std::vector<NeedsLedger::AhListing> sListings;
 
+    // E11 gear market. Measured before any of this was written: of 360 live
+    // auctions, nine were equippable, and the buy side had managed 45 bids in
+    // six days. The demand side was never the problem - there was nothing on
+    // the shelf. Rescue puts gear on it, the shopping trip sends buyers to it.
+    bool sGearRescue = false;
+    uint32 sGearRescueMax = 6;
+    bool sShopEnabled = false;
+    // Ceiling on shopping trips held at once, realm-wide, and how long a bot
+    // that has just been sent is left alone. Same reasoning as the rare hunt's
+    // cap: the persona duty roll decides how eagerly a bot runs an errand, but
+    // something has to bound how much of the fleet is walking to a city at all.
+    uint32 sShopMaxConcurrent = 80;
+    uint32 sShopCooldownSec = 900;
+    uint32 sShopIssued = 0;
+    std::unordered_map<uint32, uint32> sShopLast;
+
+    // The gear half of the listings mirror, distilled once per pass. The screen
+    // it feeds runs for every bot on the realm, so it must not be a full-market
+    // walk with an Item allocation per listing - which is exactly what the
+    // priced gear need used to be, capped at the first 40 listings and
+    // therefore blind to gear sitting behind them. World thread only, like the
+    // pass that writes it and the pass that reads it.
+    struct GearOffer
+    {
+        uint32 item;
+        int32 randomPropertyId;
+        uint32 buyout;
+        uint8 houseId;
+        uint8 invType;
+        uint16 ilvl;
+    };
+    std::vector<GearOffer> sGearOffers;
+
+    // Which equipment slots an item of a given InventoryType can occupy. Spelled
+    // out rather than asked of the core, whose resolver wants a constructed Item;
+    // this runs per bot per offer. Cosmetic and container types map to nothing,
+    // which is how they fall out of the screen.
+    uint8 EquipSlotsFor(uint8 invType, uint8 (&out)[2])
+    {
+        switch (invType)
+        {
+            case INVTYPE_HEAD: out[0] = EQUIPMENT_SLOT_HEAD; return 1;
+            case INVTYPE_NECK: out[0] = EQUIPMENT_SLOT_NECK; return 1;
+            case INVTYPE_SHOULDERS: out[0] = EQUIPMENT_SLOT_SHOULDERS; return 1;
+            case INVTYPE_CHEST:
+            case INVTYPE_ROBE: out[0] = EQUIPMENT_SLOT_CHEST; return 1;
+            case INVTYPE_WAIST: out[0] = EQUIPMENT_SLOT_WAIST; return 1;
+            case INVTYPE_LEGS: out[0] = EQUIPMENT_SLOT_LEGS; return 1;
+            case INVTYPE_FEET: out[0] = EQUIPMENT_SLOT_FEET; return 1;
+            case INVTYPE_WRISTS: out[0] = EQUIPMENT_SLOT_WRISTS; return 1;
+            case INVTYPE_HANDS: out[0] = EQUIPMENT_SLOT_HANDS; return 1;
+            case INVTYPE_CLOAK: out[0] = EQUIPMENT_SLOT_BACK; return 1;
+            case INVTYPE_FINGER:
+                out[0] = EQUIPMENT_SLOT_FINGER1;
+                out[1] = EQUIPMENT_SLOT_FINGER2;
+                return 2;
+            case INVTYPE_TRINKET:
+                out[0] = EQUIPMENT_SLOT_TRINKET1;
+                out[1] = EQUIPMENT_SLOT_TRINKET2;
+                return 2;
+            case INVTYPE_WEAPON:
+                out[0] = EQUIPMENT_SLOT_MAINHAND;
+                out[1] = EQUIPMENT_SLOT_OFFHAND;
+                return 2;
+            case INVTYPE_2HWEAPON:
+            case INVTYPE_WEAPONMAINHAND: out[0] = EQUIPMENT_SLOT_MAINHAND; return 1;
+            case INVTYPE_SHIELD:
+            case INVTYPE_WEAPONOFFHAND:
+            case INVTYPE_HOLDABLE: out[0] = EQUIPMENT_SLOT_OFFHAND; return 1;
+            case INVTYPE_RANGED:
+            case INVTYPE_THROWN:
+            case INVTYPE_RANGEDRIGHT:
+            case INVTYPE_RELIC: out[0] = EQUIPMENT_SLOT_RANGED; return 1;
+            default: return 0;
+        }
+    }
+
     struct Need
     {
         std::string type;
@@ -615,6 +692,12 @@ void NeedsLedger::LoadConfig()
     sRareFarMaxYards = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.FarMaxYards", 2000);
     sRareMaxLevelGap = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.MaxLevelGap", 25);
     sRareMaxConcurrent = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Rare.MaxConcurrent", 60);
+    sGearRescue = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gear.Rescue", false);
+    sGearRescueMax = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gear.RescueMax", 6);
+    sShopEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.Econ.Gear.Shop.Enabled", false);
+    sShopMaxConcurrent =
+        sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gear.Shop.MaxConcurrent", 80);
+    sShopCooldownSec = sConfigMgr->GetOption<uint32>("AiPlayerbot.Econ.Gear.Shop.CooldownSec", 900);
 
     if (_enabled || sEventsEnabled)
         EnsureTables();
@@ -755,6 +838,38 @@ bool NeedsLedger::RareHuntEnabled() { return sRareEnabled; }
 
 bool NeedsLedger::SellOnVendorVisit() { return sVendorEnabled; }
 bool NeedsLedger::ProtectTradeGoods() { return sProtectTradeGoods; }
+uint32 NeedsLedger::RescueGearMax() { return sGearRescueMax; }
+
+bool NeedsLedger::WorthRescuing(Item* item)
+{
+    if (!sGearRescue || !item)
+        return false;
+
+    ItemTemplate const* proto = item->GetTemplate();
+    if (!proto)
+        return false;
+
+    // Only what an auction house will actually take AND price. The listing
+    // action anchors its price on the vendor value, so a piece without one has
+    // no price the market could read; bind-on-pickup and already-soulbound gear
+    // cannot be listed at all. That last clause is also the safety property
+    // that keeps this out of ClearAllItems' way: equipping a bind-on-equip
+    // piece binds it, so a bot's worn set is still cleared on a level reset
+    // exactly as before.
+    if (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON)
+        return false;
+    if (proto->Quality < ITEM_QUALITY_UNCOMMON || !proto->SellPrice)
+        return false;
+    if (proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM ||
+        proto->Bonding == BIND_QUEST_ITEM1)
+        return false;
+
+    uint8 slots[2] = {0, 0};
+    if (!EquipSlotsFor(uint8(proto->InventoryType), slots))
+        return false;
+
+    return !item->IsSoulBound() && item->CanBeTraded();
+}
 bool NeedsLedger::PaidRepairs() { return sPaidRepairs; }
 bool NeedsLedger::PaidTraining() { return sPaidTraining; }
 bool NeedsLedger::CraftEnabled() { return sCraftEnabled; }
@@ -893,6 +1008,7 @@ void NeedsLedger::Tick(uint32 diff)
         // starts its concurrency budget over. Reset after the swap, never
         // before, or the cap would count two passes' worth.
         sRareIssued = 0;
+        sShopIssued = 0;
     }
 
     // E8.2: refresh the vault view every five minutes. Guild bank writes go
@@ -1149,26 +1265,53 @@ void NeedsLedger::ComputeNeeds(Player* bot)
     // equip as an upgrade. Once priced, gear enters the reservation chain, an
     // unfunded upgrade makes the bot "broke", and the sell-for-gold loop farms
     // toward it - the raid-readiness chain (BRD E8 + operator ask).
-    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+    //
+    // E11 rewrite. The first cut asked ItemUsage - which constructs an Item per
+    // question - about the first 40 listings in mirror order. On a market whose
+    // listings are overwhelmingly herbs and arrows that is both the expensive
+    // way to ask and a window too narrow to contain the gear: across the whole
+    // realm's history it priced a gear need exactly zero times. This asks a
+    // pre-distilled gear-only index instead, and the question it asks of the
+    // bot allocates nothing. It is deliberately a SCREEN, not a verdict on the
+    // item: item level and slot fit are enough to decide whether walking to the
+    // city could pay off, and the strict class/stat test still runs at the
+    // auctioneer where the money actually changes hands.
+    uint64 gearUpgradePrice = 0;
+    bool gearUpgradeFunded = false;
     {
         uint8 const house = bot->GetTeamId() == TEAM_ALLIANCE ? 2 : 6;
-        uint64 cheapest = 0;
-        uint32 evaluated = 0;
-        for (AhListing const& l : ListingsForHouse(house))
+        for (GearOffer const& offer : sGearOffers)
         {
-            if (++evaluated > 40)
-                break;
-            if (!l.buyout || (cheapest && l.buyout >= cheapest))
+            if (offer.houseId != house || !offer.buyout)
                 continue;
-            std::string qualifier =
-                std::to_string(l.item) + "," + std::to_string(l.randomPropertyId);
-            ItemUsage usage =
-                botAI->GetAiObjectContext()->GetValue<ItemUsage>("item usage", qualifier)->Get();
-            if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE)
-                cheapest = l.buyout;
+            if (gearUpgradePrice && offer.buyout >= gearUpgradePrice)
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(offer.item);
+            if (!proto || bot->BotCanUseItem(proto) != EQUIP_ERR_OK)
+                continue;
+            uint8 slots[2] = {0, 0};
+            uint8 const slotCount = EquipSlotsFor(offer.invType, slots);
+            for (uint8 i = 0; i < slotCount; ++i)
+            {
+                Item* equipped = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slots[i]);
+                // An empty slot is the neediest state there is, and the dungeon
+                // finder's own average counts it as a zero.
+                uint32 const held = equipped ? equipped->GetTemplate()->ItemLevel : 0;
+                if (offer.ilvl > held)
+                {
+                    gearUpgradePrice = offer.buyout;
+                    break;
+                }
+            }
         }
-        if (cheapest)
-            push("gear", "upgrade", cheapest);
+        if (gearUpgradePrice)
+        {
+            push("gear", "upgrade", gearUpgradePrice);
+            // Funded means: after repair, training, ammo and the mount the bot
+            // is saving for, it can still pay this. An unfunded upgrade is a
+            // reason to go earn money, never a reason to walk to a city.
+            gearUpgradeFunded = needs.back().freeMoney >= needs.back().amount;
+        }
     }
 
     // Materials need (E7.4 groundwork, observe-only): a crafter whose known
@@ -1646,6 +1789,59 @@ void NeedsLedger::ComputeNeeds(Player* bot)
         }
     }
 
+    // E11 shopping trip. The operator's rule was "occasionally check AH for
+    // items", not "hunt for gear", so this is the weakest claim on the realm:
+    // it only ever takes a bot the whole chain above declined, and it dodges
+    // that chain for the reason the rare hunt records - the gather branch ends
+    // in a config-only condition, so anything appended below it is dead code
+    // the moment gathering is armed.
+    //
+    // Three gates beyond that, and each answers a specific way this could go
+    // wrong. The funded gear need means the bot is not walking to a city to
+    // window-shop or to spend its repair money. The realm-wide ceiling means a
+    // market that suddenly fills with gear cannot empty the world into
+    // Ironforge. The cooldown means a bot whose target was bought by someone
+    // else in the meantime goes and does something else instead of pacing the
+    // auction house - the ping-pong failure the rare hunt already paid for.
+    if (sPreemptEnabled && sShopEnabled && gearUpgradeFunded && !sVerdictBuild.count(guid) &&
+        sShopIssued < sShopMaxConcurrent)
+    {
+        uint32 const nowSec = uint32(time(nullptr));
+        auto const last = sShopLast.find(guid);
+        if (last == sShopLast.end() || nowSec - last->second >= sShopCooldownSec)
+        {
+            auto it = sAuctioneerSpawns.find(uint16(bot->GetMapId()));
+            if (it != sAuctioneerSpawns.end())
+            {
+                float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+                float best = float(sVendorFarMaxYards) * float(sVendorFarMaxYards);
+                Verdict v{VERDICT_SHOP, false, uint16(bot->GetMapId()), 0, 0, 0, 0, 0};
+                for (auto const& p : it->second)
+                {
+                    float const dx = p[0] - bx, dy = p[1] - by;
+                    float const d2 = dx * dx + dy * dy;
+                    if (d2 < best)
+                    {
+                        best = d2;
+                        v.hasFar = true;
+                        v.x = p[0];
+                        v.y = p[1];
+                        v.z = p[2];
+                    }
+                }
+                if (v.hasFar)
+                {
+                    sVerdictBuild[guid] = v;
+                    sShopLast[guid] = nowSec;
+                    ++sShopIssued;
+                    NeedsLedger::LogEvent("gear_shop", guid, 0, 0,
+                                          "aim|" + std::to_string(bot->GetMapId()) + "|" +
+                                              std::to_string(gearUpgradePrice));
+                }
+            }
+        }
+    }
+
     // Persona: recorded every pass for the census, and stamped onto whatever
     // verdict the chain just stored so the map thread's duty roll is one
     // mirror lookup. A single stamp point here covers every branch above.
@@ -1781,7 +1977,7 @@ void NeedsLedger::WriteTelemetry()
 
         static char const* KINDS[] = {"none",  "vendor", "mailbox", "trainer",
                                       "ah",    "focus",  "gather",  "bank",
-                                      "rare"};
+                                      "rare",  "shop"};
         std::ostringstream errandSql;
         uint32 batched = 0;
         for (auto const& pair : sVerdictMirror)
@@ -1861,6 +2057,22 @@ void NeedsLedger::WriteTelemetry()
                                  uint8(houseId)});
             }
         }
+        // E11: distil the gear half before publishing, on this same thread, so
+        // the per-bot upgrade screen never re-derives it 2500 times.
+        std::vector<GearOffer> gear;
+        for (AhListing const& l : fresh)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(l.item);
+            if (!proto || !l.buyout)
+                continue;
+            uint8 slots[2] = {0, 0};
+            if (!EquipSlotsFor(uint8(proto->InventoryType), slots))
+                continue;
+            gear.push_back({l.item, l.randomPropertyId, l.buyout, l.houseId,
+                            uint8(proto->InventoryType), uint16(proto->ItemLevel)});
+        }
+        sGearOffers.swap(gear);
+
         std::lock_guard<std::mutex> lock(sListingsMx);
         sListings.swap(fresh);
     }
