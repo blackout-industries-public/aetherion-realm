@@ -107,6 +107,13 @@ namespace
     constexpr uint32 kVhPortalKeeper1 = 30695;
     constexpr uint32 kVhPortalKeeper2 = 30893;
     constexpr uint32 kVhPortal = 31011;
+    // The six cell bosses, two of which a run meets. Worth naming even though their
+    // cells are exactly what this stopped steering at, because a released one does not
+    // wait at its door: StartBossEncounter opens the cell and walks it out to a fixed
+    // spot in the middle of the room. Only ever chosen when it is attackable, which is
+    // the flag the release itself clears - a boss still sealed in its cell carries
+    // UNIT_FLAG_NON_ATTACKABLE and is passed over exactly like the position was.
+    constexpr uint32 kVhBosses[] = {29266, 29312, 29313, 29314, 29315, 29316};
     constexpr uint32 kVhWaveCount = 33;          // DATA_WAVE_COUNT
     constexpr uint32 kHorWaveNumberData = 8;     // DATA_WAVE_NUMBER, same as above
 
@@ -1988,19 +1995,30 @@ bool PartyAssembler::EventObjective(Player* onMap, Trip const& trip, float& x, f
     if (trip.dungeonMap == kMapVioletHold)
     {
         // Highest thing on the board first. The order is the encounter's own: the
-        // dragon that ends it, then the saboteur that releases a boss, then whatever
-        // is holding the current portal open, then the portal itself.
-        static constexpr uint32 kOrder[] = {kVhCyanigosa,       kVhSaboteur,
-                                            kVhPortalGuardian,  kVhPortalKeeper1,
-                                            kVhPortalKeeper2,   kVhPortal};
-        for (uint32 entry : kOrder)
-            if (Creature* who = onMap->FindNearestCreature(entry, kEventObjectiveRange, true))
-            {
-                x = who->GetPositionX();
-                y = who->GetPositionY();
-                z = who->GetPositionZ();
+        // dragon that ends it, then a released cell boss, then the saboteur that
+        // releases one, then whatever is holding the current portal open, then the
+        // portal itself. Only the bosses need the attackable test - everything else
+        // on this list exists only while it is in play - but it is applied to all of
+        // them, because a target nobody in the party can hit is not a destination
+        // whatever the reason.
+        auto aimAt = [&](uint32 entry) {
+            Creature* who = onMap->FindNearestCreature(entry, kEventObjectiveRange, true);
+            if (!who || !onMap->IsValidAttackTarget(who))
+                return false;
+            x = who->GetPositionX();
+            y = who->GetPositionY();
+            z = who->GetPositionZ();
+            return true;
+        };
+
+        if (aimAt(kVhCyanigosa))
+            return true;
+        for (uint32 entry : kVhBosses)
+            if (aimAt(entry))
                 return true;
-            }
+        if (aimAt(kVhSaboteur) || aimAt(kVhPortalGuardian) || aimAt(kVhPortalKeeper1) ||
+            aimAt(kVhPortalKeeper2) || aimAt(kVhPortal))
+            return true;
 
         // Between waves, and while a wave is still walking. Standing where every route
         // ends is how this fight is held, and it is where the released boss is brought
