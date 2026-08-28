@@ -391,7 +391,10 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <nav :style="{ display: 'flex', alignItems: 'stretch' }">
+      <nav
+        class="navscroll"
+        :style="{ display: 'flex', alignItems: 'stretch', flex: '1 1 auto', minWidth: 0, overflowX: 'auto', overflowY: 'hidden' }"
+      >
         <div
           v-for="(g, gi) in NAV_GROUPS"
           :key="g.label"
@@ -434,7 +437,7 @@ onUnmounted(() => {
         </div>
       </nav>
 
-      <div :style="{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px', padding: '0 14px', minWidth: 0, justifyContent: 'flex-end' }">
+      <div :style="{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px', padding: '0 14px', flex: 'none', justifyContent: 'flex-end' }">
         <span
           :style="{ display: 'flex', alignItems: 'center', gap: '7px', border: `1px solid ${V.line}`, background: V.panel, padding: '6px 10px' }"
           title="Palette"
@@ -660,6 +663,9 @@ onUnmounted(() => {
 </template>
 
 <style>
+.navscroll { scrollbar-width: none; }
+.navscroll::-webkit-scrollbar { height: 0; width: 0; }
+
 * { box-sizing: border-box }
 /* The shell is a fixed-viewport app, never a scrolling document. Pinning this at the
    root means no descendant can push the page sideways and clip the header. */
