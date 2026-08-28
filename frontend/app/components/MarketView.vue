@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { FONT, V, fmt } from '../theme'
+import GearMarketPanel from './GearMarketPanel.vue'
 import { CLASSES, CLASS_COLOR } from '../data'
 import UiPanel from './UiPanel.vue'
 import UiBars from './UiBars.vue'
@@ -89,6 +90,7 @@ const nameBtn = (color: string) => ({
 
 <template>
   <section :style="{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, height: '100%', overflow: 'auto' }">
+    <GearMarketPanel @select="emit('select', $event)" />
     <p
       :style="{
         margin: 0, borderLeft: `2px solid ${V.accentDim}`, paddingLeft: '13px',
