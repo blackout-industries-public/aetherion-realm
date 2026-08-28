@@ -7,6 +7,7 @@ import {
 import { CLASS_COLOR, zoneName } from './data'
 import WorldView from './components/WorldView.vue'
 import GroupsView from './components/GroupsView.vue'
+import DebugView from './components/DebugView.vue'
 import SocietyView from './components/SocietyView.vue'
 import OpsView from './components/OpsView.vue'
 import GuildsView from './components/GuildsView.vue'
@@ -35,7 +36,7 @@ useHead({
 })
 
 type TabKey = 'overview' | 'world' | 'groups' | 'pvp' | 'race' | 'econ' | 'market'
-  | 'society' | 'guilds' | 'ops'
+  | 'society' | 'guilds' | 'ops' | 'debug'
 const tab = ref<TabKey>('overview')
 
 // Grouped navigation. OVERVIEW joins the LIVE group as one more entry when the
@@ -59,7 +60,7 @@ const NAV_GROUPS: { label: string; tabs: { key: TabKey; label: string }[] }[] = 
     label: 'SOCIAL',
     tabs: [{ key: 'society', label: 'SOCIETY' }, { key: 'guilds', label: 'GUILDS' }],
   },
-  { label: 'SYSTEM', tabs: [{ key: 'ops', label: 'OPS' }] },
+  { label: 'SYSTEM', tabs: [{ key: 'ops', label: 'OPS' }, { key: 'debug', label: 'DEBUG' }] },
 ]
 
 const POLL_MS = 5000
@@ -521,6 +522,7 @@ onUnmounted(() => {
         <WealthView @select="select" />
       </div>
       <GuildsView v-else-if="tab === 'guilds'" :guild="guild" @select="select" />
+      <DebugView v-else-if="tab === 'debug'" />
       <OpsView v-else :ops="ops" :assembler="assembler" :llm="llm" />
 
       <EventRail
