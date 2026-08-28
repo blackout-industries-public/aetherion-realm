@@ -4,7 +4,7 @@ import { q } from '../utils/db'
 // moves far too slowly to judge in a session, so this reports the machinery
 // feeding it: how many bots want gear, how many went shopping, what the market
 // actually carries, and how much of what crafters make is wearable at all.
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [flow, need, shelf, crafts, buys] = await Promise.all([
     q(`SELECT kind, COUNT(*) AS n, COUNT(DISTINCT guid) AS bots
        FROM acore_characters.aetherion_econ_events
@@ -54,4 +54,10 @@ export default defineEventHandler(async () => {
       at: Number(r.ts) * 1000,
     })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'gearmarket',
 })

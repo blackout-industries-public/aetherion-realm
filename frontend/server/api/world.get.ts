@@ -116,7 +116,7 @@ async function professionMasks(): Promise<Map<number, number>> {
   return masks
 }
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const realmUp = await probe('ac-worldserver', 8085)
 
   // Kept out of the main query so a cold start without these tables degrades to
@@ -234,4 +234,10 @@ export default defineEventHandler(async () => {
   }
 
   return { at: Date.now(), realmUp, stale: false, entities: [], professions: PROFESSIONS, heat }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'world',
 })

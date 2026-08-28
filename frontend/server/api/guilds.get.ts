@@ -5,7 +5,7 @@ import { instanceNames } from '../utils/places'
 // appears as "Name (GUID Full: ... Low: <guid>, acc: N, ip: ..., guild: <id>)".
 const PARTICIPANT = /Low:\s*(\d+),[^)]*?guild:\s*(\d+)/g
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const pool = getPool()
   const INSTANCES = await instanceNames()
 
@@ -96,4 +96,10 @@ export default defineEventHandler(async () => {
     guilds: guilds.slice(0, 20),
     kills: kills.slice(0, 15),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'guilds',
 })

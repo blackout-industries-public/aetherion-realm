@@ -121,7 +121,7 @@ const AH_TOP = `
   ORDER BY copper DESC LIMIT 12
 `
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [needs, starved, bands, history, incomePts, sellers, events, destroyed, market,
          ahFlow, ahListings, ahTop, wallets, walletMedian] = await Promise.all([
     q(NEEDS_SUMMARY), q(STARVED), q(GOLD_BANDS), q(GOLD_HISTORY),
@@ -197,4 +197,10 @@ export default defineEventHandler(async () => {
         .map(r => ({ name: r.name, copper: Number(r.copper ?? 0), n: Number(r.n) })),
     },
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'econ',
 })

@@ -133,7 +133,7 @@ const TAB_NAMES = ['Materials', 'Consumables', 'Gear']
 const tidy = (s: string) =>
   String(s ?? '').replace(/\s*-\s*\d+\s*man.*$/i, '').split(',').pop()!.trim()
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [standings, pulse, progress, vault, vaultFlow, vaultRecent] = await Promise.all([
     q(STANDINGS), q(PULSE), q(PROGRESS), q(VAULT), q(VAULT_FLOW), q(VAULT_RECENT),
   ])
@@ -242,4 +242,10 @@ export default defineEventHandler(async () => {
     },
     guilds,
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'guild',
 })

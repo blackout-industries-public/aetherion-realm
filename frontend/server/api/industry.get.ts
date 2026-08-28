@@ -74,7 +74,7 @@ const PROFESSIONS = `
   ) x WHERE rn = 1 ORDER BY n DESC
 `
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [craftTotals, products, crafters, gatherTotals, gatherHourly, gatherers,
          nodes, professions] = await Promise.all([
     q(CRAFT_TOTALS), q(CRAFT_PRODUCTS), q(TOP_CRAFTERS),
@@ -123,4 +123,10 @@ export default defineEventHandler(async () => {
       top: Number(r.topval), leader: r.name,
     })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'industry',
 })

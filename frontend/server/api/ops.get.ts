@@ -112,7 +112,7 @@ async function hostMemory() {
   return { total: os.totalmem(), used: os.totalmem() - os.freemem(), source: 'container' as const }
 }
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [facts, conf, mem, states, uptime, churn, freshness, ingest, footprint, census] =
     await Promise.all([
       realmFacts(),
@@ -170,4 +170,10 @@ export default defineEventHandler(async () => {
     llmHookEnabled: confBool(conf, 'AiPlayerbot.Llm.Enabled', false),
     pvpEnabled: confBool(conf, 'AiPlayerbot.Pvp.Enabled', false),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'ops',
 })

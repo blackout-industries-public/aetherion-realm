@@ -20,7 +20,7 @@ const CASE_SQL = `
     ELSE 'idle inside'
   END`
 
-export default defineEventHandler(async event => {
+export default defineCachedEventHandler(async event => {
   const hours = Math.min(Math.max(Number(getQuery(event).hours) || 24, 1), 168)
   const since = `UNIX_TIMESTAMP() - ${hours * 3600}`
   // Interrupted rows never observed their own ending, so they would poison every
@@ -105,4 +105,10 @@ export default defineEventHandler(async event => {
   }, { runs: 0, cleared: 0, scored: 0, bosses: 0, verdicts: {} as Record<string, number> })
 
   return { at: Date.now(), hours, totals, venues: rows }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'debug',
 })

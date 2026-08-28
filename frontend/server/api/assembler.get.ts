@@ -216,7 +216,7 @@ const PHASE_STATUS: Record<string, { label: string; tone: string }> = {
   inside: { label: 'INSIDE', tone: 'inside' },
 }
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const pool = getPool()
   const conf = await playerbotsConf()
   const tickSeconds = Math.max(1, Math.round(confNum(conf, 'AiPlayerbot.Party.IntervalMs', 45000) / 1000))
@@ -462,4 +462,10 @@ export default defineEventHandler(async () => {
     raidGroups: Number(groups?.raids ?? 0),
     board,
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'assembler',
 })

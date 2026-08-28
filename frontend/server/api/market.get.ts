@@ -92,7 +92,7 @@ const ITEM_CLASS: Record<number, string> = {
   15: 'Miscellaneous', 16: 'Glyph',
 }
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [trades, depth, hot, bigSales, bigAsks, strip] = await Promise.all([
     q(TRADES), q(DEPTH), q(HOT), q(BIG_SALES), q(BIG_ASKS), q(STRIP),
   ])
@@ -134,4 +134,10 @@ export default defineEventHandler(async () => {
       buyout: Number(r.buyoutprice),
     })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'market',
 })

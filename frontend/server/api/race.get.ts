@@ -46,7 +46,7 @@ const ALLIANCE = new Set([1, 3, 4, 7, 11])
 // The recorder writes boss firsts as "Boss Name (Instance)".
 const BOSS_DETAIL = /^(.*?)\s*\(([^)]*)\)\s*$/
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [marker, firsts, standings, shape] = await Promise.all([
     q(MARKER), q(FIRSTS), q(STANDINGS), q(LADDER_SHAPE),
   ])
@@ -95,4 +95,10 @@ export default defineEventHandler(async () => {
     })),
     shape: shape.map(r => ({ level: Number(r.level), n: Number(r.n) })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'race',
 })

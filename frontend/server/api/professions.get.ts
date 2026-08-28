@@ -81,7 +81,7 @@ const AUCTION = `
 
 const QUALITY = ['poor', 'common', 'uncommon', 'rare', 'epic', 'legendary', 'artifact']
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [spread, artisans, gear, best, auction] = await Promise.all([
     q(SPREAD), q(TOP_ARTISANS), q(GEAR), q(BEST_ITEMS), q(AUCTION),
   ])
@@ -135,4 +135,10 @@ export default defineEventHandler(async () => {
       avgBuyoutGold: Number(a.avgBuyoutGold ?? 0),
     },
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'professions',
 })

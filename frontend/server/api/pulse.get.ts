@@ -70,7 +70,7 @@ const PERSONAS = `
   GROUP BY target ORDER BY n DESC
 `
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [hourly, errands, mailPending, collections, collectors, needs, personas] = await Promise.all([
     q(HOURLY), q(ERRANDS), q(MAIL_PENDING), q(COLLECTIONS), q(TOP_COLLECTORS), q(NEEDS_FUNDING),
     q(PERSONAS),
@@ -107,4 +107,10 @@ export default defineEventHandler(async () => {
       name: r.target, n: Number(r.n), duty: Number(r.duty ?? 0),
     })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'pulse',
 })

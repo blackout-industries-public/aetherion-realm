@@ -91,7 +91,7 @@ const ARENA_TEAMS = `
 `
 
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [occ, headline, killers, tempo, matches, teams] = await Promise.all([
     q(OCCUPANCY), q(HEADLINE), q(TOP_KILLERS), q(TEMPO), q(MATCHES), q(ARENA_TEAMS),
   ])
@@ -154,4 +154,10 @@ export default defineEventHandler(async () => {
       games: Number(t.seasonGames), wins: Number(t.seasonWins),
     })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'pvp',
 })

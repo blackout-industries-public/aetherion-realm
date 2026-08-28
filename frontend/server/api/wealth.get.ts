@@ -56,7 +56,7 @@ const FLOWS = `
   GROUP BY e.kind
 `
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [richest, buckets, supplyNow, supplyPts, earners, flows] = await Promise.all([
     q(RICHEST), q(BUCKETS), q(SUPPLY_NOW), q(SUPPLY_POINTS), q(EARNERS), q(FLOWS),
   ])
@@ -88,4 +88,10 @@ export default defineEventHandler(async () => {
       repairs: flowMap['repair_paid'] ?? { n: 0, copper: 0 },
     },
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'wealth',
 })

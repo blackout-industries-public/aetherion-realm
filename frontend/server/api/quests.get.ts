@@ -67,7 +67,7 @@ const TEMPO = `
 `
 
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [head, done, popular, bands, questers, tempo] = await Promise.all([
     q(HEADLINE), q(COMPLETED), q(POPULAR), q(BY_BAND), q(TOP_QUESTERS), q(TEMPO),
   ])
@@ -103,4 +103,10 @@ export default defineEventHandler(async () => {
     })),
     tempo: tempo.map(r => ({ hour: r.hour, completed: Number(r.completed) })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'quests',
 })

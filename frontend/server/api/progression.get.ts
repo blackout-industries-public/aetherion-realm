@@ -52,7 +52,7 @@ const tidy = (s: string) => strip(s).split(',').pop()!.trim()
 // A raid is named by its first segment; only wings hide behind the comma.
 const raidName = (s: string) => strip(s).split(',')[0]!.trim()
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const NAMES = await instanceNames()
 
   const dbGates = await q(`
@@ -314,4 +314,10 @@ export default defineEventHandler(async () => {
     })),
     legendaries: legendary.map(r => ({ name: r.name, owners: Number(r.owners) })),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'progression',
 })

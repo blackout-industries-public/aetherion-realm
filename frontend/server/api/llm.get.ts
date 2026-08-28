@@ -21,7 +21,7 @@ const BOT_GUIDS = `
   WHERE c.online = 1
 `
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const pool = getPool()
   const conf = await playerbotsConf()
   const facts = await realmFacts()
@@ -72,4 +72,10 @@ export default defineEventHandler(async () => {
     })),
     archetypes: archetypeSplit((guids as any[]).map(g => g.guid)),
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'llm',
 })

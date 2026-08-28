@@ -20,7 +20,7 @@ const SQL = `
 
 const ALLIANCE = new Set([1, 3, 4, 7, 11])
 
-export default defineEventHandler(async () => {
+export default defineCachedEventHandler(async () => {
   const [rows] = await getPool().query<any[]>(SQL)
 
   const groups = new Map<number, any>()
@@ -62,4 +62,10 @@ export default defineEventHandler(async () => {
     raids: list.filter(g => g.raid).length,
     groups: list,
   }
+}, {
+  // The realm changes on a minute's timescale, so a reader cannot tell
+  // twenty seconds of staleness from live - but they can certainly tell
+  // four seconds of waiting. Stale answers are served instantly while a
+  // refresh runs behind them.
+  maxAge: 20, swr: true, staleMaxAge: 600, name: 'groups',
 })
