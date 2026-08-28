@@ -1215,6 +1215,51 @@ void PartyAssembler::AdvanceTrips()
                         " WHERE id = {}", trip.runId);
             }
 
+            // The leader is the run's single point of failure and nothing below
+            // survives losing it: the steering, the member recall and the exhausted
+            // close-out are all anchored on the leader standing in the instance, and
+            // the recall explicitly skips the leader itself. So a leader that died
+            // and ghost-released - instance graveyards are outside - decapitated the
+            // run: members were revived in place while nobody steered, and the run
+            // burned its whole budget to a silent 'ended'. Naxxramas raids logged
+            // two hours inside without one steering line; both Forge of Souls
+            // parties sampled had their leader standing at the door outside. The
+            // tank-leads-the-pull change made this the COMMON case, because the
+            // leader is now the character that dies first by design. A full party
+            // that releases and spirit-revives between two of these ticks is the
+            // same failure - alive at the graveyard, never counted as a wipe - and
+            // the same recall heals it, one tick for the leader and the next for
+            // everyone the member recall can now see again.
+            if (trip.arrived && !trip.adopted &&
+                leader->GetMapId() != trip.dungeonMap &&
+                !leader->IsBeingTeleported() && !leader->InBattleground())
+            {
+                if (auto const rally = _insides.find(trip.dungeonMap);
+                    rally != _insides.end())
+                {
+                    if (!leader->IsAlive())
+                    {
+                        leader->ResurrectPlayer(0.5f);
+                        leader->SpawnCorpseBones();
+                        if (PlayerbotAI* lAI = GET_PLAYERBOT_AI(leader))
+                        {
+                            lAI->ResetStrategies(false);
+                            lAI->ChangeStrategy("-lfg,-bg", BOT_STATE_NON_COMBAT);
+                        }
+                    }
+                    leader->TeleportTo(trip.dungeonMap, rally->second.x,
+                                       rally->second.y, rally->second.z, 0.0f);
+                    LOG_INFO("playerbots",
+                             "Party assembler: {} walked out of {} mid-run - "
+                             "pulled back to their party",
+                             leader->GetName(), trip.name);
+                }
+                // Mid-flight for the rest of this tick; everything below reads the
+                // leader's map, so the trip resumes once the teleport has landed.
+                ++it;
+                continue;
+            }
+
             // What the instance itself says has died, read while it still exists.
             // Ordered before the wipe watch because how many bosses are down is what
             // decides how much determination this run has bought.
