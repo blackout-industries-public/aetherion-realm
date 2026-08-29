@@ -568,6 +568,33 @@ bool PartyAssembler::BelowVenueFloor(uint32 mapId, Player const* who) const
     return it != _floorZ.end() && who->GetPositionZ() < it->second - 25.0f;
 }
 
+Entrance const* PartyAssembler::NearestGroundSpot(uint32 mapId, float x, float y) const
+{
+    // Fished bots used to go back to the arrival point, which turned every fall
+    // into starting the wing over: the Forge of Souls burned 174 leader recalls
+    // in 45 minutes and still never met its first boss. The route resumes at the
+    // spawn nearest the fall instead - measured flat, because the faller's own z
+    // is the abyss and the ground it fell from is directly above.
+    auto const it = _spawns.find(mapId);
+    if (it == _spawns.end() || it->second.empty())
+        return nullptr;
+
+    Entrance const* best = nullptr;
+    float bestSq = 0.0f;
+    for (Entrance const& spot : it->second)
+    {
+        float const dx = x - spot.x;
+        float const dy = y - spot.y;
+        float const sq = dx * dx + dy * dy;
+        if (!best || sq < bestSq)
+        {
+            best = &spot;
+            bestSq = sq;
+        }
+    }
+    return best;
+}
+
 void PartyAssembler::LoadBossPositions()
 {
     // creditType 0 means the encounter is credited by killing a creature, so its entry
@@ -972,8 +999,11 @@ void PartyAssembler::RecoverInside(Group* group, Player* leader, Trip& trip)
                               BelowVenueFloor(trip.dungeonMap, m);
             if (m->GetMapId() == trip.dungeonMap && !fell)
                 continue;
-            m->TeleportTo(trip.dungeonMap, inside->second.x, inside->second.y,
-                          inside->second.z, 0.0f);
+            // To the leader, not the door: the leader is on the map and on its feet
+            // whenever this runs, and a member sent to the arrival point re-walks
+            // the wing alone through everything the party already cleared.
+            m->TeleportTo(trip.dungeonMap, leader->GetPositionX(),
+                          leader->GetPositionY(), leader->GetPositionZ(), 0.0f);
             if (fell)
                 ++fished;
             else
@@ -1263,12 +1293,12 @@ void PartyAssembler::AdvanceTrips()
             // steering at, close enough in x and y to keep every appearance of
             // progress while nothing can ever happen again.
             if (trip.arrived && !trip.adopted &&
-                (leader->GetMapId() != trip.dungeonMap ||
-                 BelowVenueFloor(trip.dungeonMap, leader)) &&
                 !leader->IsBeingTeleported() && !leader->InBattleground())
             {
-                if (auto const rally = _insides.find(trip.dungeonMap);
-                    rally != _insides.end())
+                bool const offMap = leader->GetMapId() != trip.dungeonMap;
+                bool const fell = !offMap && BelowVenueFloor(trip.dungeonMap, leader);
+                auto const rally = _insides.find(trip.dungeonMap);
+                if ((offMap || fell) && rally != _insides.end())
                 {
                     if (!leader->IsAlive())
                     {
@@ -1280,17 +1310,48 @@ void PartyAssembler::AdvanceTrips()
                             lAI->ChangeStrategy("-lfg,-bg", BOT_STATE_NON_COMBAT);
                         }
                     }
-                    leader->TeleportTo(trip.dungeonMap, rally->second.x,
-                                       rally->second.y, rally->second.z, 0.0f);
+                    // A faller resumes at the ground nearest the fall; only a leader
+                    // gone from the map entirely restarts at the arrival point.
+                    float tx = rally->second.x, ty = rally->second.y, tz = rally->second.z;
+                    if (fell)
+                        if (Entrance const* ground = NearestGroundSpot(
+                                trip.dungeonMap, leader->GetPositionX(), leader->GetPositionY()))
+                        {
+                            tx = ground->x;
+                            ty = ground->y;
+                            tz = ground->z;
+                        }
+                    // Members in the pit leave with the leader, to the same spot. The
+                    // early continue below used to skip their recovery on exactly the
+                    // ticks the leader was lost too, which in a venue where the whole
+                    // party falls together meant nobody was ever fished at all.
+                    uint32 fished = 0;
+                    for (GroupReference* mi = group->GetFirstMember(); mi != nullptr;
+                         mi = mi->next())
+                    {
+                        Player* m = mi->GetSource();
+                        if (!m || m == leader || !m->IsInWorld() || m->IsBeingTeleported())
+                            continue;
+                        if (m->GetMapId() != trip.dungeonMap ||
+                            !BelowVenueFloor(trip.dungeonMap, m))
+                            continue;
+                        if (!m->IsAlive())
+                        {
+                            m->ResurrectPlayer(0.5f);
+                            m->SpawnCorpseBones();
+                        }
+                        m->TeleportTo(trip.dungeonMap, tx, ty, tz, 0.0f);
+                        ++fished;
+                    }
+                    leader->TeleportTo(trip.dungeonMap, tx, ty, tz, 0.0f);
                     LOG_INFO("playerbots",
-                             "Party assembler: {} walked out of {} mid-run - "
-                             "pulled back to their party",
-                             leader->GetName(), trip.name);
+                             "Party assembler: {} {} {} mid-run - the party regroups "
+                             "on solid ground ({} fished along)",
+                             leader->GetName(), offMap ? "walked out of" : "fell under",
+                             trip.name, fished);
+                    ++it;
+                    continue;
                 }
-                // Mid-flight for the rest of this tick; everything below reads the
-                // leader's map, so the trip resumes once the teleport has landed.
-                ++it;
-                continue;
             }
 
             // What the instance itself says has died, read while it still exists.

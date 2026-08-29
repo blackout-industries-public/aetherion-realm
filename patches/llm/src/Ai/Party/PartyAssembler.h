@@ -165,6 +165,9 @@ private:
     // z=613 and z=742 and its bridges have no rails; sampled parties stood at z=519.
     std::unordered_map<uint32, float> _floorZ;
     bool BelowVenueFloor(uint32 mapId, Player const* who) const;
+    // The closest place on the map something is meant to stand, judged flat: a
+    // faller's own z is the abyss, so the ground above it is what nearest means.
+    Entrance const* NearestGroundSpot(uint32 mapId, float x, float y) const;
     std::unordered_map<uint32, uint32> _mapMinLevel;  // instance map id -> level floor
     // Gear floors per (map << 8 | difficulty), from dungeon_access_template.
     // Consumed by the soft gearing math, never as a member-by-member veto.
