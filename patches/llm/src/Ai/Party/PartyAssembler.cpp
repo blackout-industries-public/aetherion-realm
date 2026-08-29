@@ -568,7 +568,7 @@ bool PartyAssembler::BelowVenueFloor(uint32 mapId, Player const* who) const
     return it != _floorZ.end() && who->GetPositionZ() < it->second - 25.0f;
 }
 
-Entrance const* PartyAssembler::NearestGroundSpot(uint32 mapId, float x, float y) const
+PartyAssembler::Entrance const* PartyAssembler::NearestGroundSpot(uint32 mapId, float x, float y) const
 {
     // Fished bots used to go back to the arrival point, which turned every fall
     // into starting the wing over: the Forge of Souls burned 174 leader recalls
