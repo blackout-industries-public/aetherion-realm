@@ -159,6 +159,12 @@ private:
     // walking and never reaches anything worth killing.
     std::unordered_map<uint32, uint32> _travelMult;
     uint32 TravelMultFor(uint32 mapId) const;
+    // The deepest z any creature stands at, per instance map. A character well below
+    // it is not on a lower floor - there is no lower floor - it has fallen off the
+    // world's walkable part. The Forge of Souls keeps its whole spawn table between
+    // z=613 and z=742 and its bridges have no rails; sampled parties stood at z=519.
+    std::unordered_map<uint32, float> _floorZ;
+    bool BelowVenueFloor(uint32 mapId, Player const* who) const;
     std::unordered_map<uint32, uint32> _mapMinLevel;  // instance map id -> level floor
     // Gear floors per (map << 8 | difficulty), from dungeon_access_template.
     // Consumed by the soft gearing math, never as a member-by-member veto.

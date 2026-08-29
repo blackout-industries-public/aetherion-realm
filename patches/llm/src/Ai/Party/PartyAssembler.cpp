@@ -543,14 +543,29 @@ void PartyAssembler::LoadInstanceSpawns()
     {
         Field* f = result->Fetch();
         uint32 const map = f[0].Get<uint32>();
+        float const z = f[3].Get<float>();
+        // The floor reads every row, not just the sample: the deepest creature on
+        // the map is the deepest ground anything is meant to stand on.
+        auto const floorIt = _floorZ.find(map);
+        if (floorIt == _floorZ.end() || z < floorIt->second)
+            _floorZ[map] = z;
         auto& list = _spawns[map];
         if (list.size() >= _spawnsPerMap)
             continue;
-        list.push_back(Entrance{map, f[1].Get<float>(), f[2].Get<float>(), f[3].Get<float>()});
+        list.push_back(Entrance{map, f[1].Get<float>(), f[2].Get<float>(), z});
     } while (result->NextRow());
 
     LOG_INFO("playerbots", "Party assembler: loaded spawn points for {} instance maps",
              _spawns.size());
+}
+
+bool PartyAssembler::BelowVenueFloor(uint32 mapId, Player const* who) const
+{
+    // Twenty-five yards under the deepest spawn is through the world in any wing
+    // this realm runs: legitimate stairs and pits all keep creatures standing on
+    // them, so the spawn table's own minimum is the honest bottom.
+    auto const it = _floorZ.find(mapId);
+    return it != _floorZ.end() && who->GetPositionZ() < it->second - 25.0f;
 }
 
 void PartyAssembler::LoadBossPositions()
@@ -943,21 +958,34 @@ void PartyAssembler::RecoverInside(Group* group, Player* leader, Trip& trip)
     auto const inside = _insides.find(trip.dungeonMap);
     if (inside != _insides.end() && leader->GetMapId() == trip.dungeonMap)
     {
-        uint32 recalled = 0;
+        uint32 recalled = 0, fished = 0;
         for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
         {
             Player* m = mi->GetSource();
             if (!m || m == leader || !m->IsInWorld() || m->IsBeingTeleported())
                 continue;
-            if (m->GetMapId() == trip.dungeonMap)
+            // Two ways to be gone: off the map entirely, or through its floor.
+            // The Forge of Souls' rail-less bridges drop members into an abyss a
+            // hundred yards below every spawn on the map, where follow can no more
+            // retrieve them than it can cross a map boundary.
+            bool const fell = m->GetMapId() == trip.dungeonMap &&
+                              BelowVenueFloor(trip.dungeonMap, m);
+            if (m->GetMapId() == trip.dungeonMap && !fell)
                 continue;
             m->TeleportTo(trip.dungeonMap, inside->second.x, inside->second.y,
                           inside->second.z, 0.0f);
-            ++recalled;
+            if (fell)
+                ++fished;
+            else
+                ++recalled;
         }
         if (recalled)
             LOG_INFO("playerbots", "Party assembler: {} rejoin the party in {}",
                      recalled, trip.name);
+        if (fished)
+            LOG_INFO("playerbots",
+                     "Party assembler: {} fished out of the pit under {}",
+                     fished, trip.name);
     }
 
     // A death that is not a wipe was nobody's job. The wipe watch only fires when the
@@ -1230,8 +1258,13 @@ void PartyAssembler::AdvanceTrips()
             // same failure - alive at the graveyard, never counted as a wipe - and
             // the same recall heals it, one tick for the leader and the next for
             // everyone the member recall can now see again.
+            // Off the map and under it are the same loss: a leader that fell off a
+            // Forge of Souls bridge stands a hundred yards beneath the boss it is
+            // steering at, close enough in x and y to keep every appearance of
+            // progress while nothing can ever happen again.
             if (trip.arrived && !trip.adopted &&
-                leader->GetMapId() != trip.dungeonMap &&
+                (leader->GetMapId() != trip.dungeonMap ||
+                 BelowVenueFloor(trip.dungeonMap, leader)) &&
                 !leader->IsBeingTeleported() && !leader->InBattleground())
             {
                 if (auto const rally = _insides.find(trip.dungeonMap);
@@ -1547,7 +1580,12 @@ void PartyAssembler::AdvanceTrips()
                         BossSpot const& spot = (*bossSpots)[i];
                         float const dx = leader->GetPositionX() - spot.x;
                         float const dy = leader->GetPositionY() - spot.y;
-                        if (dx * dx + dy * dy >= _huntRange * _huntRange)
+                        // All three axes, because instanced ground stacks: a leader
+                        // in the Forge of Souls' abyss passed within eight flat
+                        // yards of both bosses a hundred yards overhead, retired
+                        // them unfought, and the run ended clean at zero deaths.
+                        float const dz = leader->GetPositionZ() - spot.z;
+                        if (dx * dx + dy * dy + dz * dz >= _huntRange * _huntRange)
                             continue;
                         // Once per boss per run. Standing on a boss is not the same
                         // thing as killing it - a party can walk onto a spot and lose
@@ -1606,7 +1644,11 @@ void PartyAssembler::AdvanceTrips()
                         BossSpot const& spot = (*bossSpots)[i];
                         float const dx = leader->GetPositionX() - spot.x;
                         float const dy = leader->GetPositionY() - spot.y;
-                        float const dist = std::sqrt(dx * dx + dy * dy);
+                        // Three-dimensional like the retirement above, and for the
+                        // stall watch too: descending a spiral toward a boss is
+                        // progress even on the ticks its flat distance widens.
+                        float const dz = leader->GetPositionZ() - spot.z;
+                        float const dist = std::sqrt(dx * dx + dy * dy + dz * dz);
                         if (!haveBest || dist < bestDist)
                         {
                             haveBest = true;
@@ -1710,7 +1752,8 @@ void PartyAssembler::AdvanceTrips()
                     {
                         float const dx = leader->GetPositionX() - spot.x;
                         float const dy = leader->GetPositionY() - spot.y;
-                        float const dist = std::sqrt(dx * dx + dy * dy);
+                        float const dz = leader->GetPositionZ() - spot.z;
+                        float const dist = std::sqrt(dx * dx + dy * dy + dz * dz);
                         // Only skip a target we are practically standing on. Skipping
                         // anything within a generous radius sent a party that had
                         // closed to 20 yards off towards a different pack, so it
