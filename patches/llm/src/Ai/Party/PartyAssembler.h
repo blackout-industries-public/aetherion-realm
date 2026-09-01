@@ -25,6 +25,7 @@
 #include <unordered_set>
 #include <vector>
 
+class Creature;
 class Group;
 class Player;
 
@@ -329,6 +330,9 @@ private:
         // 23 deaths and not one wipe to reset the list. A fight now gets a real
         // budget of ticks, and only running that budget out retires the boss.
         std::unordered_map<uint32, uint32> bossFightTicks;
+        // Whether this run has already put its leader in a siege vehicle, so the log
+        // says it once rather than every tick the raid spends riding.
+        bool boarded{false};
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.
@@ -543,6 +547,13 @@ private:
     // it. Steering moves the party's feet; this moves what they swing at, which in a
     // venue that spawns faster than it can be killed is the half that decides the run.
     void FocusEventTarget(Group* group, Player* onMap, Trip const& trip) const;
+
+    // Ulduar's siege yard. The module can fight Flame Leviathan from a vehicle but
+    // cannot get into one on its own: its boarding trigger waits for the bot's master
+    // to be seated first, which never happens in a raid of bots. Seating the leader is
+    // the whole bootstrap. Returns true when it wants the party walked somewhere.
+    Creature* NearestSiegeVehicle(Player* leader) const;
+    bool BoardSiegeVehicles(Player* leader, Trip& trip, float& x, float& y, float& z) const;
 
     // Stops the leader where it stands, or lets it walk again. Withholding the next
     // destination is not the same thing as holding still: the rpg engine keeps

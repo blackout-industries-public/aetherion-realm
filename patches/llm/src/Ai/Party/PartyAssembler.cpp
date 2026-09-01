@@ -285,9 +285,30 @@ namespace
         uint32 map;
         char const* why;
     };
+    // Nothing is refused outright any more. Ulduar sat here because its first boss is a
+    // vehicle fight and the module's implementation of it waits for a human: the trigger
+    // that boards a bot asks whether its MASTER is already sitting in one, and in a
+    // bot-only raid the leader has no master, so nobody was ever first. That is a
+    // bootstrap, not an impossibility - see BoardSiegeVehicles, which puts the leader in
+    // a seat and lets the module's own Flame Leviathan actions take it from there.
+    // The list is empty of real venues but not of entries: a zero-length array is a
+    // compiler extension rather than C++, and this build treats warnings as fatal. The
+    // sentinel is a map id no realm can hold.
     constexpr Unperformable kUnperformable[] = {
-        { 603, "its first boss is a vehicle fight no bot can start without a player" },
+        { 0xFFFFFFFF, "no venue is refused outright" },
     };
+
+    // Ulduar's siege yard. The instance summons these itself when the Leviathan
+    // encounter arms, and despawns them when it ends, so their mere presence is the
+    // signal that the vehicle phase is live - which is what keeps the steering below
+    // from hijacking the other thirteen bosses of the raid.
+    constexpr uint32 kMapUlduar = 603;
+    constexpr uint32 kUldVehicles[] = {
+        33060,  // NPC_SALVAGED_SIEGE_ENGINE
+        33109,  // NPC_SALVAGED_DEMOLISHER
+        33062,  // NPC_VEHICLE_CHOPPER
+    };
+    constexpr float kUldVehicleRange = 200.0f;
 
     char const* CannotPerform(uint32 mapId)
     {
@@ -1895,6 +1916,23 @@ void PartyAssembler::AdvanceTrips()
                 // those is ours to widen from here, so putting the party on top of the
                 // thing that matters is what actually finds it. Between waves the
                 // objective is the prison door every route ends at.
+                // Ulduar's siege yard, before anything else this tick: a raid on foot in
+                // front of Flame Leviathan has no fight to have. Self-limiting, because
+                // the vehicles only exist while that encounter is armed - once it ends
+                // the instance despawns them and the ordinary boss steering resumes for
+                // the thirteen bosses behind it.
+                {
+                    float vx, vy, vz;
+                    if (BoardSiegeVehicles(leader, trip, vx, vy, vz))
+                    {
+                        haveBest = true;
+                        bestX = vx;
+                        bestY = vy;
+                        bestZ = vz;
+                        bestBoss = kNoBossAim;
+                    }
+                }
+
                 if (IsEventVenue(trip.dungeonMap))
                 {
                     // What to hit, before where to stand: the party can be in exactly
@@ -2280,6 +2318,57 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
                stage != kTocProgressChallengeDead && stage != kTocProgressFinished;
     }
 
+    return false;
+}
+
+Creature* PartyAssembler::NearestSiegeVehicle(Player* leader) const
+{
+    Creature* best = nullptr;
+    for (uint32 entry : kUldVehicles)
+        if (Creature* found = leader->FindNearestCreature(entry, kUldVehicleRange, true))
+            if (!best || leader->GetDistance(found) < leader->GetDistance(best))
+                best = found;
+    return best;
+}
+
+bool PartyAssembler::BoardSiegeVehicles(Player* leader, Trip& trip, float& x, float& y,
+                                        float& z) const
+{
+    if (trip.dungeonMap != kMapUlduar || leader->GetVehicle())
+        return false;
+
+    Creature* veh = NearestSiegeVehicle(leader);
+    if (!veh)
+        return false;   // the vehicle phase is over, or was never armed
+
+    // Far off: hand the position back as the destination and let the ordinary steering
+    // walk them to the yard.
+    if (leader->GetDistance(veh) > INTERACTION_DISTANCE)
+    {
+        x = veh->GetPositionX();
+        y = veh->GetPositionY();
+        z = veh->GetPositionZ();
+        return true;
+    }
+
+    // Close enough to climb in. Boarded the way the module boards anything - through
+    // the vehicle's own spell click rather than a raw seat assignment - so whatever the
+    // vehicle wants to do to its passenger still happens.
+    leader->GetMotionMaster()->Clear();
+    leader->StopMoving();
+    veh->HandleSpellClick(leader);
+
+    if (leader->GetVehicle() && !trip.boarded)
+    {
+        trip.boarded = true;
+        // The whole point of doing this for one character. Every other member's master
+        // IS the leader, so a seated leader satisfies the module's own boarding trigger
+        // and the raid mounts itself from here.
+        LOG_INFO("playerbots",
+                 "Party assembler: {} takes a salvaged vehicle in {} - the raid can "
+                 "board now that someone went first",
+                 leader->GetName(), trip.name);
+    }
     return false;
 }
 
