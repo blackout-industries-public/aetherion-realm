@@ -173,6 +173,30 @@ namespace
     constexpr float kCosArthasX = 1921.0f;
     constexpr float kCosArthasY = 1287.0f;
     constexpr float kCosArthasZ = 143.0f;
+    // Arthas walks the city in acts and stops between them waiting to be spoken to -
+    // the gossip flag is how he says so, and each stop has exactly one answer, which is
+    // the DoAction its gossip option would have fired. Progress word on the left, the
+    // action that ends that wait on the right, both from culling_of_stratholme.h.
+    struct CosAct
+    {
+        uint32 progress;
+        uint32 action;
+    };
+    constexpr CosAct kCosActs[] = {
+        { 3,  2 },   // FINISHED_INTRO      -> ACTION_START_CITY
+        { 7,  4 },   // REACHED_TOWN_HALL   -> ACTION_START_TOWN_HALL
+        { 8,  5 },   // KILLED_EPOCH        -> ACTION_START_SECRET_PASSAGE
+        { 9,  6 },   // LAST_CITY           -> ACTION_START_LAST_CITY
+        { 10, 8 },   // BEFORE_MALGANIS     -> ACTION_START_MALGANIS
+    };
+
+    uint32 CosActionFor(uint32 progress)
+    {
+        for (CosAct const& act : kCosActs)
+            if (act.progress == progress)
+                return act.action;
+        return 0;
+    }
 
     // The Eye of Eternity, from the core's Nexus/EyeOfEternity/eye_of_eternity.h.
     // Malygos spawns flagged NON_ATTACKABLE and only clears it on EVENT_INTRO_LAND,
@@ -2222,9 +2246,24 @@ bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
         // ACTION_START_EVENT and puts the escort on the road. Asked only from a
         // standing start, because setting it twice would restart the intro over a city
         // already burning.
-        if (instance->GetData(kCosArthasEvent) != kCosNotStarted)
+        uint32 const progress = instance->GetData(kCosArthasEvent);
+        if (progress == kCosNotStarted)
+        {
+            instance->SetData(kCosArthasEvent, kCosStartIntro);
+            return true;
+        }
+
+        // Every act after the first is unlocked the same way a player unlocks it, one
+        // step below the conversation. Without this the escort finished its intro and
+        // stopped there for good - measured as stage 3, zero deaths, zero kills.
+        uint32 const action = CosActionFor(progress);
+        if (!action)
             return false;
-        instance->SetData(kCosArthasEvent, kCosStartIntro);
+        Creature* arthas = asker->FindNearestCreature(kCosArthas, kEventObjectiveRange, true);
+        if (!arthas || !arthas->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP) || !arthas->AI())
+            return false;
+        arthas->AI()->DoAction(action);
+        arthas->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
         return true;
     }
 
@@ -2317,7 +2356,15 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
         // exactly what "running" means here. The rung number is also the stall signal:
         // a city that stops advancing has lost its escort.
         stage = instance->GetData(kCosArthasEvent);
-        return stage > kCosNotStarted && stage < kCosFinished;
+        if (stage <= kCosNotStarted || stage >= kCosFinished)
+            return false;
+        // Walking counts as running; standing at the end of an act waiting to be asked
+        // does not. Reporting those pauses as "live" is what left the escort parked at
+        // stage 3 with the party watching: the ask only fires against a stopped event.
+        if (Creature* arthas = onMap->FindNearestCreature(kCosArthas, kEventObjectiveRange, true))
+            if (arthas->HasNpcFlag(UNIT_NPC_FLAG_GOSSIP) && CosActionFor(stage))
+                return false;
+        return true;
     }
 
     if (mapId == kMapTrialOfChampion)
