@@ -165,6 +165,14 @@ namespace
     constexpr uint32 kCosStartIntro = 2;         // COS_PROGRESS_START_INTRO
     constexpr uint32 kCosFinished = 11;          // COS_PROGRESS_FINISHED
     constexpr uint32 kCosArthas = 26499;         // NPC_ARTHAS - the escort itself
+    // Where Arthas waits before anybody wakes him, straight out of the creature table.
+    // The party lands about eight hundred yards from him - a city block, not a room -
+    // so the live-creature lookup that serves every other event venue finds nothing at
+    // all here and the run had no destination whatsoever. Walk to the spawn until he is
+    // close enough to see, then follow the man himself.
+    constexpr float kCosArthasX = 1921.0f;
+    constexpr float kCosArthasY = 1287.0f;
+    constexpr float kCosArthasZ = 143.0f;
 
     // The Eye of Eternity, from the core's Nexus/EyeOfEternity/eye_of_eternity.h.
     // Malygos spawns flagged NON_ATTACKABLE and only clears it on EVENT_INTRO_LAND,
@@ -1659,6 +1667,10 @@ void PartyAssembler::AdvanceTrips()
                     trip.eventStage = eventStage;
                     trip.stageTicks = 0;
                 }
+                else if (leader->IsInCombat())
+                    // A party swinging at something is not a stalled event, whatever the
+                    // counter says. Violet Hold spends whole waves on one stage number.
+                    trip.stageTicks = 0;
                 else
                     ++trip.stageTicks;
 
@@ -2512,7 +2524,14 @@ bool PartyAssembler::EventObjective(Player* onMap, Trip const& trip, float& x, f
             z = arthas->GetPositionZ();
             return true;
         }
-        return false;
+        // Out of sight, which at the arrival point he always is. Head for where he
+        // stands rather than giving up and wandering the city, which is exactly what
+        // returning false here bought: runs that entered, never found him, never fought
+        // anything, and timed out at zero deaths.
+        x = kCosArthasX;
+        y = kCosArthasY;
+        z = kCosArthasZ;
+        return true;
     }
 
     if (trip.dungeonMap == kMapTrialOfChampion)
