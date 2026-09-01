@@ -150,6 +150,18 @@ namespace
     // nothing else, so a request made at the wrong moment is simply ignored.
     // Restated from CrusadersColiseum/TrialOfTheChampion/trial_of_the_champion.h.
     constexpr uint32 kMapTrialOfChampion = 650;
+
+    // The Culling of Stratholme, read out of the core's own
+    // CullingOfStratholme/culling_of_stratholme.h rather than guessed: DATA_ARTHAS_EVENT
+    // is the first entry of `enum Data`, and the progress words are its COS_PROGRESS_*
+    // ladder. Nothing here can include that header - it belongs to a script library the
+    // module does not link - so the values are named and cited instead.
+    constexpr uint32 kMapCullingOfStratholme = 595;
+    constexpr uint32 kCosArthasEvent = 0;        // DATA_ARTHAS_EVENT
+    constexpr uint32 kCosNotStarted = 0;         // COS_PROGRESS_NOT_STARTED
+    constexpr uint32 kCosStartIntro = 2;         // COS_PROGRESS_START_INTRO
+    constexpr uint32 kCosFinished = 11;          // COS_PROGRESS_FINISHED
+    constexpr uint32 kCosArthas = 26499;         // NPC_ARTHAS - the escort itself
     constexpr uint32 kTocInstanceProgress = 4;   // DATA_INSTANCE_PROGRESS
     constexpr uint32 kTocGossipSelect = 6;       // DATA_ANNOUNCER_GOSSIP_SELECT
     constexpr uint32 kTocProgressInitial = 0;
@@ -213,6 +225,9 @@ namespace
     };
     constexpr VenueClock kVenueClocks[] = {
         { kMapVioletHold, 2 },
+        // The Culling is an escort across a whole city at Arthas's walking pace, with
+        // four bosses strung along it. It takes what a raid wing takes.
+        { kMapCullingOfStratholme, 2 },
     };
 
     uint32 VenueClockMult(uint32 mapId)
@@ -254,6 +269,14 @@ namespace
     };
     constexpr Unperformable kUnperformable[] = {
         { 603, "its first boss is a vehicle fight no bot can start without a player" },
+        // The Eye of Eternity is one encounter and that encounter is Malygos, who
+        // spends his opening on the wing out of reach and finishes the fight with the
+        // party riding summoned drakes. There is no partial credit to be had: one
+        // encounter means a run either kills him or achieves nothing. Measured across
+        // 29 runs and 425 bot-slots in a day: zero kills, 0.1 deaths a run - they are
+        // not losing the fight, they are never in one - and 29 separate parties spent
+        // a full fifteen-tick fight budget standing at his feet before giving up.
+        { 616, "its only boss opens out of reach and ends on drakes no bot can ride" },
     };
 
     char const* CannotPerform(uint32 mapId)
@@ -2113,6 +2136,21 @@ bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
         return true;
     }
 
+    if (trip.dungeonMap == kMapCullingOfStratholme)
+    {
+        // Normally a player walks up to Chromie, takes the errand and hunts five crates
+        // before Arthas will move. None of that is reachable from here, and none of it
+        // is the point - the city is what the run came for. So the same rung the crate
+        // hunt would eventually set is set directly, which hands Arthas his own
+        // ACTION_START_EVENT and puts the escort on the road. Asked only from a
+        // standing start, because setting it twice would restart the intro over a city
+        // already burning.
+        if (instance->GetData(kCosArthasEvent) != kCosNotStarted)
+            return false;
+        instance->SetData(kCosArthasEvent, kCosStartIntro);
+        return true;
+    }
+
     if (trip.dungeonMap == kMapHallsOfReflection)
     {
         // Setting the intro done a second time would advance the wave counter again
@@ -2147,7 +2185,7 @@ bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
 bool PartyAssembler::IsEventVenue(uint32 mapId)
 {
     return mapId == kMapVioletHold || mapId == kMapHallsOfReflection ||
-           mapId == kMapTrialOfChampion;
+           mapId == kMapTrialOfChampion || mapId == kMapCullingOfStratholme;
 }
 
 bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) const
@@ -2175,6 +2213,16 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
         // nothing ever winds back. Non-zero is running.
         stage = instance->GetData(kHorWaveNumberData);
         return stage != 0;
+    }
+
+    if (mapId == kMapCullingOfStratholme)
+    {
+        // One ladder from not-started to finished, climbed by the escort itself. Any
+        // rung between the ends means Arthas is walking and waves are coming, which is
+        // exactly what "running" means here. The rung number is also the stall signal:
+        // a city that stops advancing has lost its escort.
+        stage = instance->GetData(kCosArthasEvent);
+        return stage > kCosNotStarted && stage < kCosFinished;
     }
 
     if (mapId == kMapTrialOfChampion)
@@ -2260,6 +2308,24 @@ bool PartyAssembler::EventObjective(Player* onMap, Trip const& trip, float& x, f
         y = kVhMusterY;
         z = kVhMusterZ;
         return true;
+    }
+
+    if (trip.dungeonMap == kMapCullingOfStratholme)
+    {
+        // Follow Arthas, which is the entire tactic this instance has ever had. Not one
+        // of its bosses is a spawn on the floor - Meathook, Salramm and Epoch are all
+        // summoned as the escort reaches them, so the boss steering that carries every
+        // other venue has literally nothing to aim at here and 50 runs walked the city
+        // at random killing nothing. He is where the waves arrive and where the bosses
+        // appear, so his feet are the only destination worth having.
+        if (Creature* arthas = onMap->FindNearestCreature(kCosArthas, kEventObjectiveRange, true))
+        {
+            x = arthas->GetPositionX();
+            y = arthas->GetPositionY();
+            z = arthas->GetPositionZ();
+            return true;
+        }
+        return false;
     }
 
     if (trip.dungeonMap == kMapTrialOfChampion)
