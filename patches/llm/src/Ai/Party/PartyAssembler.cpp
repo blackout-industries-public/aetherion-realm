@@ -162,6 +162,21 @@ namespace
     constexpr uint32 kCosStartIntro = 2;         // COS_PROGRESS_START_INTRO
     constexpr uint32 kCosFinished = 11;          // COS_PROGRESS_FINISHED
     constexpr uint32 kCosArthas = 26499;         // NPC_ARTHAS - the escort itself
+
+    // The Eye of Eternity, from the core's Nexus/EyeOfEternity/eye_of_eternity.h.
+    // Malygos spawns flagged NON_ATTACKABLE and only clears it on EVENT_INTRO_LAND,
+    // which is scheduled from JustEngagedWith - so nothing a party does on its own can
+    // ever start him. What starts him is a player USING the Focusing Iris, which fires
+    // this event id; the instance then picks the nearest player and calls AttackStart
+    // on the boss. Measured before this was understood: 29 runs, zero kills and 0.1
+    // deaths a run at item levels comfortably over the floor - they were never in a
+    // fight at all. His phase-3 drakes are a separate matter and the module already
+    // implements them (RaidEoEStrategy: "eoe fly drake", "eoe drake attack"), with no
+    // master gate of the kind that stops Ulduar.
+    constexpr uint32 kMapEyeOfEternity = 616;
+    constexpr uint32 kEoeIrisActivated = 20711;   // EVENT_IRIS_ACTIVATED
+    constexpr uint32 kEoeMalygosBoss = 0;         // DATA_MALYGOS, the only boss state
+    constexpr uint32 kEoeMalygos = 28859;         // the dragon himself, for steering
     constexpr uint32 kTocInstanceProgress = 4;   // DATA_INSTANCE_PROGRESS
     constexpr uint32 kTocGossipSelect = 6;       // DATA_ANNOUNCER_GOSSIP_SELECT
     constexpr uint32 kTocProgressInitial = 0;
@@ -269,14 +284,6 @@ namespace
     };
     constexpr Unperformable kUnperformable[] = {
         { 603, "its first boss is a vehicle fight no bot can start without a player" },
-        // The Eye of Eternity is one encounter and that encounter is Malygos, who
-        // spends his opening on the wing out of reach and finishes the fight with the
-        // party riding summoned drakes. There is no partial credit to be had: one
-        // encounter means a run either kills him or achieves nothing. Measured across
-        // 29 runs and 425 bot-slots in a day: zero kills, 0.1 deaths a run - they are
-        // not losing the fight, they are never in one - and 29 separate parties spent
-        // a full fifteen-tick fight budget standing at his feet before giving up.
-        { 616, "its only boss opens out of reach and ends on drakes no bot can ride" },
     };
 
     char const* CannotPerform(uint32 mapId)
@@ -2136,6 +2143,19 @@ bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
         return true;
     }
 
+    if (trip.dungeonMap == kMapEyeOfEternity)
+    {
+        // Turning the Focusing Iris, one step further down than the click. The instance
+        // answers this event by picking the nearest player within 250 yards and setting
+        // Malygos on them, which is exactly what the gameobject's own use does - and
+        // unlike the gameobject it does not care whether a bot knows how to click.
+        // Only from a standing start: he is woken once.
+        if (instance->GetBossState(kEoeMalygosBoss) != NOT_STARTED)
+            return false;
+        instance->ProcessEvent(nullptr, kEoeIrisActivated);
+        return true;
+    }
+
     if (trip.dungeonMap == kMapCullingOfStratholme)
     {
         // Normally a player walks up to Chromie, takes the errand and hunts five crates
@@ -2185,7 +2205,8 @@ bool PartyAssembler::StartVenueEvent(Player* asker, Trip const& trip)
 bool PartyAssembler::IsEventVenue(uint32 mapId)
 {
     return mapId == kMapVioletHold || mapId == kMapHallsOfReflection ||
-           mapId == kMapTrialOfChampion || mapId == kMapCullingOfStratholme;
+           mapId == kMapTrialOfChampion || mapId == kMapCullingOfStratholme ||
+           mapId == kMapEyeOfEternity;
 }
 
 bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) const
@@ -2213,6 +2234,15 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
         // nothing ever winds back. Non-zero is running.
         stage = instance->GetData(kHorWaveNumberData);
         return stage != 0;
+    }
+
+    if (mapId == kMapEyeOfEternity)
+    {
+        // One encounter, so its boss state is the whole answer. Stage doubles as the
+        // stall signal: a Malygos who never leaves NOT_STARTED was never woken, and one
+        // stuck IN_PROGRESS for the whole clock is a fight going nowhere.
+        stage = instance->GetBossState(kEoeMalygosBoss);
+        return stage == IN_PROGRESS;
     }
 
     if (mapId == kMapCullingOfStratholme)
@@ -2308,6 +2338,21 @@ bool PartyAssembler::EventObjective(Player* onMap, Trip const& trip, float& x, f
         y = kVhMusterY;
         z = kVhMusterZ;
         return true;
+    }
+
+    if (trip.dungeonMap == kMapEyeOfEternity)
+    {
+        // Malygos moves through all three phases - hovering, centred, and finally
+        // fought from drake-back - so his live position is the only honest destination.
+        // The spawn row would point at where he waits before anyone wakes him.
+        if (Creature* malygos = onMap->FindNearestCreature(kEoeMalygos, kEventObjectiveRange, true))
+        {
+            x = malygos->GetPositionX();
+            y = malygos->GetPositionY();
+            z = malygos->GetPositionZ();
+            return true;
+        }
+        return false;
     }
 
     if (trip.dungeonMap == kMapCullingOfStratholme)
