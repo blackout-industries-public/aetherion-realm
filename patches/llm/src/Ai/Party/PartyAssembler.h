@@ -539,6 +539,11 @@ private:
     bool EventObjective(Player* onMap, Trip const& trip, float& x, float& y,
                         float& z) const;
 
+    // Names the one target that ends the current wave, by putting the party's skull on
+    // it. Steering moves the party's feet; this moves what they swing at, which in a
+    // venue that spawns faster than it can be killed is the half that decides the run.
+    void FocusEventTarget(Group* group, Player* onMap, Trip const& trip) const;
+
     // Stops the leader where it stands, or lets it walk again. Withholding the next
     // destination is not the same thing as holding still: the rpg engine keeps
     // calling MoveFarTo against the destination it already has, every bot tick,

@@ -109,6 +109,9 @@ namespace
     constexpr uint32 kVhPortalKeeper1 = 30695;
     constexpr uint32 kVhPortalKeeper2 = 30893;
     constexpr uint32 kVhPortal = 31011;
+    // Raid target index 7. The module's own AttackersValue reads this slot, and the
+    // Forge of Souls tactics write it, so it is the agreed way to say "kill this one".
+    constexpr uint8 kSkullIcon = 7;
     // The six cell bosses, two of which a run meets. Worth naming even though their
     // cells are exactly what this stopped steering at, because a released one does not
     // wait at its door: StartBossEncounter opens the cell and walks it out to a fixed
@@ -1894,6 +1897,10 @@ void PartyAssembler::AdvanceTrips()
                 // objective is the prison door every route ends at.
                 if (IsEventVenue(trip.dungeonMap))
                 {
+                    // What to hit, before where to stand: the party can be in exactly
+                    // the right place and still lose the wave by spreading its damage.
+                    FocusEventTarget(group, leader, trip);
+
                     float ex, ey, ez;
                     if (EventObjective(leader, trip, ex, ey, ez))
                     {
@@ -2238,11 +2245,19 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
 
     if (mapId == kMapEyeOfEternity)
     {
-        // One encounter, so its boss state is the whole answer. Stage doubles as the
-        // stall signal: a Malygos who never leaves NOT_STARTED was never woken, and one
-        // stuck IN_PROGRESS for the whole clock is a fight going nowhere.
-        stage = instance->GetBossState(kEoeMalygosBoss);
-        return stage == IN_PROGRESS;
+        // Health remaining, coarsely, rather than the boss state. State was the obvious
+        // choice and it was wrong twice over: it sits on IN_PROGRESS for the whole
+        // fight, so a stalled encounter never trips the stall watch - one run burned
+        // 230 minutes that way - and it drops back to NOT_STARTED every time the party
+        // wipes out of the instance, which reads as fresh progress and rearms the ask.
+        // Damage dealt is the honest measure of a fight going somewhere.
+        if (Creature* malygos = onMap->FindNearestCreature(kEoeMalygos, kEventObjectiveRange, true))
+        {
+            stage = 100 - std::min<uint32>(100, malygos->GetHealthPct());
+            return instance->GetBossState(kEoeMalygosBoss) == IN_PROGRESS;
+        }
+        stage = 0;
+        return false;
     }
 
     if (mapId == kMapCullingOfStratholme)
@@ -2266,6 +2281,44 @@ bool PartyAssembler::VenueEventLive(Player* onMap, uint32 mapId, uint32& stage) 
     }
 
     return false;
+}
+
+void PartyAssembler::FocusEventTarget(Group* group, Player* onMap, Trip const& trip) const
+{
+    // Violet Hold is lost to arithmetic, not to tactics: 153 deaths against 43 kills in
+    // two hours, stalling at wave one to three of twelve, while the venues that work
+    // trade about one for one. The reason is that a portal keeps pouring adds out until
+    // the thing channelling it dies, and a bot picks its own target by proximity - so
+    // five bots fight five different adds while the keeper stands untouched and the
+    // portal spawns five more. The module already reads the skull icon when it chooses
+    // whom to attack (AttackersValue), and the Forge of Souls tactics set it the same
+    // way, so naming the one target that ends the wave is all this needs to do.
+    if (trip.dungeonMap != kMapVioletHold || !group || !onMap)
+        return;
+
+    Creature* focus = nullptr;
+    auto pick = [&](uint32 entry) {
+        if (focus)
+            return;
+        Creature* who = onMap->FindNearestCreature(entry, kEventObjectiveRange, true);
+        if (who && onMap->IsValidAttackTarget(who))
+            focus = who;
+    };
+
+    // The order the encounter is actually won in, highest first.
+    pick(kVhCyanigosa);
+    for (uint32 entry : kVhBosses)
+        pick(entry);
+    pick(kVhSaboteur);
+    pick(kVhPortalGuardian);
+    pick(kVhPortalKeeper1);
+    pick(kVhPortalKeeper2);
+
+    if (!focus)
+        return;
+    // Only when it changes: setting an icon broadcasts to the whole party every tick.
+    if (group->GetTargetIcon(kSkullIcon) != focus->GetGUID())
+        group->SetTargetIcon(kSkullIcon, onMap->GetGUID(), focus->GetGUID());
 }
 
 Player* PartyAssembler::PickWarden(Group* group, Trip& trip) const
