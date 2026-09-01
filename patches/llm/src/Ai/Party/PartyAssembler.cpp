@@ -6,6 +6,7 @@
 #include "Group.h"
 #include "GroupMgr.h"
 #include "DatabaseEnv.h"
+#include "DBCEnums.h"   // DEFAULT_MAX_LEVEL: the gear test only outfits the cap
 #include "DBCStores.h"
 #include "InstanceScript.h"
 #include "LFGMgr.h"
@@ -21,6 +22,7 @@
 #include "ObjectMgr.h"   // DungeonEncounterList: which bit of the mask is which boss
 #include "Player.h"
 #include "PlayerbotAI.h"   // IsRealPlayer
+#include "PlayerbotFactory.h"   // AutoGear: the gear-test cohort is outfitted by the module's own factory
 #include "Playerbots.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -376,6 +378,11 @@ void PartyAssembler::LoadConfig()
     _perTick = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.PerTick", 3);
     _minLevel = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.MinLevel", 15);
     _levelSpread = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.LevelSpread", 4);
+    // Off unless the operator asks for it: this hands out gear nobody earned,
+    // which is only ever acceptable as a measurement with an end date.
+    _gearTestShare = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.GearTestShare", 0);
+    _gearTestIlvl = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.GearTestIlvl", 200);
+    _gearTestPerTick = sConfigMgr->GetOption<int32>("AiPlayerbot.Party.GearTestPerTick", 5);
     _teleport = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.Teleport", true);
     _sameMapOnly = sConfigMgr->GetOption<bool>("AiPlayerbot.Party.SameMapOnly", true);
     _arriveRange = sConfigMgr->GetOption<float>("AiPlayerbot.Party.ArriveRange", 60.0f);
@@ -1080,6 +1087,49 @@ uint32 PartyAssembler::SendGroupOutside(Group* group, uint32 dungeonMap)
         ++moved;
     }
     return moved;
+}
+
+void PartyAssembler::GearTestPass()
+{
+    if (!_gearTestShare)
+        return;
+
+    uint32 done = 0;
+    for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+         it != sRandomPlayerbotMgr.GetPlayerBotsEnd() && done < _gearTestPerTick; ++it)
+    {
+        Player* bot = it->second;
+        if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported())
+            continue;
+        uint32 const low = bot->GetGUID().GetCounter();
+        if (low % _gearTestShare || _gearTested.count(low))
+            continue;
+        // Only the level cap. The gear floors this experiment is meant to clear
+        // are all end-game ones, and re-rolling a levelling bot's kit would
+        // measure nothing.
+        if (bot->GetLevel() < DEFAULT_MAX_LEVEL)
+            continue;
+        // Never mid-run and never mid-fight: the refit destroys what it replaces,
+        // and stripping a character standing in a boss room would corrupt the very
+        // outcome this experiment exists to read.
+        if (bot->IsInCombat() || (bot->GetMap() && bot->GetMap()->IsDungeon()))
+            continue;
+
+        PlayerbotFactory::DestroyEquippedGear(bot);
+        PlayerbotFactory::AutoGear(bot, ITEM_QUALITY_EPIC, _gearTestIlvl, /*incremental*/ false);
+
+        _gearTested.insert(low);
+        CharacterDatabase.Execute(
+            "INSERT IGNORE INTO aetherion_geartest (guid, name, at, ilvl) "
+            "VALUES ({}, '{}', UNIX_TIMESTAMP(), {})",
+            low, Sql(bot->GetName()), _gearTestIlvl);
+        ++done;
+    }
+
+    if (done)
+        LOG_INFO("playerbots",
+                 "Gear test: outfitted {} in epics at ilvl {} - {} of the cohort so far",
+                 done, _gearTestIlvl, uint32(_gearTested.size()));
 }
 
 void PartyAssembler::SweepStrandedBots()
@@ -3046,6 +3096,20 @@ void PartyAssembler::EnsureTelemetryTables()
     // Run history is DURABLE - never dropped on boot, unlike the live mirrors
     // above. It answers "why did that run fail" days later: identity, gearing
     // at formation, how far it got, and how it ended.
+    // Who the gear experiment outfitted, and when. Durable because the analysis
+    // needs to tell a cohort run from a control run long after the fact, and
+    // because reading it back is what stops a restart re-rolling the same bots.
+    CharacterDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS aetherion_geartest ("
+        " guid INT UNSIGNED NOT NULL PRIMARY KEY,"
+        " name VARCHAR(24) NOT NULL,"
+        " at INT UNSIGNED NOT NULL,"
+        " ilvl SMALLINT UNSIGNED NOT NULL)");
+    if (QueryResult geared = CharacterDatabase.Query("SELECT guid FROM aetherion_geartest"))
+        do
+            _gearTested.insert((*geared)[0].Get<uint32>());
+        while (geared->NextRow());
+
     CharacterDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS aetherion_run_history ("
         " id INT UNSIGNED NOT NULL PRIMARY KEY,"
@@ -4399,6 +4463,7 @@ void PartyAssembler::Tick(uint32 diff)
     _timer = 0;
 
     ReapOrphanGroups();
+    GearTestPass();
 
     // Drop parties that have since disbanded, so the cap reflects reality.
     for (auto it = _assembled.begin(); it != _assembled.end();)

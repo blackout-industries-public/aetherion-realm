@@ -386,6 +386,18 @@ private:
     void ReapOrphanGroups();
     std::unordered_map<uint32, uint32> _orphanStrikes;
 
+    // A controlled gear experiment: outfit a deterministic share of the realm in
+    // epics and watch whether progression follows. Membership is the character's
+    // own guid modulo the share, so the cohort is reproducible, needs no roster,
+    // and is trivially checkable from SQL months later. The table is the record
+    // of who was outfitted and when - it doubles as the pass's own idempotency
+    // marker, so restarts never re-gear anyone.
+    void GearTestPass();
+    std::unordered_set<uint32> _gearTested;
+    uint32 _gearTestShare{0};    // 0 disables; 4 means one bot in four
+    uint32 _gearTestIlvl{200};
+    uint32 _gearTestPerTick{5};
+
     // Hands an adopted run's bots back to the human (or sets them free when
     // none is left): master restored, strategies rebuilt.
     void ReleaseAdopted(Group* group);
