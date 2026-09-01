@@ -202,10 +202,6 @@ private:
     // which is the signal to fall back to "walk until the clock stops".
     static uint32 EncounterCount(uint32 mapId, uint8 difficulty);
     static uint32 CountBits(uint32 mask);
-    // Whether the instance's own completed-encounter mask says the boss standing at
-    // boss-list index `index` is dead. The mask is the only authority on that; a
-    // party's position next to it says nothing at all.
-    bool BossIsDown(Trip const& trip, uint32 index) const;
 
 
     // How a real group gets to a dungeon: one player travels, everyone else waits,
@@ -497,6 +493,10 @@ private:
     // Also retires the boss positions the mask says are done, which is what lets a
     // party that inherits a spent lockout walk past the corpses to what is left.
     void NoteKills(Group* group, Player* leader, Trip& trip);
+    // Whether the instance's own completed-encounter mask says the boss standing at
+    // boss-list index `index` is dead. The mask is the only authority on that; a
+    // party's position next to it says nothing at all.
+    bool BossIsDown(Trip const& trip, uint32 index) const;
 
     // Everything a party inside an instance needs to still be a party next tick:
     // dead members put back on their feet once the fight is over, members that ended
