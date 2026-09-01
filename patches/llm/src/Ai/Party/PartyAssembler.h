@@ -202,6 +202,10 @@ private:
     // which is the signal to fall back to "walk until the clock stops".
     static uint32 EncounterCount(uint32 mapId, uint8 difficulty);
     static uint32 CountBits(uint32 mask);
+    // Whether the instance's own completed-encounter mask says the boss standing at
+    // boss-list index `index` is dead. The mask is the only authority on that; a
+    // party's position next to it says nothing at all.
+    bool BossIsDown(Trip const& trip, uint32 index) const;
 
 
     // How a real group gets to a dungeon: one player travels, everyone else waits,
@@ -318,6 +322,17 @@ private:
         // a ninety-minute clock in the trash with an empty list - 102 minutes and 0.2
         // bosses a run across six runs.
         std::unordered_set<uint32> unreachableBosses;
+        // Bosses the party has stood next to, for telemetry only. Reaching is not
+        // beating, so this set steers nothing - it exists so the log can still say
+        // a party found its boss even when the boss then killed them.
+        std::unordered_set<uint32> reachedBosses;
+        // Ticks spent standing next to each still-living boss. Retirement used to
+        // happen on arrival, which told the run a boss was finished the moment
+        // somebody touched its doorstep: 35 Forge of Souls runs reached Bronjahm,
+        // struck him off unfought, and ground trash for up to two hours with 8 to
+        // 23 deaths and not one wipe to reset the list. A fight now gets a real
+        // budget of ticks, and only running that budget out retires the boss.
+        std::unordered_map<uint32, uint32> bossFightTicks;
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.

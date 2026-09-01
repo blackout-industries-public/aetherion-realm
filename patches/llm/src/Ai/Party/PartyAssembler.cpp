@@ -185,6 +185,12 @@ namespace
     // ticks of failing to clear it is four minutes of a walk that is going nowhere.
     constexpr float kAimProgressYards = 5.0f;
     constexpr uint32 kAimStallTicks = 6;
+
+    // How long a party may stand toe to toe with a living boss before the run
+    // accepts it cannot win this one. Generous on purpose: at a minute a tick this
+    // is a quarter of an hour of trying, which is a real attempt rather than a
+    // formality, and the wipe watch ends a hopeless fight long before it expires.
+    constexpr uint32 kBossFightTicks = 15;
     // Ground lost that means the party was moved rather than that it failed to walk -
     // three ticks' worth, so ordinary jitter around a target does not clear the count.
     constexpr float kAimResetYards = 60.0f;
@@ -1698,16 +1704,32 @@ void PartyAssembler::AdvanceTrips()
                         float const dz = leader->GetPositionZ() - spot.z;
                         if (dx * dx + dy * dy + dz * dz >= _huntRange * _huntRange)
                             continue;
-                        // Once per boss per run. Standing on a boss is not the same
-                        // thing as killing it - a party can walk onto a spot and lose
-                        // the fight - so this only retires the walking target. What
-                        // actually died is read from the instance's own mask.
-                        if (trip.visitedBosses.insert(i).second)
+
+                        if (trip.reachedBosses.insert(i).second)
                             LOG_INFO("playerbots",
                                      "Party assembler: {}'s party reaches boss {} of "
                                      "{} in {}",
-                                     leader->GetName(), uint32(trip.visitedBosses.size()),
+                                     leader->GetName(), uint32(trip.reachedBosses.size()),
                                      uint32(bossSpots->size()), trip.name);
+
+                        // Arrival is not victory. Retirement belongs to the instance
+                        // mask - NoteKills strikes off whatever it says is dead - so
+                        // all this does is give the fight a budget and give up only
+                        // when that budget is spent. Retiring on arrival is what made
+                        // the Forge of Souls unwinnable: the party walked to Bronjahm,
+                        // struck him off before a blow landed, and spent the rest of a
+                        // two-hour clock in the trash while he stood there alive.
+                        if (BossIsDown(trip, i))
+                            continue;
+                        if (++trip.bossFightTicks[i] > kBossFightTicks)
+                        {
+                            trip.unreachableBosses.insert(i);
+                            trip.visitedBosses.insert(i);
+                            LOG_INFO("playerbots",
+                                     "Party assembler: {}'s party cannot bring down a "
+                                     "boss in {} after {} ticks at its feet - moving on",
+                                     leader->GetName(), trip.name, kBossFightTicks);
+                        }
                     }
 
                 // Head for the nearest boss nobody has been to yet. Members follow the
@@ -1911,7 +1933,11 @@ void PartyAssembler::AdvanceTrips()
                     // hour inside apiece without a single kill or even a wipe. Give up
                     // on that one and try the next. Only counted out of combat - a
                     // party holding still because it is fighting is not stuck.
-                    if (bestBoss != kNoBossAim && !fighting)
+                    // Only while still walking. A party standing at its boss between
+                    // pulls has not failed to reach anything, and counting those ticks
+                    // as a failure to walk would retire the boss out from under the
+                    // fight budget the arrival check just granted it.
+                    if (bestBoss != kNoBossAim && !fighting && bestDist > _huntRange)
                     {
                         // Closing on it resets the count, and so does being much
                         // further from it than the last reading: a wipe reseats the
@@ -2490,6 +2516,22 @@ uint32 PartyAssembler::EncounterCount(uint32 mapId, uint8 difficulty)
 {
     DungeonEncounterList const* list = EncountersFor(mapId, difficulty);
     return list ? uint32(list->size()) : 0u;
+}
+
+bool PartyAssembler::BossIsDown(Trip const& trip, uint32 index) const
+{
+    auto const spots = _bosses.find(trip.dungeonMap);
+    if (spots == _bosses.end() || index >= spots->second.size())
+        return false;
+
+    DungeonEncounterList const* encounters = EncountersFor(trip.dungeonMap, trip.difficulty);
+    if (!encounters)
+        return false;
+
+    for (DungeonEncounter const* encounter : *encounters)
+        if (encounter->creditEntry == spots->second[index].creditEntry)
+            return (EncounterBit(encounter) & trip.killMask) != 0;
+    return false;
 }
 
 void PartyAssembler::NoteKills(Group* group, Player* leader, Trip& trip)
