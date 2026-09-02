@@ -91,20 +91,41 @@ const LOOT_RECENT = `
 `
 
 // Realm-lifetime boss board: encounters ever downed per map, out of the seeded
-// dungeonencounter_dbc total. BIT_OR across every instance save is "ever", which is
-// what a lifetime board should read.
+// dungeonencounter_dbc total.
+//
+// This used to read BIT_OR over `instance`, which looks like history and is not: that
+// table is LIVE lockout state and the core prunes it on reset, so every clear quietly
+// vanished a few days later and a "lifetime" board kept shrinking. Measured at the time
+// of the rewrite - the pruned table claimed 219 encounters across 29 maps, while our own
+// kill ledger held 3,180 kills across 205 bosses and 50 maps, and Shadowfang Keep read
+// zero there against eight bosses actually killed.
+//
+// aetherion_run_kills is the durable record: one row stamped at the moment of the kill,
+// which is the only version of this that survives a reset. The old table is still
+// consulted as a floor rather than dropped, because it can carry kills from before the
+// ledger existed, and a lifetime board should never go backwards.
 const BOSS_BOARD = `
-  SELECT i.map, i.difficulty,
-         COALESCE(MIN(d.name), CONCAT('Map ', i.map)) AS dungeon,
-         BIT_COUNT(BIT_OR(i.completedEncounters)) AS downed,
+  SELECT m.map, m.difficulty,
+         COALESCE(d.name, CONCAT('Map ', m.map)) AS dungeon,
+         GREATEST(COALESCE(led.downed, 0), COALESCE(live.downed, 0)) AS downed,
          enc.total AS total
-  FROM acore_characters.instance i
+  FROM (SELECT map, difficulty FROM acore_characters.aetherion_run_kills
+        UNION
+        SELECT map, difficulty FROM acore_characters.instance) m
   JOIN (SELECT MapID, Difficulty, COUNT(*) AS total
         FROM acore_world.dungeonencounter_dbc GROUP BY MapID, Difficulty) enc
-    ON enc.MapID = i.map AND enc.Difficulty = i.difficulty
+    ON enc.MapID = m.map AND enc.Difficulty = m.difficulty
+  LEFT JOIN (SELECT map, difficulty, COUNT(DISTINCT encounter_index) AS downed
+             FROM acore_characters.aetherion_run_kills
+             GROUP BY map, difficulty) led
+    ON led.map = m.map AND led.difficulty = m.difficulty
+  LEFT JOIN (SELECT map, difficulty, BIT_COUNT(BIT_OR(completedEncounters)) AS downed
+             FROM acore_characters.instance
+             GROUP BY map, difficulty) live
+    ON live.map = m.map AND live.difficulty = m.difficulty
   LEFT JOIN (SELECT map_id, MIN(comment) AS name
-             FROM acore_world.dungeon_access_template GROUP BY map_id) d ON d.map_id = i.map
-  GROUP BY i.map, i.difficulty, enc.total
+             FROM acore_world.dungeon_access_template GROUP BY map_id) d
+    ON d.map_id = m.map
 `
 
 // Clear rate per dungeon. Only maps with a few runs behind them, so one lucky party
