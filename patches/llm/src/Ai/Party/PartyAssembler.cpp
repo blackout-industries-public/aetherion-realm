@@ -341,6 +341,28 @@ namespace
         33062,  // NPC_VEHICLE_CHOPPER
     };
     constexpr float kUldVehicleRange = 200.0f;
+    // The rest of the yard, from boss_flame_leviathan.cpp and instance_ulduar.cpp:
+    // the two colossi that must die before the Leviathan will so much as speak
+    // (his start loop waits while one lives within 250 yards), the instance data
+    // word that summons the salvaged vehicles and the mode that puts them at the
+    // start positions, and where he parks so a vehicle can be driven into his
+    // start range. Nothing here is guessed; each is the script's own number.
+    constexpr uint32 kUldColossus = 33237;         // NPC_ULDUAR_COLOSSUS
+    constexpr uint32 kUldFlameLeviathan = 33113;   // his creature entry
+    constexpr uint32 kUldVehicleSpawn = 100;       // DATA_VEHICLE_SPAWN
+    constexpr uint32 kUldVehiclePosStart = 0;      // VEHICLE_POS_START
+    constexpr float kUldYardX = -784.4f;           // a siege engine's start slot
+    constexpr float kUldYardY = -33.3f;
+    constexpr float kUldYardZ = 429.9f;
+    constexpr float kUldLeviathanX = 322.4f;       // homePos
+    constexpr float kUldLeviathanY = -14.5f;
+    constexpr float kUldLeviathanZ = 409.8f;
+
+    // The Oculus, from the module's own OCTriggers.h: the ruby essence is the item a
+    // player uses to summon and mount a drake, and this is the spell it casts.
+    constexpr uint32 kMapOculus = 578;
+    constexpr uint32 kOcRubyEssenceItem = 37860;   // ITEM_RUBY_ESSENCE
+    constexpr uint32 kOcRubyEssenceSpell = 49462;  // SPELL_RUBY_ESSENCE
 
     char const* CannotPerform(uint32 mapId)
     {
@@ -702,10 +724,14 @@ void PartyAssembler::LoadBossPositions()
     // The credit entry travels with the position. It is the only thing that ties a
     // spot on the floor to a bit in the instance's completed-encounter mask, and
     // without that tie a dead boss can only be recognised by walking onto its corpse.
+    // OrderIndex rides along from the seeded DBC table. The core's own struct
+    // comments that column out, so the database is the only place it survives.
     QueryResult result = WorldDatabase.Query(
-        "SELECT c.map, c.position_x, c.position_y, c.position_z, ie.creditEntry "
+        "SELECT c.map, c.position_x, c.position_y, c.position_z, ie.creditEntry, "
+        "COALESCE(MIN(de.OrderIndex), 0) "
         "FROM instance_encounters ie "
         "JOIN creature c ON c.id = ie.creditEntry "
+        "LEFT JOIN dungeonencounter_dbc de ON de.ID = ie.entry "
         "WHERE ie.creditType = 0 "
         "GROUP BY c.map, c.position_x, c.position_y, c.position_z, ie.creditEntry");
     if (!result)
@@ -716,7 +742,8 @@ void PartyAssembler::LoadBossPositions()
         Field* f = result->Fetch();
         uint32 const map = f[0].Get<uint32>();
         _bosses[map].push_back(BossSpot{f[1].Get<float>(), f[2].Get<float>(),
-                                        f[3].Get<float>(), f[4].Get<uint32>()});
+                                        f[3].Get<float>(), f[4].Get<uint32>(),
+                                        f[5].Get<int32>()});
     } while (result->NextRow());
 
     // How long the place actually takes to cross. Measured on this realm: a party
@@ -1858,6 +1885,7 @@ void PartyAssembler::AdvanceTrips()
                 bool haveBest = false;
                 float bestX = 0.0f, bestY = 0.0f, bestZ = 0.0f;
                 float bestDist = 0.0f;
+                int32 bestOrder = 0;
                 uint32 bestBoss = kNoBossAim;
                 if (bossSpots)
                     for (uint32 i = 0; i < bossSpots->size(); ++i)
@@ -1872,7 +1900,15 @@ void PartyAssembler::AdvanceTrips()
                         // progress even on the ticks its flat distance widens.
                         float const dz = leader->GetPositionZ() - spot.z;
                         float const dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                        if (!haveBest || dist < bestDist)
+                        // Encounter order first, distance second. "Nearest" is the
+                        // right rule for a corridor and the wrong one for a hub: from
+                        // the Naxxramas entry Gothik and the Horsemen are as near as
+                        // Anub'Rekhan and stand behind two closed gates, and 15 raids
+                        // in a day struck them off unreachable one six-tick stall at a
+                        // time - 544 bot-hours, two kills. Walking the wings in the
+                        // order the place was built for never aims through a door.
+                        if (!haveBest || spot.order < bestOrder ||
+                            (spot.order == bestOrder && dist < bestDist))
                         {
                             haveBest = true;
                             bestX = spot.x;
@@ -1880,6 +1916,7 @@ void PartyAssembler::AdvanceTrips()
                             bestZ = spot.z;
                             bestDist = dist;
                             bestBoss = i;
+                            bestOrder = spot.order;
                         }
                     }
 
@@ -1910,6 +1947,15 @@ void PartyAssembler::AdvanceTrips()
                     // of an hour to watch it fail again.
                     nothingLeft = (!eventLive && trip.nudges >= kVenueNudges) ||
                                   trip.stageTicks > kEventStallTicks;
+                // Ulduar keeps its other thirteen bosses behind a passage door that only
+                // the Leviathan's death opens. A raid that has given up on him has
+                // nothing left it can walk to, whatever the list still says - and
+                // letting the list have its way cost 142 six-tick stalls in one raid.
+                if (trip.dungeonMap == kMapUlduar)
+                    if (uint32 const fl = BossIndexFor(kMapUlduar, kUldFlameLeviathan);
+                        fl != kNoBossAim && trip.unreachableBosses.count(fl) &&
+                        !BossIsDown(trip, fl))
+                        nothingLeft = true;
                 if (nothingLeft)
                 {
                     bool const cleared = trip.encounters &&
@@ -1967,6 +2013,10 @@ void PartyAssembler::AdvanceTrips()
                         bestZ = vz;
                         bestBoss = kNoBossAim;
                     }
+                    // The Oculus needs no destination of its own - the boss list
+                    // already points at the next platform - only a leader on a drake
+                    // so the party can follow it into the air.
+                    OculusDrakes(leader, trip);
                 }
 
                 if (IsEventVenue(trip.dungeonMap))
@@ -2084,9 +2134,28 @@ void PartyAssembler::AdvanceTrips()
                     // Only when it actually changed. Re-issuing the same destination
                     // restarts the mover's no-progress clock, which is what decides
                     // whether it should fall back to a teleport.
-                    if (std::fabs(bestX - trip.aimX) > 1.0f ||
-                        std::fabs(bestY - trip.aimY) > 1.0f ||
-                        GET_PLAYERBOT_AI(leader)->rpgInfo.GetStatus() != RPG_GO_GRIND)
+                    if (Unit* base = leader->GetVehicleBase())
+                    {
+                        // A seated leader is driven, not walked. The rpg mover has no
+                        // notion of a vehicle, so the vehicle itself is moved, the
+                        // way the module moves a drake - straight at the aim, no
+                        // ground path, because a drake has no ground and a siege
+                        // engine's yard has no walls. Only between fights: once the
+                        // vehicle is swinging the encounter tactics own the wheel.
+                        if (!base->IsInCombat())
+                        {
+                            // This core's MovePoint takes forced-movement, speed and
+                            // orientation before the path flag; the last argument is
+                            // what says "straight there, no ground path".
+                            base->GetMotionMaster()->MovePoint(0, bestX, bestY, bestZ,
+                                                               FORCED_MOVEMENT_NONE, 0.f, 0.0f,
+                                                               /*generatePath*/ false);
+                            base->SendMovementFlagUpdate();
+                        }
+                    }
+                    else if (std::fabs(bestX - trip.aimX) > 1.0f ||
+                             std::fabs(bestY - trip.aimY) > 1.0f ||
+                             GET_PLAYERBOT_AI(leader)->rpgInfo.GetStatus() != RPG_GO_GRIND)
                     {
                         trip.aimX = bestX;
                         trip.aimY = bestY;
@@ -2390,15 +2459,87 @@ Creature* PartyAssembler::NearestSiegeVehicle(Player* leader) const
     return best;
 }
 
+uint32 PartyAssembler::BossIndexFor(uint32 mapId, uint32 creditEntry) const
+{
+    auto const it = _bosses.find(mapId);
+    if (it == _bosses.end())
+        return kNoBossAim;
+    for (uint32 i = 0; i < it->second.size(); ++i)
+        if (it->second[i].creditEntry == creditEntry)
+            return i;
+    return kNoBossAim;
+}
+
+bool PartyAssembler::OculusDrakes(Player* leader, Trip& trip) const
+{
+    if (trip.dungeonMap != kMapOculus || leader->GetVehicle() || leader->IsInCombat())
+        return false;
+
+    // Drakes only once the first boss is down. Everything before him is on foot, and
+    // the three after him are reached by flying between platforms - Drakos has died
+    // once on this realm and nothing past him ever, because nobody could get there.
+    if (!CountBits(trip.killMask))
+        return false;
+
+    // The essence is what a player uses; its spell is what actually summons and seats
+    // the drake. Handed to the leader the way the module hands one to a member, then
+    // cast the way the item would cast it. The module's own MountDrakeAction mounts
+    // everyone else once its master - now the leader - is seen on a drake.
+    if (!leader->HasItemCount(kOcRubyEssenceItem, 1))
+        leader->AddItem(kOcRubyEssenceItem, 1);
+    leader->CastSpell(leader, kOcRubyEssenceSpell, true);
+
+    if (!trip.boarded)
+    {
+        trip.boarded = true;
+        LOG_INFO("playerbots",
+                 "Party assembler: {} takes a ruby drake in {} - the party can mount now "
+                 "that someone went first",
+                 leader->GetName(), trip.name);
+    }
+    return false;
+}
+
 bool PartyAssembler::BoardSiegeVehicles(Player* leader, Trip& trip, float& x, float& y,
                                         float& z) const
 {
-    if (trip.dungeonMap != kMapUlduar || leader->GetVehicle())
+    if (trip.dungeonMap != kMapUlduar)
+        return false;
+
+    // The yard is finished with once the Leviathan is, and so is this.
+    uint32 const fl = BossIndexFor(kMapUlduar, kUldFlameLeviathan);
+    if (fl != kNoBossAim && BossIsDown(trip, fl))
+        return false;
+
+    // Seated: the steering drives the vehicle at the boss, the encounter tactics fight
+    // from it, and the colossi that must die before he arms are met on the way.
+    if (leader->GetVehicle())
         return false;
 
     Creature* veh = NearestSiegeVehicle(leader);
+    if (!veh && !trip.vehiclesSummoned)
+    {
+        // This core never parks the salvaged vehicles in the yard on its own: the only
+        // spawner is the Leviathan's reset after a first engage, so a raid that has not
+        // fought him yet finds nothing to board. Ask the instance for the yard the way
+        // his script does, at the start positions rather than the fight ones.
+        if (InstanceScript* instance = leader->GetInstanceScript())
+        {
+            instance->SetData(kUldVehicleSpawn, kUldVehiclePosStart);
+            trip.vehiclesSummoned = true;
+            LOG_INFO("playerbots",
+                     "Party assembler: the siege yard is summoned for {}'s raid in {}",
+                     leader->GetName(), trip.name);
+        }
+    }
     if (!veh)
-        return false;   // the vehicle phase is over, or was never armed
+    {
+        // Summoned but out of sight, or refused: walk to where the yard stands.
+        x = kUldYardX;
+        y = kUldYardY;
+        z = kUldYardZ;
+        return true;
+    }
 
     // Far off: hand the position back as the destination and let the ordinary steering
     // walk them to the yard.

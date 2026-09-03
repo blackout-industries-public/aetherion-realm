@@ -150,6 +150,11 @@ private:
     {
         float x{0.f}, y{0.f}, z{0.f};
         uint32 creditEntry{0};
+        // DungeonEncounter.dbc's OrderIndex: the order the place is meant to be
+        // fought in, which in a winged raid is also which doors are open. Nearest-
+        // first aimed Naxxramas parties at Gothik across a closed gate and spent the
+        // whole clock striking off bosses they could never have reached.
+        int32 order{0};
     };
 
     std::unordered_map<uint32, std::vector<Entrance>> _spawns;  // instance map id -> packs
@@ -333,6 +338,11 @@ private:
         // Whether this run has already put its leader in a siege vehicle, so the log
         // says it once rather than every tick the raid spends riding.
         bool boarded{false};
+        // Ulduar summons its siege yard exactly once per run. This core never spawns
+        // the salvaged vehicles on its own: the only spawner is Flame Leviathan's own
+        // reset after a first engage, so a raid that has not fought him yet finds an
+        // empty yard unless somebody asks the instance for one.
+        bool vehiclesSummoned{false};
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.
@@ -554,6 +564,12 @@ private:
     // the whole bootstrap. Returns true when it wants the party walked somewhere.
     Creature* NearestSiegeVehicle(Player* leader) const;
     bool BoardSiegeVehicles(Player* leader, Trip& trip, float& x, float& y, float& z) const;
+    // The Oculus is on foot for exactly one boss and on drake-back for the other
+    // three; the drakes come from essence items a player uses. The leader is handed
+    // one and mounts, and the module's own drake tactics mount the rest.
+    bool OculusDrakes(Player* leader, Trip& trip) const;
+    // Index into the map's boss list for a credit entry, or kNoBossAim.
+    uint32 BossIndexFor(uint32 mapId, uint32 creditEntry) const;
 
     // Stops the leader where it stands, or lets it walk again. Withholding the next
     // destination is not the same thing as holding still: the rpg engine keeps

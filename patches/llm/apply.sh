@@ -41,10 +41,18 @@ AUTOMAINT=src/Ai/Base/Actions/AutoMaintenanceOnLevelupAction.cpp
 #   NewRpgBaseAction.{h,cpp} -> patch_rpgcombat (2k)
 RPGBASEH=src/Ai/World/Rpg/Action/NewRpgBaseAction.h
 RPGBASECPP=src/Ai/World/Rpg/Action/NewRpgBaseAction.cpp
+#   PlayerbotAI.h + the vehicle tactics -> patch_vehiclemaster (2l)
+AIH=src/Bot/PlayerbotAI.h
+VEHICLE_FILES=(
+    src/Ai/Raid/Uld/UldTriggers.cpp src/Ai/Raid/Uld/UldActions.cpp
+    src/Ai/Dungeon/OC/OCTriggers.cpp src/Ai/Dungeon/OC/OCActions.cpp
+    src/Ai/Dungeon/OC/OCMultipliers.cpp src/Ai/Raid/EoE/EoEActions.cpp
+    src/Ai/Raid/ICC/Action/ICCActions_PP.cpp src/Ai/Raid/RS/Action/RSActions_ADD.cpp
+)
 git -C "$MODULE" checkout -- "$AI" "$SCRIPT" "$FACTORY" "$CONF" \
     "$NEWRPG" "$RNDMGR" "$BOTFACTORY" "$DESTROYACT" "$SELLACT" \
     "$RELEASEACT" "$TRAINERACT" "$MEETSTONEACT" "$REPAIRACT" "$ACTIONCTX" "$AUTOMAINT" "$GREETACT" "$EMOTEACT" \
-    "$RPGBASEH" "$RPGBASECPP"
+    "$RPGBASEH" "$RPGBASECPP" "$AIH" "${VEHICLE_FILES[@]}"
 
 mkdir -p "$MODULE/src/Ai/Llm" "$MODULE/src/Ai/Party" "$MODULE/src/Ai/Econ"
 cp "$HERE/src/Ai/Llm/LlmBridge.h" "$HERE/src/Ai/Llm/LlmBridge.cpp" "$MODULE/src/Ai/Llm/"
@@ -415,6 +423,10 @@ python3 "$HERE/patch_econ_train.py" "$MODULE"
 # 2k. RPG movement holds while in combat (see patch_rpgcombat.py header). Without it
 #     a steered party leader strolls out of every fight and takes the party with it.
 python3 "$HERE/patch_rpgcombat.py" "$MODULE"
+
+# 2l. Vehicle tactics answer to the group leader when there is no master (see
+#     patch_vehiclemaster.py header). Without it a bot-only raid never boards.
+python3 "$HERE/patch_vehiclemaster.py" "$MODULE"
 
 # 3. Config defaults. Everything off or conservative unless deliberately raised.
 cat >> "$MODULE/$CONF" <<'CONFEOF'
