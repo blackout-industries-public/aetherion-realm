@@ -343,6 +343,12 @@ private:
         // reset after a first engage, so a raid that has not fought him yet finds an
         // empty yard unless somebody asks the instance for one.
         bool vehiclesSummoned{false};
+        // The tick the yard was last summoned. Once was not enough: the Leviathan's
+        // own reset after a wipe re-summons the vehicles at the arena, 1,100 yards
+        // from the yard a recalled raid walks back to, and the first live raid was
+        // seen crossing that distance on foot. Re-summoned whenever none is in
+        // reach, no more often than every ten ticks.
+        uint32 yardSummonedAt{0};
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.

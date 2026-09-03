@@ -2596,19 +2596,27 @@ bool PartyAssembler::BoardSiegeVehicles(Player* leader, Trip& trip, float& x, fl
         return false;
 
     Creature* veh = NearestSiegeVehicle(leader);
-    if (!veh && !trip.vehiclesSummoned)
+    if (!veh && (!trip.vehiclesSummoned || trip.ticks - trip.yardSummonedAt >= 10))
     {
         // This core never parks the salvaged vehicles in the yard on its own: the only
         // spawner is the Leviathan's reset after a first engage, so a raid that has not
         // fought him yet finds nothing to board. Ask the instance for the yard the way
-        // his script does, at the start positions rather than the fight ones.
+        // his script does, at the start positions rather than the fight ones - and ask
+        // again after a wipe, because his reset puts them at the arena instead.
         if (InstanceScript* instance = leader->GetInstanceScript())
         {
             instance->SetData(kUldVehicleSpawn, kUldVehiclePosStart);
+            trip.yardSummonedAt = trip.ticks;
+            if (!trip.vehiclesSummoned)
+                LOG_INFO("playerbots",
+                         "Party assembler: the siege yard is summoned for {}'s raid in {}",
+                         leader->GetName(), trip.name);
+            else
+                LOG_INFO("playerbots",
+                         "Party assembler: the siege yard is summoned again for {}'s raid "
+                         "in {} - the wipe left it empty",
+                         leader->GetName(), trip.name);
             trip.vehiclesSummoned = true;
-            LOG_INFO("playerbots",
-                     "Party assembler: the siege yard is summoned for {}'s raid in {}",
-                     leader->GetName(), trip.name);
         }
     }
     if (!veh)
