@@ -253,6 +253,15 @@ namespace
     // is a quarter of an hour of trying, which is a real attempt rather than a
     // formality, and the wipe watch ends a hopeless fight long before it expires.
     constexpr uint32 kBossFightTicks = 15;
+
+    // How close the leader must have come to a living, attackable boss for the run
+    // to stop walking and start pulling. Drakos the Interrogator never aggros on
+    // sight - his script blanks MoveInLineOfSight - and hovers over a ring the mover
+    // will not cross, so parties closed to 22 yards, made no further progress, and
+    // the stall watch struck him "unreachable" while he floated there attackable.
+    // Inside this range the boss is skulled for the party instead, which is what
+    // sends the ranged half of it to pull.
+    constexpr float kEngageRange = 45.0f;
     // Ground lost that means the party was moved rather than that it failed to walk -
     // three ticks' worth, so ordinary jitter around a target does not clear the count.
     constexpr float kAimResetYards = 60.0f;
@@ -1467,7 +1476,17 @@ void PartyAssembler::AdvanceTrips()
                 bool const offMap = leader->GetMapId() != trip.dungeonMap;
                 bool const fell = !offMap && BelowVenueFloor(trip.dungeonMap, leader);
                 auto const rally = _insides.find(trip.dungeonMap);
-                if ((offMap || fell) && rally != _insides.end())
+                // If nobody at all is still standing inside, this is not a lost
+                // leader, it is a wipe that released before the tick saw it. Left to
+                // the wipe watch below, which counts it and reseats everyone at once,
+                // rather than recalled here one character at a time with no tally.
+                bool anyoneStanding = false;
+                for (GroupReference* mi = group->GetFirstMember(); mi != nullptr && !anyoneStanding;
+                     mi = mi->next())
+                    if (Player* m = mi->GetSource())
+                        if (m->IsInWorld() && m->IsAlive() && m->GetMapId() == trip.dungeonMap)
+                            anyoneStanding = true;
+                if ((offMap || fell) && rally != _insides.end() && anyoneStanding)
                 {
                     if (!leader->IsAlive())
                     {
@@ -1573,6 +1592,12 @@ void PartyAssembler::AdvanceTrips()
             // its spirit and the run ends as 'wiped', not a silent timeout.
             // Without this, dead bots released to a graveyard OUTSIDE the
             // instance and the run burned out with nobody home.
+            // "Alive" means alive IN the instance. A raid that dies and releases
+            // between two of these ticks stands alive at the graveyard outside, and
+            // counting that as alive is how a Naxxramas raid wiped four times in
+            // 48 minutes with wipes=0 in the ledger: the leader was recalled, the
+            // nine outside were pulled in after it, and the wipe budget that should
+            // have ended the run never moved.
             uint32 alive = 0, present = 0;
             bool humanAboard = false;
             for (GroupReference* mi = group->GetFirstMember(); mi != nullptr; mi = mi->next())
@@ -1580,7 +1605,7 @@ void PartyAssembler::AdvanceTrips()
                     if (m->IsInWorld())
                     {
                         ++present;
-                        if (m->IsAlive())
+                        if (m->IsAlive() && m->GetMapId() == trip.dungeonMap)
                             ++alive;
                         if (!GET_PLAYERBOT_AI(m))
                             humanAboard = true;
@@ -1936,6 +1961,21 @@ void PartyAssembler::AdvanceTrips()
                 // is an event has no boss to walk at BY DESIGN for most of the run, so
                 // a running event holds the door open however empty the boss list is;
                 // an event that will not start is exactly the run that should end.
+                // A boss the party has closed on is pulled, not walked at. The skull
+                // is the module's own "attack this" (AttackersValue reads it), and it
+                // reaches the casters standing where the mover stopped. Set once per
+                // target so the icon is not rebroadcast every tick.
+                bool engaged = false;
+                if (bestBoss != kNoBossAim && bossSpots)
+                    if (Creature* live = leader->FindNearestCreature(
+                            (*bossSpots)[bestBoss].creditEntry, kEngageRange, true))
+                        if (leader->IsValidAttackTarget(live))
+                        {
+                            engaged = true;
+                            if (group->GetTargetIcon(kSkullIcon) != live->GetGUID())
+                                group->SetTargetIcon(kSkullIcon, leader->GetGUID(), live->GetGUID());
+                        }
+
                 bool nothingLeft = bossSpots && !haveBest;
                 if (IsEventVenue(trip.dungeonMap))
                     // An event venue always has somewhere to stand, so its boss list
@@ -2098,7 +2138,9 @@ void PartyAssembler::AdvanceTrips()
                     // pulls has not failed to reach anything, and counting those ticks
                     // as a failure to walk would retire the boss out from under the
                     // fight budget the arrival check just granted it.
-                    if (bestBoss != kNoBossAim && !fighting && bestDist > _huntRange)
+                    // Nor while the boss itself is in sight and marked: standing at
+                    // pulling range of a living boss is the walk having succeeded.
+                    if (bestBoss != kNoBossAim && !fighting && !engaged && bestDist > _huntRange)
                     {
                         // Closing on it resets the count, and so does being much
                         // further from it than the last reading: a wipe reseats the
