@@ -418,6 +418,25 @@ private:
     // of who was outfitted and when - it doubles as the pass's own idempotency
     // marker, so restarts never re-gear anyone.
     void GearTestPass();
+
+    // Venue backpressure. The muster kept sending parties into wings that had not
+    // killed anything for hours - the Forge of Souls took 1,029 bot-hours in one day
+    // for nothing - because the pick only ever asked "is the door near and is the
+    // party geared", never "has anyone come back from there with a kill lately". A
+    // venue that has produced no kill across enough finished runs in the current
+    // stretch is wanted one time in ten instead of refused outright, so a fixed one
+    // is noticed and the muster is never left with nowhere to send anybody.
+    struct Futility
+    {
+        uint32 runs{0};
+        uint32 kills{0};
+        uint32 since{0};   // unix time the stretch began
+        bool told{false};
+    };
+    std::unordered_map<uint32, Futility> _futility;
+    void NoteVenueRun(uint32 mapId, char const* outcome);
+    void NoteVenueKill(uint32 mapId);
+    uint32 FutilityDivisor(uint32 mapId, char const* name);
     std::unordered_set<uint32> _gearTested;
     uint32 _gearTestShare{0};    // 0 disables; 4 means one bot in four
     uint32 _gearTestIlvl{200};

@@ -33,6 +33,7 @@
 #include <limits>
 #include <mutex>
 #include <cmath>
+#include <ctime>   // the venue-futility stretch is wall-clock, not tick-counted
 #include <string>
 #include <vector>
 
@@ -3098,6 +3099,7 @@ void PartyAssembler::NoteKills(Group* group, Player* leader, Trip& trip)
 
     trip.bossesDown = CountBits(trip.killMask & ~trip.entryMask);
     trip.idleTicks = 0;
+    NoteVenueKill(trip.dungeonMap);
 
     // Stamped now, while the instance still exists. The old count was read once at
     // EndRun from the `instance` table, and that table is live state pruned on reset -
@@ -3204,8 +3206,12 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
     {
         GearVerdict const v = JudgeGear(group, options[i].dungeonMap,
                                         uint8(DUNGEON_DIFFICULTY_NORMAL));
-        weights[i] = v.weight;
-        total += v.weight;
+        // Gear says how likely the door is to open; futility says whether anyone has
+        // walked back out of it with a kill lately. Never zero: a venue nobody can
+        // finish still gets its occasional probe, which is how a fix is noticed.
+        weights[i] = std::max<uint32>(
+            1, v.weight / FutilityDivisor(options[i].dungeonMap, options[i].name.c_str()));
+        total += weights[i];
     }
 
     Option chosen = options[0];
@@ -3574,8 +3580,64 @@ uint32 PartyAssembler::RecordRunStart(Group* group, Player* leader, std::string 
     return id;
 }
 
+namespace
+{
+    // How many finished runs without a kill, within one stretch, before a venue is
+    // treated as futile, and how long a stretch lasts before the count starts over.
+    constexpr uint32 kFutileRuns = 6;
+    constexpr uint32 kFutilityStretchSeconds = 6 * 3600;
+    constexpr uint32 kFutilityDivisor = 10;
+}
+
+void PartyAssembler::NoteVenueRun(uint32 mapId, char const* outcome)
+{
+    // Only runs the venue can be blamed for: ones that got inside and finished.
+    // A party that never found the door, lost its leader on the road, or was
+    // dissolved mid-journey says nothing about the wing.
+    std::string const o = outcome ? outcome : "";
+    if (o != "cleared" && o != "locked_out" && o != "exhausted" && o != "ended" &&
+        o != "wiped")
+        return;
+    uint32 const now = uint32(time(nullptr));
+    Futility& f = _futility[mapId];
+    if (!f.since || now - f.since > kFutilityStretchSeconds)
+        f = Futility{0, 0, now, false};
+    ++f.runs;
+}
+
+void PartyAssembler::NoteVenueKill(uint32 mapId)
+{
+    uint32 const now = uint32(time(nullptr));
+    Futility& f = _futility[mapId];
+    if (!f.since || now - f.since > kFutilityStretchSeconds)
+        f = Futility{0, 0, now, false};
+    ++f.kills;
+}
+
+uint32 PartyAssembler::FutilityDivisor(uint32 mapId, char const* name)
+{
+    auto const it = _futility.find(mapId);
+    if (it == _futility.end())
+        return 1;
+    Futility& f = it->second;
+    if (uint32(time(nullptr)) - f.since > kFutilityStretchSeconds)
+        return 1;   // stale stretch; it is reset by the next run or kill
+    if (f.kills || f.runs < kFutileRuns)
+        return 1;
+    if (!f.told)
+    {
+        f.told = true;
+        LOG_INFO("playerbots",
+                 "Party assembler: {} has produced no kill in {} finished runs this "
+                 "stretch - parties are sent there one time in {} until it does",
+                 name ? name : std::to_string(mapId).c_str(), f.runs, kFutilityDivisor);
+    }
+    return kFutilityDivisor;
+}
+
 void PartyAssembler::EndRun(uint32 runId, uint32 mapId, char const* outcome)
 {
+    NoteVenueRun(mapId, outcome);
     if (!runId)
         return;
     // Depth is stamped at kill time now, from the instance's own mask while the
@@ -4386,18 +4448,25 @@ bool PartyAssembler::SendPartyToRaid(Group* group, Player* leader)
         return PlanarDistance(leader, a.where) < PlanarDistance(leader, b.where);
     });
     size_t const shortlist = std::min<size_t>(options.size(), _nearestChoices);
+    // The same futility discount the five-man pick applies: a raid wing that has sent
+    // every recent party home empty is asked for one time in ten, not every time.
+    std::vector<uint32> weights(shortlist, 1);
     uint32 total = 0;
     for (size_t i = 0; i < shortlist; ++i)
-        total += options[i].gear.weight;
+    {
+        weights[i] = std::max<uint32>(
+            1, options[i].gear.weight / FutilityDivisor(options[i].raidMap, options[i].name.c_str()));
+        total += weights[i];
+    }
     size_t pick = 0;
     if (total)
     {
         uint32 roll = urand(1, total);
         for (; pick + 1 < shortlist; ++pick)
         {
-            if (roll <= options[pick].gear.weight)
+            if (roll <= weights[pick])
                 break;
-            roll -= options[pick].gear.weight;
+            roll -= weights[pick];
         }
     }
     else
