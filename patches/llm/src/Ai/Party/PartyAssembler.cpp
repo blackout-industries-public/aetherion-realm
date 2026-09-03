@@ -2584,14 +2584,26 @@ bool PartyAssembler::BoardSiegeVehicles(Player* leader, Trip& trip, float& x, fl
         return true;
     }
 
-    // Far off: hand the position back as the destination and let the ordinary steering
-    // walk them to the yard.
-    if (leader->GetDistance(veh) > INTERACTION_DISTANCE)
+    // The rpg mover calls a destination reached at ten yards and stops, and a click
+    // through the packet handler needs five and a half - so a leader walked to a
+    // vehicle by the ordinary steering parks just outside reach and never boards.
+    // Three rings instead: far off, the yard is simply the destination; inside
+    // forty yards the leader is moved onto the vehicle exactly, no mover judgement
+    // involved; inside fifteen it is clicked in, which is safe from here because a
+    // server-side HandleSpellClick carries no range check of its own.
+    float const dist = leader->GetDistance(veh);
+    if (dist > 40.0f)
     {
         x = veh->GetPositionX();
         y = veh->GetPositionY();
         z = veh->GetPositionZ();
         return true;
+    }
+    if (dist > 15.0f)
+    {
+        leader->GetMotionMaster()->MovePoint(0, veh->GetPositionX(), veh->GetPositionY(),
+                                             veh->GetPositionZ());
+        return false;
     }
 
     // Close enough to climb in. Boarded the way the module boards anything - through
