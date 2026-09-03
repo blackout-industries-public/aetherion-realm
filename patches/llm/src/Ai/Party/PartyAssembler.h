@@ -586,7 +586,7 @@ private:
     // The Oculus is on foot for exactly one boss and on drake-back for the other
     // three; the drakes come from essence items a player uses. The leader is handed
     // one and mounts, and the module's own drake tactics mount the rest.
-    bool OculusDrakes(Player* leader, Trip& trip) const;
+    bool OculusDrakes(Player* leader, Trip& trip, bool engaged, int32 aimOrder) const;
     // Index into the map's boss list for a credit entry, or kNoBossAim.
     uint32 BossIndexFor(uint32 mapId, uint32 creditEntry) const;
 

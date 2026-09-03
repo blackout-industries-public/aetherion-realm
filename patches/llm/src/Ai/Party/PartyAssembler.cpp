@@ -373,6 +373,13 @@ namespace
     constexpr uint32 kMapOculus = 578;
     constexpr uint32 kOcRubyEssenceItem = 37860;   // ITEM_RUBY_ESSENCE
     constexpr uint32 kOcRubyEssenceSpell = 49462;  // SPELL_RUBY_ESSENCE
+    // DungeonEncounter OrderIndex of Ley-Guardian Eregos, the only Oculus boss fought
+    // from drake-back. Varos and Urom are fought on foot on their platforms, and a
+    // party that arrives over them and stays in the saddle just hovers: measured as
+    // one run that flew to all three, spent fifteen ticks over each of the first two
+    // and killed nothing past Drakos. Below this order the leader lands; the module's
+    // own dismount trigger then lands everyone else.
+    constexpr int32 kOcEregosOrder = 3000;
 
     char const* CannotPerform(uint32 mapId)
     {
@@ -2056,8 +2063,9 @@ void PartyAssembler::AdvanceTrips()
                     }
                     // The Oculus needs no destination of its own - the boss list
                     // already points at the next platform - only a leader on a drake
-                    // so the party can follow it into the air.
-                    OculusDrakes(leader, trip);
+                    // so the party can follow it into the air, and off it again over
+                    // a boss that is fought on foot.
+                    OculusDrakes(leader, trip, engaged, bestOrder);
                 }
 
                 if (IsEventVenue(trip.dungeonMap))
@@ -2513,9 +2521,31 @@ uint32 PartyAssembler::BossIndexFor(uint32 mapId, uint32 creditEntry) const
     return kNoBossAim;
 }
 
-bool PartyAssembler::OculusDrakes(Player* leader, Trip& trip) const
+bool PartyAssembler::OculusDrakes(Player* leader, Trip& trip, bool engaged,
+                                  int32 aimOrder) const
 {
-    if (trip.dungeonMap != kMapOculus || leader->GetVehicle() || leader->IsInCombat())
+    if (trip.dungeonMap != kMapOculus || leader->IsInCombat())
+        return false;
+
+    // Seated and over a platform boss: land. The drakes are for getting between
+    // platforms; Varos and Urom are fought standing on them, and a leader who stays
+    // in the saddle keeps the whole party hovering above a fight nobody can start.
+    // Eregos alone is fought from the air and the party stays mounted for him.
+    if (leader->GetVehicle())
+    {
+        if (engaged && aimOrder < kOcEregosOrder)
+        {
+            leader->ExitVehicle();
+            LOG_INFO("playerbots",
+                     "Party assembler: {} lands to fight on the platform in {} - the "
+                     "party dismounts behind them",
+                     leader->GetName(), trip.name);
+        }
+        return false;
+    }
+
+    // On foot beside a platform boss: this is the fight, not the moment to remount.
+    if (engaged)
         return false;
 
     // Drakes only once the first boss is down. Everything before him is on foot, and
