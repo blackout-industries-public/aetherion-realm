@@ -161,6 +161,9 @@ namespace
     // ladder. Nothing here can include that header - it belongs to a script library the
     // module does not link - so the values are named and cited instead.
     constexpr uint32 kMapCullingOfStratholme = 595;
+    // Declared up here with the other map ids rather than beside the drake constants
+    // below, because the venue clock table between the two needs it.
+    constexpr uint32 kMapOculus = 578;
     constexpr uint32 kCosArthasEvent = 0;        // DATA_ARTHAS_EVENT
     constexpr uint32 kCosNotStarted = 0;         // COS_PROGRESS_NOT_STARTED
     constexpr uint32 kCosStartIntro = 2;         // COS_PROGRESS_START_INTRO
@@ -374,7 +377,6 @@ namespace
 
     // The Oculus, from the module's own OCTriggers.h: the ruby essence is the item a
     // player uses to summon and mount a drake, and this is the spell it casts.
-    constexpr uint32 kMapOculus = 578;
     constexpr uint32 kOcRubyEssenceItem = 37860;   // ITEM_RUBY_ESSENCE
     constexpr uint32 kOcRubyEssenceSpell = 49462;  // SPELL_RUBY_ESSENCE
     // DungeonEncounter OrderIndex of Ley-Guardian Eregos, the only Oculus boss fought
