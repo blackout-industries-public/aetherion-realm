@@ -288,6 +288,10 @@ namespace
         // The Culling is an escort across a whole city at Arthas's walking pace, with
         // four bosses strung along it. It takes what a raid wing takes.
         { kMapCullingOfStratholme, 2 },
+        // The Oculus is three platform fights and a flight between each, on top of
+        // Drakos. The first party ever to reach Eregos got there with its clock
+        // already spent and left before the fight could be judged either way.
+        { kMapOculus, 2 },
     };
 
     uint32 VenueClockMult(uint32 mapId)
