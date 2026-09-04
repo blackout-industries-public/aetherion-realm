@@ -349,6 +349,10 @@ private:
         // seen crossing that distance on foot. Re-summoned whenever none is in
         // reach, no more often than every ten ticks.
         uint32 yardSummonedAt{0};
+        // Whether this run has already counted for its venue's kill tally. A run is
+        // one data point however many bosses it takes; counting each kill made a
+        // single four-boss clear look like four good runs.
+        bool venueCredited{false};
         // Which boss the leader is currently walking at, the closest it has got, and
         // how many ticks it has failed to get closer. A wing whose bosses sit behind
         // a teleporter is never reached on foot, and staring at one is the whole run.
@@ -440,6 +444,9 @@ private:
         bool told{false};
     };
     std::unordered_map<uint32, Futility> _futility;
+    // Advances a venue's record across stretch boundaries, halving rather than
+    // zeroing, so what is known about a wing decays instead of vanishing.
+    static void RollFutilityStretch(Futility& f, uint32 now);
     void NoteVenueRun(uint32 mapId, char const* outcome);
     void NoteVenueKill(uint32 mapId);
     uint32 FutilityDivisor(uint32 mapId, char const* name);
@@ -592,7 +599,8 @@ private:
     // The Oculus is on foot for exactly one boss and on drake-back for the other
     // three; the drakes come from essence items a player uses. The leader is handed
     // one and mounts, and the module's own drake tactics mount the rest.
-    bool OculusDrakes(Player* leader, Trip& trip, bool engaged, int32 aimOrder) const;
+    bool OculusDrakes(Player* leader, Trip& trip, bool engaged, int32 aimOrder,
+                      float aimDist) const;
     // Index into the map's boss list for a credit entry, or kNoBossAim.
     uint32 BossIndexFor(uint32 mapId, uint32 creditEntry) const;
 

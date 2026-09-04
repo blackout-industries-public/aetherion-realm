@@ -1647,8 +1647,14 @@ void PartyAssembler::AdvanceTrips()
                 // party that wipes on the way to the first still calls it after the
                 // base retries. That keeps "try harder" from becoming "hold ten bots
                 // hostage in a fight nobody can win".
+                // Scaled by the venue's clock, because in the venues that get one a
+                // wipe is part of the loop rather than the end of it: Violet Hold's
+                // waves reset the room, and 14 of the 24 runs that killed a boss
+                // there needed five wipes to do it. The honest wipe count, judged
+                // against a flat three, ended every Violet Hold run before wave six
+                // and took its kills from eleven a stretch to none.
                 uint32 const allowed =
-                    _wipeRetries +
+                    _wipeRetries * VenueClockMult(trip.dungeonMap) +
                     std::min(_wipeBonusCap, trip.bossesDown * _wipeBonusPerBoss);
                 if (trip.wipes > allowed)
                 {
@@ -1868,6 +1874,13 @@ void PartyAssembler::AdvanceTrips()
                                      leader->GetName(), uint32(trip.reachedBosses.size()),
                                      uint32(bossSpots->size()), trip.name);
 
+                        // A boss already struck off is not struck again: without this
+                        // a leader standing on the spot re-ran the budget every tick
+                        // and one Ulduar raid logged fourteen "cannot bring down" for
+                        // a single Leviathan it never fought.
+                        if (trip.visitedBosses.count(i))
+                            continue;
+
                         // Arrival is not victory. Retirement belongs to the instance
                         // mask - NoteKills strikes off whatever it says is dead - so
                         // all this does is give the fight a budget and give up only
@@ -2071,7 +2084,7 @@ void PartyAssembler::AdvanceTrips()
                     // already points at the next platform - only a leader on a drake
                     // so the party can follow it into the air, and off it again over
                     // a boss that is fought on foot.
-                    OculusDrakes(leader, trip, engaged, bestOrder);
+                    OculusDrakes(leader, trip, engaged, bestOrder, bestDist);
                 }
 
                 if (IsEventVenue(trip.dungeonMap))
@@ -2528,18 +2541,23 @@ uint32 PartyAssembler::BossIndexFor(uint32 mapId, uint32 creditEntry) const
 }
 
 bool PartyAssembler::OculusDrakes(Player* leader, Trip& trip, bool engaged,
-                                  int32 aimOrder) const
+                                  int32 aimOrder, float aimDist) const
 {
-    if (trip.dungeonMap != kMapOculus || leader->IsInCombat())
+    if (trip.dungeonMap != kMapOculus)
         return false;
 
     // Seated and over a platform boss: land. The drakes are for getting between
     // platforms; Varos and Urom are fought standing on them, and a leader who stays
     // in the saddle keeps the whole party hovering above a fight nobody can start.
     // Eregos alone is fought from the air and the party stays mounted for him.
+    // Judged by distance to the platform, not by whether the boss will take a hit:
+    // Varos is immune until his constructs die and Urom is elsewhere until his
+    // summons are, so "attackable" was never true from the air and four mounted
+    // parties burned a full fight budget hovering over each of them. Nor is combat
+    // a reason to stay up - the ring guardians make the drakes' arrival a fight.
     if (leader->GetVehicle())
     {
-        if (engaged && aimOrder < kOcEregosOrder)
+        if (aimDist <= kEngageRange && aimOrder < kOcEregosOrder)
         {
             leader->ExitVehicle();
             LOG_INFO("playerbots",
@@ -2550,8 +2568,9 @@ bool PartyAssembler::OculusDrakes(Player* leader, Trip& trip, bool engaged,
         return false;
     }
 
-    // On foot beside a platform boss: this is the fight, not the moment to remount.
-    if (engaged)
+    // On foot beside a platform boss, or mid-fight: this is the fight, not the
+    // moment to remount.
+    if (engaged || leader->IsInCombat())
         return false;
 
     // Drakes only once the first boss is down. Everything before him is on foot, and
@@ -2647,7 +2666,14 @@ bool PartyAssembler::BoardSiegeVehicles(Player* leader, Trip& trip, float& x, fl
     {
         leader->GetMotionMaster()->MovePoint(0, veh->GetPositionX(), veh->GetPositionY(),
                                              veh->GetPositionZ());
-        return false;
+        // The vehicle stays the destination as well. Returning false here left the
+        // Leviathan as the aim, the rpg mover re-issued that walk on top of the
+        // MovePoint, and a raid crossed 1,100 yards on foot to stand at a boss it
+        // could not hurt.
+        x = veh->GetPositionX();
+        y = veh->GetPositionY();
+        z = veh->GetPositionZ();
+        return true;
     }
 
     // Close enough to climb in. Boarded the way the module boards anything - through
@@ -3155,7 +3181,11 @@ void PartyAssembler::NoteKills(Group* group, Player* leader, Trip& trip)
 
     trip.bossesDown = CountBits(trip.killMask & ~trip.entryMask);
     trip.idleTicks = 0;
-    NoteVenueKill(trip.dungeonMap);
+    if (!trip.venueCredited)
+    {
+        trip.venueCredited = true;
+        NoteVenueKill(trip.dungeonMap);
+    }
 
     // Stamped now, while the instance still exists. The old count was read once at
     // EndRun from the `instance` table, and that table is live state pruned on reset -
@@ -3332,6 +3362,15 @@ bool PartyAssembler::SendPartyToDungeon(Group* group, Player* leader)
         Entrance where;
         std::string name;
         if (!DungeonInfo(leader, runMap, where, name))
+            return false;
+
+        // The same discount the direct pick applies. This redirect is how the Forge
+        // of Souls took 244 parties in a day for six kills: every party bound for
+        // the Halls was sent to earn its way in first, and none of those picks ever
+        // passed through the weighted roll. A futile earn-venue is taken one time
+        // in ten here too; the rest of the time the chain is simply not this tick's.
+        if (uint32 const divisor = FutilityDivisor(runMap, name.c_str());
+            divisor > 1 && urand(1, divisor) != 1)
             return false;
 
         Quest const* gate = sObjectMgr->GetQuestTemplate(earnQuest);
@@ -3638,11 +3677,34 @@ uint32 PartyAssembler::RecordRunStart(Group* group, Player* leader, std::string 
 
 namespace
 {
-    // How many finished runs without a kill, within one stretch, before a venue is
-    // treated as futile, and how long a stretch lasts before the count starts over.
-    constexpr uint32 kFutileRuns = 6;
+    // A venue is futile when, over enough finished runs, fewer than one in ten come
+    // back with a kill. "No kill at all in six" was wrong twice over: healthy wings
+    // tripped it on a six-run streak of bad luck (Drak'Tharon converts a third of
+    // its runs and was throttled anyway), and the Forge of Souls - one kill in
+    // forty - almost never had a stretch clean enough to trip it while taking 244
+    // parties in a day. Counts halve at each stretch boundary rather than zeroing,
+    // so a chronically futile venue stays known and a fixed one recovers as kills
+    // arrive, without either state being forgotten every six hours.
+    constexpr uint32 kFutileMinRuns = 12;
+    constexpr uint32 kFutileMaxPct = 10;
     constexpr uint32 kFutilityStretchSeconds = 6 * 3600;
     constexpr uint32 kFutilityDivisor = 10;
+}
+
+void PartyAssembler::RollFutilityStretch(Futility& f, uint32 now)
+{
+    if (!f.since)
+    {
+        f.since = now;
+        return;
+    }
+    while (now - f.since > kFutilityStretchSeconds)
+    {
+        f.runs /= 2;
+        f.kills /= 2;
+        f.told = false;
+        f.since += kFutilityStretchSeconds;
+    }
 }
 
 void PartyAssembler::NoteVenueRun(uint32 mapId, char const* outcome)
@@ -3654,19 +3716,15 @@ void PartyAssembler::NoteVenueRun(uint32 mapId, char const* outcome)
     if (o != "cleared" && o != "locked_out" && o != "exhausted" && o != "ended" &&
         o != "wiped")
         return;
-    uint32 const now = uint32(time(nullptr));
     Futility& f = _futility[mapId];
-    if (!f.since || now - f.since > kFutilityStretchSeconds)
-        f = Futility{0, 0, now, false};
+    RollFutilityStretch(f, uint32(time(nullptr)));
     ++f.runs;
 }
 
 void PartyAssembler::NoteVenueKill(uint32 mapId)
 {
-    uint32 const now = uint32(time(nullptr));
     Futility& f = _futility[mapId];
-    if (!f.since || now - f.since > kFutilityStretchSeconds)
-        f = Futility{0, 0, now, false};
+    RollFutilityStretch(f, uint32(time(nullptr)));
     ++f.kills;
 }
 
@@ -3676,17 +3734,18 @@ uint32 PartyAssembler::FutilityDivisor(uint32 mapId, char const* name)
     if (it == _futility.end())
         return 1;
     Futility& f = it->second;
-    if (uint32(time(nullptr)) - f.since > kFutilityStretchSeconds)
-        return 1;   // stale stretch; it is reset by the next run or kill
-    if (f.kills || f.runs < kFutileRuns)
+    RollFutilityStretch(f, uint32(time(nullptr)));
+    if (f.runs < kFutileMinRuns || f.kills * 100 >= f.runs * kFutileMaxPct)
         return 1;
     if (!f.told)
     {
         f.told = true;
         LOG_INFO("playerbots",
-                 "Party assembler: {} has produced no kill in {} finished runs this "
-                 "stretch - parties are sent there one time in {} until it does",
-                 name ? name : std::to_string(mapId).c_str(), f.runs, kFutilityDivisor);
+                 "Party assembler: {} sends back a kill from fewer than one run in ten "
+                 "({} of {} lately) - parties are sent there one time in {} until that "
+                 "improves",
+                 name ? name : std::to_string(mapId).c_str(), f.kills, f.runs,
+                 kFutilityDivisor);
     }
     return kFutilityDivisor;
 }
